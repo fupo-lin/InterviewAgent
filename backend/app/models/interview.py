@@ -1,0 +1,65 @@
+from datetime import datetime
+
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy.dialects.mysql import JSON
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.config.database import Base
+
+##数据库表的映射 --  对应到了数据库表的结构，对于表中的字段进行约束和设置默认值
+
+class InterviewSession(Base):
+    __tablename__ = "interview_sessions"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    session_uid: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    role_name: Mapped[str] = mapped_column(String(50), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="active", nullable=False)
+    create_time: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
+    update_time: Mapped[datetime] = mapped_column(
+        DateTime,
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+# relationship() -- back_populates：建立双向绑定
+# cascade="all, delete-orphan"：级联删除。当你删除一场Session时，
+# 数据库会自动把这场面试下的所有消息（Messages）和评价（Evaluations）一并删除，防止产生垃圾数据。
+    messages: Mapped[list["InterviewMessage"]] = relationship(
+        back_populates="session",
+        cascade="all, delete-orphan",
+    )
+    evaluations: Mapped[list["InterviewEvaluation"]] = relationship(
+        back_populates="session",
+        cascade="all, delete-orphan",
+    )
+
+
+class InterviewMessage(Base):
+
+    __tablename__ = "interview_messages"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    session_id: Mapped[int] = mapped_column(ForeignKey("interview_sessions.id"), nullable=False)
+    role_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    message_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    round_no: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    raw_response: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    create_time: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
+
+    session: Mapped[InterviewSession] = relationship(back_populates="messages")
+
+
+class InterviewEvaluation(Base):
+    __tablename__ = "interview_evaluations"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    session_id: Mapped[int] = mapped_column(ForeignKey("interview_sessions.id"), nullable=False)
+    strengths: Mapped[str | None] = mapped_column(Text, nullable=True)
+    weaknesses: Mapped[str | None] = mapped_column(Text, nullable=True)
+    suggestions: Mapped[str | None] = mapped_column(Text, nullable=True)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    create_time: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
+
+    session: Mapped[InterviewSession] = relationship(back_populates="evaluations")
