@@ -1,4 +1,5 @@
 import json
+import re
 
 import httpx
 
@@ -73,22 +74,59 @@ class LLMService:
         content = data["choices"][0]["message"]["content"]
         return content, data
 
+# 
     def _parse_evaluation(self, content: str) -> dict[str, str]:
+        text = content.strip()  # 1. 去除首尾的空白字符或换行符
         try:
-            parsed = json.loads(content)
+            parsed = json.loads(text) # 2. 尝试直接解析（最理想的情况：大模型返回了完美的纯 JSON）
         except json.JSONDecodeError:
-            return {
-                "strengths": "",
-                "weaknesses": "",
-                "suggestions": "",
-                "summary": content,
-            }
+            json_text = self._extract_json_text(text) 
+            if json_text is None:
+                return self._fallback_evaluation(content)
+
+            try:
+                parsed = json.loads(json_text)
+            except json.JSONDecodeError:
+                return self._fallback_evaluation(content)
 
         return {
             "strengths": str(parsed.get("strengths", "")),
             "weaknesses": str(parsed.get("weaknesses", "")),
             "suggestions": str(parsed.get("suggestions", "")),
             "summary": str(parsed.get("summary", "")),
+            "technical_ability": str(parsed.get("technical_ability", parsed.get("technicalAbility", ""))),
+            "project_experience": str(parsed.get("project_experience", parsed.get("projectExperience", ""))),
+            "communication": str(parsed.get("communication", "")),
+            "improvement_suggestions": str(
+                parsed.get("improvement_suggestions", parsed.get("improvementSuggestions", ""))
+            ),
+        }
+
+#
+    def _extract_json_text(self, content: str) -> str | None:
+        fenced = re.search(r"```(?:json)?\s*(.*?)\s*```", content, flags=re.IGNORECASE | re.DOTALL)
+        #  优先使用正则表达式，匹配 Markdown 的代码块 (```json ... ``` 或 ``` ... ```) re.DOTALL 表示让 . 可以匹配换行符，确保跨行匹配
+        if fenced:
+            return fenced.group(1).strip()  # 提取代码块里的内容并去除空白
+
+        start = content.find("{")
+        end = content.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            return content[start : end + 1] # 把从第一个 { 到最后一个 } 之间的内容全切出来
+
+        return None
+
+# 兜底方案 --  把大模型的返回内容直接放到 summary 字段里，其他字段为空字符串
+    def _fallback_evaluation(self, content: str) -> dict[str, str]:
+        return {
+            "strengths": "",
+            "weaknesses": "",
+            "suggestions": "",
+            "summary": content,
+            "technical_ability": "",
+            "project_experience": "",
+            "communication": "",
+            "improvement_suggestions": "",
         }
 
     def _mock_first_question(self, role_name: str) -> str:
@@ -110,4 +148,8 @@ class LLMService:
             "weaknesses": "部分回答还可以继续补充量化指标、故障处理细节和设计取舍。",
             "suggestions": "建议准备 1 到 2 个完整项目案例，重点补充架构图、核心难点、性能数据和复盘结果。",
             "summary": "整体具备继续面试评估的基础，后续可以加深技术细节和系统设计深度。",
+            "technical_ability": "已能围绕技术方案展开回答，但还需要补充底层原理、边界条件和性能数据来证明技术深度。",
+            "project_experience": f"本次共有 {answer_count} 轮候选人回答，项目描述具备基础脉络，后续建议强化个人贡献、业务影响和复盘结果。",
+            "communication": "表达能够覆盖项目背景和处理思路，建议进一步使用问题、行动、结果的结构提升信息密度。",
+            "improvement_suggestions": "建议准备可量化项目案例，补充架构图、关键指标、故障复盘和技术取舍，并用 STAR 方式组织回答。",
         }

@@ -12,6 +12,10 @@ export type Evaluation = {
   strengths: string;
   weaknesses: string;
   suggestions: string;
+  technicalAbility?: string;
+  projectExperience?: string;
+  communication?: string;
+  improvementSuggestions?: string;
   summary?: string | null;
 };
 
@@ -63,4 +67,10 @@ export async function endInterview(sessionId: string) {
 
 export async function getHistory(sessionId: string) {
   return request<HistoryResponse>(`/interview/history/${sessionId}`);
+}
+
+export async function deleteInterview(sessionId: string) {
+  return request<{ success: boolean }>(`/interview/delete/${sessionId}`, {
+    method: "DELETE",
+  });
 }

@@ -46,6 +46,7 @@ class InterviewMessage(Base):
     round_no: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     raw_response: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="normal", nullable=False)
     create_time: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
 
     session: Mapped[InterviewSession] = relationship(back_populates="messages")
@@ -59,7 +60,12 @@ class InterviewEvaluation(Base):
     strengths: Mapped[str | None] = mapped_column(Text, nullable=True)
     weaknesses: Mapped[str | None] = mapped_column(Text, nullable=True)
     suggestions: Mapped[str | None] = mapped_column(Text, nullable=True)
+    technical_ability: Mapped[str | None] = mapped_column(Text, nullable=True)
+    project_experience: Mapped[str | None] = mapped_column(Text, nullable=True)
+    communication: Mapped[str | None] = mapped_column(Text, nullable=True)
+    improvement_suggestions: Mapped[str | None] = mapped_column(Text, nullable=True)
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="normal", nullable=False)
     create_time: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
 
     session: Mapped[InterviewSession] = relationship(back_populates="evaluations")

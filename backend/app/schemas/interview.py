@@ -42,7 +42,14 @@ class EvaluationResponse(BaseModel):
     strengths: str
     weaknesses: str
     suggestions: str
+    technical_ability: str = Field(default="", alias="technicalAbility")
+    project_experience: str = Field(default="", alias="projectExperience")
+    communication: str = ""
+    improvement_suggestions: str = Field(default="", alias="improvementSuggestions")
     summary: str | None = None
+
+    class Config:
+        populate_by_name = True
 
 
 class EndInterviewResponse(BaseModel):
@@ -69,3 +76,6 @@ class HistoryResponse(BaseModel):
 
     class Config:
         populate_by_name = True
+
+class DeleteResponse(BaseModel):
+    success: bool

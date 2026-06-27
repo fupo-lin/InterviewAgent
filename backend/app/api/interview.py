@@ -8,6 +8,7 @@ from app.schemas.interview import (
     EndInterviewRequest,
     EndInterviewResponse,
     HistoryResponse,
+    DeleteResponse,
     StartInterviewRequest,
     StartInterviewResponse,
 )
@@ -46,3 +47,8 @@ async def end_interview(payload: EndInterviewRequest, db: Session = Depends(get_
 def get_history(session_id: str, db: Session = Depends(get_db)):
     service = InterviewService(db)
     return service.history(session_id)
+
+@router.delete("/delete/{session_id}", response_model=DeleteResponse, response_model_by_alias=True)
+def delete_history(session_id: str, db: Session = Depends(get_db)):
+    service = InterviewService(db)
+    return service.delete(session_id)

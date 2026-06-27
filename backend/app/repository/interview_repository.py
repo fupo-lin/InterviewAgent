@@ -16,11 +16,19 @@ class InterviewSessionRepository:
         return session #返回带有 ID 的对象供后续使用
 
     def get_by_uid(self, session_uid: str) -> InterviewSession | None:
-        statement = select(InterviewSession).where(InterviewSession.session_uid == session_uid)
+        statement = select(InterviewSession).where(
+            InterviewSession.session_uid == session_uid,
+            InterviewSession.status != "deleted",
+        )
         return self.db.scalars(statement).first()
 
     def mark_finished(self, session: InterviewSession) -> InterviewSession:
         session.status = "finished"
+        self.db.flush()
+        return session
+    
+    def soft_delete(self, session: InterviewSession) -> InterviewSession:
+        session.status = "deleted"
         self.db.flush()
         return session
 
@@ -53,7 +61,7 @@ class InterviewMessageRepository:
     def list_by_session_id(self, session_id: int) -> list[InterviewMessage]:
         statement = (
             select(InterviewMessage)
-            .where(InterviewMessage.session_id == session_id)
+            .where(InterviewMessage.session_id == session_id, InterviewMessage.status != "deleted")
             .order_by(InterviewMessage.round_no.asc(), InterviewMessage.id.asc())
         )
         return list(self.db.scalars(statement).all())
@@ -64,6 +72,11 @@ class InterviewMessageRepository:
         if not user_rounds:
             return 1
         return max(user_rounds) + 1
+    
+    def soft_delete(self, message: InterviewMessage) -> InterviewMessage:
+        message.status = "deleted"
+        self.db.flush()
+        return message
 
 
 class InterviewEvaluationRepository:
@@ -77,6 +90,10 @@ class InterviewEvaluationRepository:
         weaknesses: str,
         suggestions: str,
         summary: str | None = None,
+        technical_ability: str | None = None,
+        project_experience: str | None = None,
+        communication: str | None = None,
+        improvement_suggestions: str | None = None,
     ) -> InterviewEvaluation:
         evaluation = InterviewEvaluation(
             session_id=session_id,
@@ -84,6 +101,10 @@ class InterviewEvaluationRepository:
             weaknesses=weaknesses,
             suggestions=suggestions,
             summary=summary,
+            technical_ability=technical_ability,
+            project_experience=project_experience,
+            communication=communication,
+            improvement_suggestions=improvement_suggestions,
         )
         self.db.add(evaluation)
         self.db.flush()
@@ -92,7 +113,19 @@ class InterviewEvaluationRepository:
     def get_latest_by_session_id(self, session_id: int) -> InterviewEvaluation | None:
         statement = (
             select(InterviewEvaluation)
-            .where(InterviewEvaluation.session_id == session_id)
+            .where(InterviewEvaluation.session_id == session_id, InterviewEvaluation.status != "deleted")
             .order_by(InterviewEvaluation.id.desc())
         )
         return self.db.scalars(statement).first()
+
+    def list_by_session_id(self, session_id: int) -> list[InterviewEvaluation]:
+        statement = select(InterviewEvaluation).where(
+            InterviewEvaluation.session_id == session_id,
+            InterviewEvaluation.status != "deleted",
+        )
+        return list(self.db.scalars(statement).all())
+    
+    def soft_delete(self, evaluation: InterviewEvaluation) -> InterviewEvaluation:
+        evaluation.status = "deleted"
+        self.db.flush()
+        return evaluation   

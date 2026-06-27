@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS interview_messages (
   round_no INT NOT NULL DEFAULT 0,
   content TEXT NOT NULL,
   raw_response JSON NULL,
+  status VARCHAR(20) NOT NULL DEFAULT 'normal',
   create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   CONSTRAINT fk_interview_messages_session
     FOREIGN KEY (session_id) REFERENCES interview_sessions(id)
@@ -33,7 +34,12 @@ CREATE TABLE IF NOT EXISTS interview_evaluations (
   strengths TEXT NULL,
   weaknesses TEXT NULL,
   suggestions TEXT NULL,
+  technical_ability TEXT NULL,
+  project_experience TEXT NULL,
+  communication TEXT NULL,
+  improvement_suggestions TEXT NULL,
   summary TEXT NULL,
+  status VARCHAR(20) NOT NULL DEFAULT 'normal',
   create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   CONSTRAINT fk_interview_evaluations_session
     FOREIGN KEY (session_id) REFERENCES interview_sessions(id)
@@ -46,5 +52,11 @@ CREATE INDEX idx_interview_sessions_session_uid
 CREATE INDEX idx_interview_messages_session_round
   ON interview_messages(session_id, round_no);
 
+CREATE INDEX idx_interview_messages_session_status
+  ON interview_messages(session_id, status);
+
 CREATE INDEX idx_interview_evaluations_session
   ON interview_evaluations(session_id);
+
+CREATE INDEX idx_interview_evaluations_session_status
+  ON interview_evaluations(session_id, status);

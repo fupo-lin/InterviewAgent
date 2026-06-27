@@ -8,7 +8,7 @@ from app.repository.interview_repository import (
     InterviewMessageRepository,
     InterviewSessionRepository,
 )
-from app.schemas.interview import EvaluationResponse, HistoryResponse, MessageResponse
+from app.schemas.interview import DeleteResponse, EvaluationResponse, HistoryResponse, MessageResponse
 from app.service.llm_service import LLMService
 
 
@@ -75,6 +75,10 @@ class InterviewService:
             weaknesses=evaluation["weaknesses"],
             suggestions=evaluation["suggestions"],
             summary=evaluation.get("summary"),
+            technical_ability=evaluation.get("technical_ability"),
+            project_experience=evaluation.get("project_experience"),
+            communication=evaluation.get("communication"),
+            improvement_suggestions=evaluation.get("improvement_suggestions"),
         )
         self.session_repo.mark_finished(session)
         self.db.commit()
@@ -100,6 +104,24 @@ class InterviewService:
             ],
             evaluation=self._evaluation_to_response(evaluation) if evaluation else None,
         )
+    
+    def delete(self, session_uid: str) -> DeleteResponse:
+        session = self._get_session(session_uid)
+        existing_messages = self.message_repo.list_by_session_id(session.id)
+        existing_evaluations = self.evaluation_repo.list_by_session_id(session.id)
+
+        if existing_messages:
+            for message in existing_messages:
+                self.message_repo.soft_delete(message)
+
+        if existing_evaluations:
+            for evaluation in existing_evaluations:
+                self.evaluation_repo.soft_delete(evaluation)
+
+        self.session_repo.soft_delete(session)
+        self.db.commit()
+        return DeleteResponse(success=True)
+
 
     def _get_session(self, session_uid: str):
         session = self.session_repo.get_by_uid(session_uid)
@@ -118,5 +140,9 @@ class InterviewService:
             strengths=evaluation.strengths or "",
             weaknesses=evaluation.weaknesses or "",
             suggestions=evaluation.suggestions or "",
+            technicalAbility=evaluation.technical_ability or "",
+            projectExperience=evaluation.project_experience or "",
+            communication=evaluation.communication or "",
+            improvementSuggestions=evaluation.improvement_suggestions or "",
             summary=evaluation.summary,
         )
