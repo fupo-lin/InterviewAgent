@@ -33,6 +33,10 @@ class InterviewSession(Base):
         back_populates="session",
         cascade="all, delete-orphan",
     )
+    summaries: Mapped[list["InterviewSummary"]] = relationship(
+        back_populates="session",
+        cascade="all, delete-orphan",
+    )
 
 
 class InterviewMessage(Base):
@@ -69,3 +73,19 @@ class InterviewEvaluation(Base):
     create_time: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
 
     session: Mapped[InterviewSession] = relationship(back_populates="evaluations")
+
+
+class InterviewSummary(Base):
+    __tablename__ = "interview_summaries"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    session_id: Mapped[int] = mapped_column(ForeignKey("interview_sessions.id"), nullable=False)
+    summary_type: Mapped[str] = mapped_column(String(30), default="conversation", nullable=False)
+    from_round_no: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    to_round_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    raw_response: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="normal", nullable=False)
+    create_time: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
+
+    session: Mapped[InterviewSession] = relationship(back_populates="summaries")

@@ -30,6 +30,8 @@ class LLMService:
         role_name: str,
         user_answer: str,
         history: list[InterviewMessage],
+        candidate_profile: str | None = None,
+        conversation_summary: str | None = None,
     ) -> tuple[str, dict | None]:
         prompt = load_prompt("interviewer.txt", role_name=role_name)
         followup_prompt = load_prompt("followup.txt", user_answer=user_answer)
@@ -37,13 +39,21 @@ class LLMService:
             return self._mock_followup(user_answer), {"mock": True}
 
         messages = [{"role": "system", "content": prompt}]
-        for item in history[-12:]:
+        context = self._build_memory_context(candidate_profile, conversation_summary)
+        if context:
+            messages.append({"role": "system", "content": context})
+        for item in history:
             role = "assistant" if item.role_type == "assistant" else "user"
             messages.append({"role": role, "content": item.content})
         messages.append({"role": "user", "content": followup_prompt})
         return await self._chat_completion(messages)
 
-    async def generate_evaluation(self, history: list[InterviewMessage]) -> tuple[dict[str, str], dict | None]:
+    async def generate_evaluation(
+        self,
+        history: list[InterviewMessage],
+        candidate_profile: str | None = None,
+        conversation_summary: str | None = None,
+    ) -> tuple[dict[str, str], dict | None]:
         prompt = load_prompt("evaluation.txt")
         transcript = "\n".join(
             f"{item.role_type}({item.message_type}, round {item.round_no}): {item.content}"
@@ -52,13 +62,53 @@ class LLMService:
         if not self.api_key:
             return self._mock_evaluation(history), {"mock": True}
 
+        messages = [{"role": "system", "content": prompt}]
+        context = self._build_memory_context(candidate_profile, conversation_summary)
+        if context:
+            messages.append({"role": "system", "content": context})
+        messages.append({"role": "user", "content": transcript})
         content, raw_response = await self._chat_completion(
-            [
-                {"role": "system", "content": prompt},
-                {"role": "user", "content": transcript},
-            ]
+            messages
         )
         return self._parse_evaluation(content), raw_response
+
+    async def generate_candidate_profile(
+        self,
+        previous_profile: str | None,
+        new_messages: list[InterviewMessage],
+    ) -> tuple[str, dict | None]:
+        transcript = self._format_transcript(new_messages)
+        if not transcript:
+            return previous_profile or "", {"mock": True}
+
+        prompt = load_prompt(
+            "candidate_profile.txt",
+            previous_profile=previous_profile or "暂无",
+            new_transcript=transcript,
+        )
+        if not self.api_key:
+            return self._mock_candidate_profile(previous_profile, new_messages), {"mock": True}
+
+        return await self._chat_completion([{"role": "user", "content": prompt}])
+
+    async def generate_conversation_summary(
+        self,
+        previous_summary: str | None,
+        new_messages: list[InterviewMessage],
+    ) -> tuple[str, dict | None]:
+        transcript = self._format_transcript(new_messages)
+        if not transcript:
+            return previous_summary or "", {"mock": True}
+
+        prompt = load_prompt(
+            "conversation_summary.txt",
+            previous_summary=previous_summary or "暂无",
+            new_transcript=transcript,
+        )
+        if not self.api_key:
+            return self._mock_conversation_summary(previous_summary, new_messages), {"mock": True}
+
+        return await self._chat_completion([{"role": "user", "content": prompt}])
 
     async def _chat_completion(self, messages: list[dict[str, str]]) -> tuple[str, dict | None]:
         payload = {"model": self.model, "messages": messages, "temperature": 0.7}
@@ -73,6 +123,22 @@ class LLMService:
             data = response.json()
         content = data["choices"][0]["message"]["content"]
         return content, data
+
+    def _format_transcript(self, messages: list[InterviewMessage]) -> str:
+        return "\n".join(
+            f"{item.role_type}({item.message_type}, round {item.round_no}): {item.content}"
+            for item in messages
+        )
+
+    def _build_memory_context(self, candidate_profile: str | None, conversation_summary: str | None) -> str:
+        parts = []
+        if candidate_profile:
+            parts.append(f"候选人稳定画像 CandidateProfile：\n{candidate_profile}")
+        if conversation_summary:
+            parts.append(f"面试对话摘要 ConversationSummary：\n{conversation_summary}")
+        if not parts:
+            return ""
+        return "\n\n".join(parts)
 
 # 
     def _parse_evaluation(self, content: str) -> dict[str, str]:
@@ -153,3 +219,14 @@ class LLMService:
             "communication": "表达能够覆盖项目背景和处理思路，建议进一步使用问题、行动、结果的结构提升信息密度。",
             "improvement_suggestions": "建议准备可量化项目案例，补充架构图、关键指标、故障复盘和技术取舍，并用 STAR 方式组织回答。",
         }
+
+    def _mock_candidate_profile(self, previous_profile: str | None, messages: list[InterviewMessage]) -> str:
+        user_messages = [item.content for item in messages if item.role_type == "user"]
+        latest = user_messages[-1] if user_messages else "暂无新增候选人回答"
+        prefix = previous_profile.strip() + "\n" if previous_profile else ""
+        return f"{prefix}候选人近期提到的稳定经历或技术背景包括：{latest[:200]}"
+
+    def _mock_conversation_summary(self, previous_summary: str | None, messages: list[InterviewMessage]) -> str:
+        rounds = sorted({item.round_no for item in messages})
+        prefix = previous_summary.strip() + "\n" if previous_summary else ""
+        return f"{prefix}已覆盖第 {rounds[0]} 到第 {rounds[-1]} 轮对话，后续应避免重复已问内容，并继续深挖回答中的技术细节、项目贡献和结果数据。"
