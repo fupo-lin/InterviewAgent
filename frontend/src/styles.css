@@ -215,6 +215,10 @@ textarea:focus {
   margin: 0 0 8px;
 }
 
+.evaluation-summary {
+  grid-column: 1 / -1;
+}
+
 .composer {
   background: #ffffff;
   border: 1px solid #dbe3ea;

@@ -1,9 +1,10 @@
 import { FormEvent, useMemo, useState } from "react";
-import { History, Loader2, MessageCircle, Play, Send, Square } from "lucide-react";
+import { History, Loader2, MessageCircle, Play, Send, Square, Trash2 } from "lucide-react";
 
 import {
   ChatMessage,
   Evaluation,
+  deleteInterview,
   endInterview,
   getHistory,
   sendMessage,
@@ -126,6 +127,27 @@ function App() {
     }
   }
 
+  async function handleDelete() {
+    const id = sessionId || historySessionId.trim();
+    if (!id) return;
+
+    setLoading(true);
+    setError("");
+    try {
+      await deleteInterview(id);
+      setSessionId("");
+      setHistorySessionId("");
+      setMessages([]);
+      setEvaluation(null);
+      setStatus("idle");
+      setInput("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "删除会话失败");
+    } finally {
+      setLoading(false);
+    }
+  }
+
   return (
     <main className="app-shell">
       <aside className="sidebar">
@@ -160,6 +182,10 @@ function App() {
           <button type="button" onClick={handleLoadHistory} disabled={loading || !historySessionId.trim()}>
             <History size={18} />
             查询历史
+          </button>
+          <button type="button" onClick={handleDelete} disabled={loading || (!sessionId && !historySessionId.trim())}>
+            <Trash2 size={18} />
+            删除会话
           </button>
         </section>
 
@@ -201,19 +227,23 @@ function App() {
             <h2>综合评价</h2>
             <div className="evaluation-grid">
               <div>
-                <h3>优势</h3>
-                <p>{evaluation.strengths}</p>
+                <h3>技术能力</h3>
+                <p>{evaluation.technicalAbility || evaluation.strengths}</p>
               </div>
               <div>
-                <h3>不足</h3>
-                <p>{evaluation.weaknesses}</p>
+                <h3>项目经验</h3>
+                <p>{evaluation.projectExperience || evaluation.weaknesses}</p>
+              </div>
+              <div>
+                <h3>沟通表达</h3>
+                <p>{evaluation.communication || evaluation.strengths}</p>
               </div>
               <div>
                 <h3>改进建议</h3>
-                <p>{evaluation.suggestions}</p>
+                <p>{evaluation.improvementSuggestions || evaluation.suggestions}</p>
               </div>
               {evaluation.summary && (
-                <div>
+                <div className="evaluation-summary">
                   <h3>总结</h3>
                   <p>{evaluation.summary}</p>
                 </div>
