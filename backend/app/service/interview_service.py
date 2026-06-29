@@ -10,6 +10,7 @@ from app.repository.interview_repository import (
     InterviewSessionRepository,
     InterviewSummaryRepository,
 )
+from app.repository.preparation_repository import InterviewPlanRepository, PreparationProjectRepository
 from app.schemas.interview import DeleteResponse, EvaluationResponse, HistoryResponse, MessageResponse
 from app.service.llm_service import LLMService
 
@@ -24,12 +25,49 @@ class InterviewService:
         self.message_repo = InterviewMessageRepository(db)
         self.evaluation_repo = InterviewEvaluationRepository(db)
         self.summary_repo = InterviewSummaryRepository(db)
+        self.project_repo = PreparationProjectRepository(db)
+        self.plan_repo = InterviewPlanRepository(db)
         self.llm = LLMService()
 
     async def start(self, role_name: str) -> tuple[str, str]:
         session_uid = uuid4().hex
         session = self.session_repo.create(session_uid=session_uid, role_name=role_name)
         reply, raw_response = await self.llm.generate_first_question(role_name)
+        self.message_repo.create(
+            session_id=session.id,
+            role_type="assistant",
+            message_type="question",
+            round_no=1,
+            content=reply,
+            raw_response=raw_response,
+        )
+        self.db.commit()
+        return session.session_uid, reply
+
+    async def start_with_project(self, project_uid: str) -> tuple[str, str]:
+        project = self.project_repo.get_by_uid(project_uid)
+        if not project:
+            raise HTTPException(status_code=404, detail="Preparation project not found")
+
+        plan = self.plan_repo.get_latest_by_project_id(project.id)
+        if not plan:
+            raise HTTPException(status_code=400, detail="Interview plan is required before starting interview")
+
+        role_name = self._role_name_from_plan(project.target_role, plan.content)
+        session_uid = uuid4().hex
+        session = self.session_repo.create(
+            session_uid=session_uid,
+            role_name=role_name,
+            project_id=project.id,
+            interview_plan_id=plan.id,
+        )
+        reply = self._first_question_from_plan(plan.content)
+        raw_response = {"source": "interview_plan", "planId": plan.id}
+        if not reply:
+            reply, raw_response = await self.llm.generate_first_question(
+                role_name,
+                plan_context=self._plan_context(plan),
+            )
         self.message_repo.create(
             session_id=session.id,
             role_type="assistant",
@@ -57,12 +95,14 @@ class InterviewService:
         candidate_profile = self.summary_repo.get_latest_by_session_id(session.id, "candidate_profile")
         conversation_summary = self.summary_repo.get_latest_by_session_id(session.id, "conversation")
         recent_history = self.message_repo.list_recent_rounds(session.id, rounds=4)
+        plan_context = self._session_plan_context(session)
         reply, raw_response = await self.llm.generate_followup(
             session.role_name,
             message,
             recent_history,
             candidate_profile=candidate_profile.content if candidate_profile else None,
             conversation_summary=conversation_summary.content if conversation_summary else None,
+            plan_context=plan_context,
         )
         self.message_repo.create(
             session_id=session.id,
@@ -90,6 +130,7 @@ class InterviewService:
             history,
             candidate_profile=candidate_profile.content if candidate_profile else None,
             conversation_summary=conversation_summary.content if conversation_summary else None,
+            plan_context=self._session_plan_context(session),
         )
         saved = self.evaluation_repo.create(
             session_id=session.id,
@@ -216,6 +257,37 @@ class InterviewService:
         if latest_completed_round_no <= 15:
             return self.message_repo.list_by_session_id(session_id)
         return self.message_repo.list_recent_rounds(session_id, rounds=8)
+
+    def _session_plan_context(self, session) -> str | None:
+        if not session.interview_plan_id:
+            return None
+        plan = self.plan_repo.get_by_id(session.interview_plan_id)
+        return self._plan_context(plan) if plan else None
+
+    def _plan_context(self, plan) -> str:
+        content = plan.content or {}
+        return (
+            f"InterviewPlan mode: {plan.plan_mode}\n"
+            f"Role: {content.get('role_name') or content.get('roleName') or ''}\n"
+            f"Sections: {content.get('sections', [])}\n"
+            f"Evaluation rubric: {content.get('evaluation_rubric') or content.get('evaluationRubric') or []}"
+        )
+
+    def _first_question_from_plan(self, plan_content: dict) -> str | None:
+        sections = plan_content.get("sections") or []
+        if not sections:
+            return None
+        first_section = sections[0]
+        questions = first_section.get("seed_questions") or first_section.get("seedQuestions") or []
+        return questions[0] if questions else None
+
+    def _role_name_from_plan(self, target_role: str | None, plan_content: dict) -> str:
+        return (
+            target_role
+            or plan_content.get("role_name")
+            or plan_content.get("roleName")
+            or "目标岗位"
+        )
 
 
     def _get_session(self, session_uid: str):

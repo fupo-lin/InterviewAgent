@@ -14,16 +14,20 @@ class LLMService:
         self.api_base = settings.glm_api_base.rstrip("/")
         self.model = settings.glm_model
 
-    async def generate_first_question(self, role_name: str) -> tuple[str, dict | None]:
+    async def generate_first_question(
+        self,
+        role_name: str,
+        plan_context: str | None = None,
+    ) -> tuple[str, dict | None]:
         prompt = load_prompt("interviewer.txt", role_name=role_name)
         if not self.api_key:
             return self._mock_first_question(role_name), {"mock": True}
-        return await self._chat_completion(
-            [
-                {"role": "system", "content": prompt},
-                {"role": "user", "content": "请开始本次模拟面试，提出第一道问题。"},
-            ]
-        )
+
+        messages = [{"role": "system", "content": prompt}]
+        if plan_context:
+            messages.append({"role": "system", "content": plan_context})
+        messages.append({"role": "user", "content": "请开始本次模拟面试，提出第一道问题。"})
+        return await self._chat_completion(messages)
 
     async def generate_followup(
         self,
@@ -32,6 +36,7 @@ class LLMService:
         history: list[InterviewMessage],
         candidate_profile: str | None = None,
         conversation_summary: str | None = None,
+        plan_context: str | None = None,
     ) -> tuple[str, dict | None]:
         prompt = load_prompt("interviewer.txt", role_name=role_name)
         followup_prompt = load_prompt("followup.txt", user_answer=user_answer)
@@ -42,6 +47,8 @@ class LLMService:
         context = self._build_memory_context(candidate_profile, conversation_summary)
         if context:
             messages.append({"role": "system", "content": context})
+        if plan_context:
+            messages.append({"role": "system", "content": plan_context})
         for item in history:
             role = "assistant" if item.role_type == "assistant" else "user"
             messages.append({"role": role, "content": item.content})
@@ -53,12 +60,10 @@ class LLMService:
         history: list[InterviewMessage],
         candidate_profile: str | None = None,
         conversation_summary: str | None = None,
+        plan_context: str | None = None,
     ) -> tuple[dict[str, str], dict | None]:
         prompt = load_prompt("evaluation.txt")
-        transcript = "\n".join(
-            f"{item.role_type}({item.message_type}, round {item.round_no}): {item.content}"
-            for item in history
-        )
+        transcript = self._format_transcript(history)
         if not self.api_key:
             return self._mock_evaluation(history), {"mock": True}
 
@@ -66,10 +71,10 @@ class LLMService:
         context = self._build_memory_context(candidate_profile, conversation_summary)
         if context:
             messages.append({"role": "system", "content": context})
+        if plan_context:
+            messages.append({"role": "system", "content": plan_context})
         messages.append({"role": "user", "content": transcript})
-        content, raw_response = await self._chat_completion(
-            messages
-        )
+        content, raw_response = await self._chat_completion(messages)
         return self._parse_evaluation(content), raw_response
 
     async def generate_candidate_profile(
@@ -110,6 +115,56 @@ class LLMService:
 
         return await self._chat_completion([{"role": "user", "content": prompt}])
 
+    async def generate_jd_analysis(self, jd_content: str) -> tuple[dict, dict | None]:
+        prompt = load_prompt("jd_analysis.txt", jd_content=jd_content)
+        if not self.api_key:
+            return self._mock_jd_analysis(jd_content), {"mock": True}
+
+        content, raw_response = await self._chat_completion([{"role": "user", "content": prompt}])
+        return self._parse_json_object(content, {"raw_text": content}), raw_response
+
+    async def generate_resume_profile(self, resume_content: str) -> tuple[dict, dict | None]:
+        prompt = load_prompt("resume_analysis.txt", resume_content=resume_content)
+        if not self.api_key:
+            return self._mock_resume_profile(resume_content), {"mock": True}
+
+        content, raw_response = await self._chat_completion([{"role": "user", "content": prompt}])
+        return self._parse_json_object(content, {"raw_text": content}), raw_response
+
+    async def generate_gap_analysis(self, jd_analysis: dict, resume_profile: dict) -> tuple[dict, dict | None]:
+        prompt = load_prompt(
+            "gap_analysis.txt",
+            jd_analysis=json.dumps(jd_analysis, ensure_ascii=False),
+            resume_profile=json.dumps(resume_profile, ensure_ascii=False),
+        )
+        if not self.api_key:
+            return self._mock_gap_analysis(), {"mock": True}
+
+        content, raw_response = await self._chat_completion([{"role": "user", "content": prompt}])
+        return self._parse_json_object(content, {"raw_text": content}), raw_response
+
+    async def generate_interview_plan(
+        self,
+        plan_mode: str,
+        jd_analysis: dict | None = None,
+        resume_profile: dict | None = None,
+        gap_analysis: dict | None = None,
+        target_role: str | None = None,
+    ) -> tuple[dict, dict | None]:
+        prompt = load_prompt(
+            "interview_plan.txt",
+            plan_mode=plan_mode,
+            target_role=target_role or "目标岗位",
+            jd_analysis=json.dumps(jd_analysis or {}, ensure_ascii=False),
+            resume_profile=json.dumps(resume_profile or {}, ensure_ascii=False),
+            gap_analysis=json.dumps(gap_analysis or {}, ensure_ascii=False),
+        )
+        if not self.api_key:
+            return self._mock_interview_plan(plan_mode, target_role, jd_analysis, resume_profile), {"mock": True}
+
+        content, raw_response = await self._chat_completion([{"role": "user", "content": prompt}])
+        return self._parse_json_object(content, {"raw_text": content}), raw_response
+
     async def _chat_completion(self, messages: list[dict[str, str]]) -> tuple[str, dict | None]:
         payload = {"model": self.model, "messages": messages, "temperature": 0.7}
         headers = {"Authorization": f"Bearer {self.api_key}"}
@@ -133,27 +188,15 @@ class LLMService:
     def _build_memory_context(self, candidate_profile: str | None, conversation_summary: str | None) -> str:
         parts = []
         if candidate_profile:
-            parts.append(f"候选人稳定画像 CandidateProfile：\n{candidate_profile}")
+            parts.append(f"候选人稳定画像 CandidateProfile:\n{candidate_profile}")
         if conversation_summary:
-            parts.append(f"面试对话摘要 ConversationSummary：\n{conversation_summary}")
-        if not parts:
-            return ""
+            parts.append(f"面试对话摘要 ConversationSummary:\n{conversation_summary}")
         return "\n\n".join(parts)
 
-# 
     def _parse_evaluation(self, content: str) -> dict[str, str]:
-        text = content.strip()  # 1. 去除首尾的空白字符或换行符
-        try:
-            parsed = json.loads(text) # 2. 尝试直接解析（最理想的情况：大模型返回了完美的纯 JSON）
-        except json.JSONDecodeError:
-            json_text = self._extract_json_text(text) 
-            if json_text is None:
-                return self._fallback_evaluation(content)
-
-            try:
-                parsed = json.loads(json_text)
-            except json.JSONDecodeError:
-                return self._fallback_evaluation(content)
+        parsed = self._parse_json_object(content, {})
+        if not parsed:
+            return self._fallback_evaluation(content)
 
         return {
             "strengths": str(parsed.get("strengths", "")),
@@ -168,21 +211,31 @@ class LLMService:
             ),
         }
 
-#
+    def _parse_json_object(self, content: str, fallback: dict) -> dict:
+        text = content.strip()
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            json_text = self._extract_json_text(text)
+            if json_text is None:
+                return fallback
+            try:
+                parsed = json.loads(json_text)
+            except json.JSONDecodeError:
+                return fallback
+        return parsed if isinstance(parsed, dict) else fallback
+
     def _extract_json_text(self, content: str) -> str | None:
         fenced = re.search(r"```(?:json)?\s*(.*?)\s*```", content, flags=re.IGNORECASE | re.DOTALL)
-        #  优先使用正则表达式，匹配 Markdown 的代码块 (```json ... ``` 或 ``` ... ```) re.DOTALL 表示让 . 可以匹配换行符，确保跨行匹配
         if fenced:
-            return fenced.group(1).strip()  # 提取代码块里的内容并去除空白
+            return fenced.group(1).strip()
 
         start = content.find("{")
         end = content.rfind("}")
         if start != -1 and end != -1 and end > start:
-            return content[start : end + 1] # 把从第一个 { 到最后一个 } 之间的内容全切出来
-
+            return content[start : end + 1]
         return None
 
-# 兜底方案 --  把大模型的返回内容直接放到 summary 字段里，其他字段为空字符串
     def _fallback_evaluation(self, content: str) -> dict[str, str]:
         return {
             "strengths": "",
@@ -214,10 +267,10 @@ class LLMService:
             "weaknesses": "部分回答还可以继续补充量化指标、故障处理细节和设计取舍。",
             "suggestions": "建议准备 1 到 2 个完整项目案例，重点补充架构图、核心难点、性能数据和复盘结果。",
             "summary": "整体具备继续面试评估的基础，后续可以加深技术细节和系统设计深度。",
-            "technical_ability": "已能围绕技术方案展开回答，但还需要补充底层原理、边界条件和性能数据来证明技术深度。",
-            "project_experience": f"本次共有 {answer_count} 轮候选人回答，项目描述具备基础脉络，后续建议强化个人贡献、业务影响和复盘结果。",
-            "communication": "表达能够覆盖项目背景和处理思路，建议进一步使用问题、行动、结果的结构提升信息密度。",
-            "improvement_suggestions": "建议准备可量化项目案例，补充架构图、关键指标、故障复盘和技术取舍，并用 STAR 方式组织回答。",
+            "technical_ability": "已能围绕技术方案展开回答，但还需要补充底层原理、边界条件和性能数据。",
+            "project_experience": f"本次共有 {answer_count} 轮候选人回答，项目描述具备基础脉络。",
+            "communication": "表达能够覆盖项目背景和处理思路，建议进一步提升信息密度。",
+            "improvement_suggestions": "建议准备可量化项目案例，并用 STAR 方式组织回答。",
         }
 
     def _mock_candidate_profile(self, previous_profile: str | None, messages: list[InterviewMessage]) -> str:
@@ -229,4 +282,82 @@ class LLMService:
     def _mock_conversation_summary(self, previous_summary: str | None, messages: list[InterviewMessage]) -> str:
         rounds = sorted({item.round_no for item in messages})
         prefix = previous_summary.strip() + "\n" if previous_summary else ""
-        return f"{prefix}已覆盖第 {rounds[0]} 到第 {rounds[-1]} 轮对话，后续应避免重复已问内容，并继续深挖回答中的技术细节、项目贡献和结果数据。"
+        return f"{prefix}已覆盖第 {rounds[0]} 到第 {rounds[-1]} 轮对话，后续应避免重复已问内容。"
+
+    def _mock_jd_analysis(self, jd_content: str) -> dict:
+        return {
+            "job_title": "目标岗位",
+            "seniority": "unknown",
+            "core_responsibilities": [jd_content[:120]],
+            "required_skills": [],
+            "preferred_skills": [],
+            "interview_focus": ["岗位核心职责", "项目经验", "技术深度", "问题排查能力"],
+        }
+
+    def _mock_resume_profile(self, resume_content: str) -> dict:
+        return {
+            "target_role": "unknown",
+            "projects": [{"name": "简历项目", "summary": resume_content[:160]}],
+            "skills": [],
+            "strengths": ["具备可继续深挖的项目经历"],
+            "risks": ["需要补充量化指标、个人贡献和技术取舍"],
+        }
+
+    def _mock_gap_analysis(self) -> dict:
+        return {
+            "overall_match_level": "unknown",
+            "match_score": 0,
+            "matched_points": [],
+            "gap_points": [
+                {
+                    "jd_requirement": "岗位核心要求",
+                    "resume_current_evidence": "需要通过面试继续验证",
+                    "gap_level": "medium",
+                    "interview_probe": "围绕项目证据、技术深度和岗位要求进行追问",
+                }
+            ],
+            "interview_priorities": ["验证 JD 要求和简历证据是否匹配"],
+        }
+
+    def _mock_interview_plan(
+        self,
+        plan_mode: str,
+        target_role: str | None,
+        jd_analysis: dict | None,
+        resume_profile: dict | None,
+    ) -> dict:
+        role_name = target_role or (jd_analysis or {}).get("job_title") or (resume_profile or {}).get("target_role") or "目标岗位"
+        if plan_mode == "jd_only":
+            seed = f"针对{role_name}这个岗位，你认为自己最匹配的一段项目经历是什么？请先介绍背景和你的职责。"
+        elif plan_mode == "resume_only":
+            seed = "请从简历中选择一个最能体现你技术深度的项目，说明项目背景、你的职责和核心难点。"
+        else:
+            seed = f"结合目标岗位{role_name}，请介绍一个你简历中最能证明岗位匹配度的项目。"
+        return {
+            "plan_mode": plan_mode,
+            "role_name": role_name,
+            "total_round_target": 10,
+            "sections": [
+                {
+                    "section_key": "project_depth",
+                    "title": "项目深挖",
+                    "target_rounds": 4,
+                    "goals": ["验证项目真实性", "确认个人贡献", "深挖技术取舍"],
+                    "seed_questions": [seed],
+                    "probe_points": ["项目背景", "个人贡献", "技术方案", "结果指标"],
+                },
+                {
+                    "section_key": "technical_depth",
+                    "title": "技术深度",
+                    "target_rounds": 3,
+                    "goals": ["验证底层理解", "验证边界场景", "验证问题排查能力"],
+                    "seed_questions": [],
+                    "probe_points": ["底层原理", "性能瓶颈", "异常处理", "线上稳定性"],
+                },
+            ],
+            "evaluation_rubric": [
+                {"dimension": "technical_depth", "weight": 35},
+                {"dimension": "project_experience", "weight": 35},
+                {"dimension": "communication", "weight": 30},
+            ],
+        }

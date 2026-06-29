@@ -9,8 +9,20 @@ class InterviewSessionRepository:
         self.db = db
 
 #
-    def create(self, session_uid: str, role_name: str) -> InterviewSession:
-        session = InterviewSession(session_uid=session_uid, role_name=role_name, status="active") # 在内存中创建一个Python对象
+    def create(
+        self,
+        session_uid: str,
+        role_name: str,
+        project_id: int | None = None,
+        interview_plan_id: int | None = None,
+    ) -> InterviewSession:
+        session = InterviewSession(
+            session_uid=session_uid,
+            role_name=role_name,
+            project_id=project_id,
+            interview_plan_id=interview_plan_id,
+            status="active",
+        ) # 在内存中创建一个Python对象
         self.db.add(session) # 加入Session的工作区，此时还没有进入数据库
         self.db.flush() # flush()会把内存中的对象同步到数据库中，但不会提交事务。此时session.id就有值了
         return session #返回带有 ID 的对象供后续使用

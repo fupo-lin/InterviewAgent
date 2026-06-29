@@ -12,6 +12,8 @@ class InterviewSession(Base):
     __tablename__ = "interview_sessions"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    project_id: Mapped[int | None] = mapped_column(ForeignKey("preparation_projects.id"), nullable=True)
+    interview_plan_id: Mapped[int | None] = mapped_column(ForeignKey("interview_plans.id"), nullable=True)
     session_uid: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
     role_name: Mapped[str] = mapped_column(String(50), nullable=False)
     status: Mapped[str] = mapped_column(String(20), default="active", nullable=False)
