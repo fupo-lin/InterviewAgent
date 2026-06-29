@@ -129,3 +129,33 @@ class ProjectCandidateProfile(Base):
     raw_response: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     status: Mapped[str] = mapped_column(String(20), default="normal", nullable=False)
     create_time: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
+
+
+class ResumeAuthenticityReport(Base):
+    __tablename__ = "resume_authenticity_reports"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("preparation_projects.id"), nullable=False)
+    resume_id: Mapped[int] = mapped_column(ForeignKey("resume_documents.id"), nullable=False)
+    session_id: Mapped[int | None] = mapped_column(ForeignKey("interview_sessions.id"), nullable=True)
+    content: Mapped[dict] = mapped_column(JSON, nullable=False)
+    raw_response: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="normal", nullable=False)
+    create_time: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
+
+
+class ResumeRewriteResult(Base):
+    __tablename__ = "resume_rewrite_results"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("preparation_projects.id"), nullable=False)
+    resume_id: Mapped[int] = mapped_column(ForeignKey("resume_documents.id"), nullable=False)
+    authenticity_report_id: Mapped[int | None] = mapped_column(
+        ForeignKey("resume_authenticity_reports.id"),
+        nullable=True,
+    )
+    rewrite_mode: Mapped[str] = mapped_column(String(30), nullable=False)
+    content: Mapped[dict] = mapped_column(JSON, nullable=False)
+    raw_response: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="normal", nullable=False)
+    create_time: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)

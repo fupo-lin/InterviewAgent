@@ -10,8 +10,10 @@ from app.models.preparation import (
     JobDescription,
     PreparationProject,
     ProjectCandidateProfile,
+    ResumeAuthenticityReport,
     ResumeDocument,
     ResumeProfile,
+    ResumeRewriteResult,
 )
 
 
@@ -233,6 +235,54 @@ class ProjectCandidateProfileRepository(BaseProjectRepository):
         item = ProjectCandidateProfile(
             project_id=project_id,
             source_session_id=source_session_id,
+            content=content,
+            raw_response=raw_response,
+        )
+        self.db.add(item)
+        self.db.flush()
+        return item
+
+
+class ResumeAuthenticityReportRepository(BaseProjectRepository):
+    model = ResumeAuthenticityReport
+
+    def create(
+        self,
+        project_id: int,
+        resume_id: int,
+        content: dict,
+        session_id: int | None = None,
+        raw_response: dict | None = None,
+    ) -> ResumeAuthenticityReport:
+        item = ResumeAuthenticityReport(
+            project_id=project_id,
+            resume_id=resume_id,
+            session_id=session_id,
+            content=content,
+            raw_response=raw_response,
+        )
+        self.db.add(item)
+        self.db.flush()
+        return item
+
+
+class ResumeRewriteResultRepository(BaseProjectRepository):
+    model = ResumeRewriteResult
+
+    def create(
+        self,
+        project_id: int,
+        resume_id: int,
+        rewrite_mode: str,
+        content: dict,
+        authenticity_report_id: int | None = None,
+        raw_response: dict | None = None,
+    ) -> ResumeRewriteResult:
+        item = ResumeRewriteResult(
+            project_id=project_id,
+            resume_id=resume_id,
+            authenticity_report_id=authenticity_report_id,
+            rewrite_mode=rewrite_mode,
             content=content,
             raw_response=raw_response,
         )

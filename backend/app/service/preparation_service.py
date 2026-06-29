@@ -10,8 +10,10 @@ from app.repository.preparation_repository import (
     JobDescriptionRepository,
     PreparationProjectRepository,
     ProjectCandidateProfileRepository,
+    ResumeAuthenticityReportRepository,
     ResumeDocumentRepository,
     ResumeProfileRepository,
+    ResumeRewriteResultRepository,
 )
 from app.repository.interview_repository import (
     InterviewEvaluationRepository,
@@ -27,8 +29,10 @@ from app.schemas.preparation import (
     ProjectCandidateProfileResponse,
     ProjectOverviewResponse,
     ProjectResponse,
+    ResumeAuthenticityResponse,
     ResumeDocumentResponse,
     ResumeProfileResponse,
+    ResumeRewriteResponse,
 )
 from app.service.llm_service import LLMService
 
@@ -44,6 +48,8 @@ class PreparationService:
         self.gap_repo = GapAnalysisRepository(db)
         self.plan_repo = InterviewPlanRepository(db)
         self.candidate_profile_repo = ProjectCandidateProfileRepository(db)
+        self.authenticity_repo = ResumeAuthenticityReportRepository(db)
+        self.rewrite_repo = ResumeRewriteResultRepository(db)
         self.interview_session_repo = InterviewSessionRepository(db)
         self.interview_message_repo = InterviewMessageRepository(db)
         self.interview_evaluation_repo = InterviewEvaluationRepository(db)
@@ -222,6 +228,8 @@ class PreparationService:
         gap_analysis = self.gap_repo.get_latest_by_project_id(project.id)
         interview_plan = self.plan_repo.get_latest_by_project_id(project.id)
         candidate_profile = self.candidate_profile_repo.get_latest_by_project_id(project.id)
+        authenticity_report = self.authenticity_repo.get_latest_by_project_id(project.id)
+        rewrite_result = self.rewrite_repo.get_latest_by_project_id(project.id)
         return ProjectOverviewResponse(
             project={
                 "projectId": project.project_uid,
@@ -236,14 +244,13 @@ class PreparationService:
             gapAnalysis=gap_analysis.content if gap_analysis else None,
             interviewPlan=interview_plan.content if interview_plan else None,
             candidateProfile=candidate_profile.content if candidate_profile else None,
+            resumeAuthenticity=authenticity_report.content if authenticity_report else None,
+            resumeRewrite=rewrite_result.content if rewrite_result else None,
         )
 
     async def generate_candidate_profile(self, project_uid: str) -> ProjectCandidateProfileResponse:
         project = self._get_project(project_uid)
-        session = self.interview_session_repo.get_latest_by_project_id(project.id)
-        execution = self.interview_execution_repo.get_latest_by_session_id(session.id) if session else None
-        evaluation = self.interview_evaluation_repo.get_latest_by_session_id(session.id) if session else None
-        messages = self.interview_message_repo.list_by_session_id(session.id) if session else []
+        session, execution, evaluation, messages = self._latest_interview_context(project.id)
         saved = await self.generate_candidate_profile_for_project(
             project.id,
             project.target_role,
@@ -254,6 +261,61 @@ class PreparationService:
         )
         self.db.commit()
         return ProjectCandidateProfileResponse(profileId=saved.id, profile=saved.content)
+
+    async def generate_resume_authenticity(self, project_uid: str) -> ResumeAuthenticityResponse:
+        project = self._get_project(project_uid)
+        resume = self.resume_repo.get_latest_by_project_id(project.id)
+        if not resume:
+            raise HTTPException(status_code=400, detail="Resume is required before authenticity analysis")
+
+        session, execution, evaluation, messages = self._latest_interview_context(project.id)
+        saved = await self.generate_resume_authenticity_for_project(
+            project_id=project.id,
+            resume_id=resume.id,
+            resume_content=resume.raw_content,
+            session_id=session.id if session else None,
+            execution_state=execution.state if execution else None,
+            evaluation=self._evaluation_dict(evaluation) if evaluation else None,
+            transcript_messages=messages,
+        )
+        self.db.commit()
+        return ResumeAuthenticityResponse(reportId=saved.id, report=saved.content)
+
+    async def rewrite_resume(self, project_uid: str, rewrite_mode: str = "jd_targeted") -> ResumeRewriteResponse:
+        project = self._get_project(project_uid)
+        resume = self.resume_repo.get_latest_by_project_id(project.id)
+        if not resume:
+            raise HTTPException(status_code=400, detail="Resume is required before rewrite")
+
+        session, execution, evaluation, messages = self._latest_interview_context(project.id)
+        authenticity_report = self.authenticity_repo.get_latest_by_project_id(project.id)
+        if not authenticity_report:
+            authenticity_report = await self.generate_resume_authenticity_for_project(
+                project_id=project.id,
+                resume_id=resume.id,
+                resume_content=resume.raw_content,
+                session_id=session.id if session else None,
+                execution_state=execution.state if execution else None,
+                evaluation=self._evaluation_dict(evaluation) if evaluation else None,
+                transcript_messages=messages,
+            )
+
+        saved = await self.rewrite_resume_for_project(
+            project_id=project.id,
+            resume_id=resume.id,
+            resume_content=resume.raw_content,
+            rewrite_mode=rewrite_mode,
+            authenticity_report_id=authenticity_report.id if authenticity_report else None,
+            resume_authenticity=authenticity_report.content if authenticity_report else None,
+            execution_state=execution.state if execution else None,
+            evaluation=self._evaluation_dict(evaluation) if evaluation else None,
+        )
+        self.db.commit()
+        return ResumeRewriteResponse(
+            rewriteId=saved.id,
+            rewriteMode=saved.rewrite_mode,
+            result=saved.content,
+        )
 
     async def generate_candidate_profile_for_project(
         self,
@@ -280,6 +342,96 @@ class PreparationService:
         return self.candidate_profile_repo.create(
             project_id=project_id,
             source_session_id=source_session_id,
+            content=content,
+            raw_response=raw_response,
+        )
+
+    async def generate_resume_authenticity_for_project(
+        self,
+        project_id: int,
+        resume_id: int,
+        resume_content: str,
+        session_id: int | None = None,
+        execution_state: dict | None = None,
+        evaluation: dict | None = None,
+        transcript_messages: list | None = None,
+    ):
+        jd_analysis = self.jd_analysis_repo.get_latest_by_project_id(project_id)
+        resume_profile = self.resume_profile_repo.get_latest_by_project_id(project_id)
+        gap_analysis = self.gap_repo.get_latest_by_project_id(project_id)
+        candidate_profile = self.candidate_profile_repo.get_latest_by_project_id(project_id)
+
+        content, raw_response = await self.llm.generate_resume_authenticity_report(
+            resume_content=resume_content,
+            resume_profile=resume_profile.content if resume_profile else None,
+            jd_analysis=jd_analysis.content if jd_analysis else None,
+            gap_analysis=gap_analysis.content if gap_analysis else None,
+            project_candidate_profile=candidate_profile.content if candidate_profile else None,
+            execution_state=execution_state,
+            evaluation=evaluation,
+            transcript_messages=transcript_messages or [],
+        )
+        return self.authenticity_repo.create(
+            project_id=project_id,
+            resume_id=resume_id,
+            session_id=session_id,
+            content=content,
+            raw_response=raw_response,
+        )
+
+    async def generate_resume_authenticity_for_latest_resume(
+        self,
+        project_id: int,
+        session_id: int | None = None,
+        execution_state: dict | None = None,
+        evaluation: dict | None = None,
+        transcript_messages: list | None = None,
+    ):
+        resume = self.resume_repo.get_latest_by_project_id(project_id)
+        if not resume:
+            return None
+        return await self.generate_resume_authenticity_for_project(
+            project_id=project_id,
+            resume_id=resume.id,
+            resume_content=resume.raw_content,
+            session_id=session_id,
+            execution_state=execution_state,
+            evaluation=evaluation,
+            transcript_messages=transcript_messages,
+        )
+
+    async def rewrite_resume_for_project(
+        self,
+        project_id: int,
+        resume_id: int,
+        resume_content: str,
+        rewrite_mode: str,
+        authenticity_report_id: int | None = None,
+        resume_authenticity: dict | None = None,
+        execution_state: dict | None = None,
+        evaluation: dict | None = None,
+    ):
+        jd_analysis = self.jd_analysis_repo.get_latest_by_project_id(project_id)
+        resume_profile = self.resume_profile_repo.get_latest_by_project_id(project_id)
+        gap_analysis = self.gap_repo.get_latest_by_project_id(project_id)
+        candidate_profile = self.candidate_profile_repo.get_latest_by_project_id(project_id)
+
+        content, raw_response = await self.llm.generate_resume_rewrite(
+            rewrite_mode=rewrite_mode,
+            resume_content=resume_content,
+            resume_profile=resume_profile.content if resume_profile else None,
+            jd_analysis=jd_analysis.content if jd_analysis else None,
+            gap_analysis=gap_analysis.content if gap_analysis else None,
+            project_candidate_profile=candidate_profile.content if candidate_profile else None,
+            resume_authenticity=resume_authenticity,
+            evaluation=evaluation,
+            execution_state=execution_state,
+        )
+        return self.rewrite_repo.create(
+            project_id=project_id,
+            resume_id=resume_id,
+            rewrite_mode=rewrite_mode,
+            authenticity_report_id=authenticity_report_id,
             content=content,
             raw_response=raw_response,
         )
@@ -329,6 +481,13 @@ class PreparationService:
             "fileType": resume.file_type,
             "status": resume.status,
         }
+
+    def _latest_interview_context(self, project_id: int):
+        session = self.interview_session_repo.get_latest_by_project_id(project_id)
+        execution = self.interview_execution_repo.get_latest_by_session_id(session.id) if session else None
+        evaluation = self.interview_evaluation_repo.get_latest_by_session_id(session.id) if session else None
+        messages = self.interview_message_repo.list_by_session_id(session.id) if session else []
+        return session, execution, evaluation, messages
 
     def _evaluation_dict(self, evaluation) -> dict:
         return {

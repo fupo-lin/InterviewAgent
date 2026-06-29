@@ -229,6 +229,94 @@ class LLMService:
             ),
         ), raw_response
 
+    async def generate_resume_authenticity_report(
+        self,
+        resume_content: str,
+        resume_profile: dict | None = None,
+        jd_analysis: dict | None = None,
+        gap_analysis: dict | None = None,
+        project_candidate_profile: dict | None = None,
+        execution_state: dict | None = None,
+        evaluation: dict | None = None,
+        transcript_messages: list[InterviewMessage] | None = None,
+    ) -> tuple[dict, dict | None]:
+        prompt = load_prompt(
+            "resume_authenticity.txt",
+            resume_content=resume_content,
+            resume_profile=json.dumps(resume_profile or {}, ensure_ascii=False),
+            jd_analysis=json.dumps(jd_analysis or {}, ensure_ascii=False),
+            gap_analysis=json.dumps(gap_analysis or {}, ensure_ascii=False),
+            project_candidate_profile=json.dumps(project_candidate_profile or {}, ensure_ascii=False),
+            execution_state=json.dumps(execution_state or {}, ensure_ascii=False),
+            evaluation=json.dumps(evaluation or {}, ensure_ascii=False),
+            transcript=self._format_transcript(transcript_messages or []),
+        )
+        if not self.api_key:
+            return self._mock_resume_authenticity_report(
+                resume_content,
+                resume_profile,
+                project_candidate_profile,
+                evaluation,
+                transcript_messages or [],
+            ), {"mock": True}
+
+        content, raw_response = await self._chat_completion([{"role": "user", "content": prompt}])
+        return self._parse_json_object(
+            content,
+            self._mock_resume_authenticity_report(
+                resume_content,
+                resume_profile,
+                project_candidate_profile,
+                evaluation,
+                transcript_messages or [],
+            ),
+        ), raw_response
+
+    async def generate_resume_rewrite(
+        self,
+        rewrite_mode: str,
+        resume_content: str,
+        resume_profile: dict | None = None,
+        jd_analysis: dict | None = None,
+        gap_analysis: dict | None = None,
+        project_candidate_profile: dict | None = None,
+        resume_authenticity: dict | None = None,
+        evaluation: dict | None = None,
+        execution_state: dict | None = None,
+    ) -> tuple[dict, dict | None]:
+        prompt = load_prompt(
+            "resume_rewrite.txt",
+            rewrite_mode=rewrite_mode,
+            resume_content=resume_content,
+            resume_profile=json.dumps(resume_profile or {}, ensure_ascii=False),
+            jd_analysis=json.dumps(jd_analysis or {}, ensure_ascii=False),
+            gap_analysis=json.dumps(gap_analysis or {}, ensure_ascii=False),
+            project_candidate_profile=json.dumps(project_candidate_profile or {}, ensure_ascii=False),
+            resume_authenticity=json.dumps(resume_authenticity or {}, ensure_ascii=False),
+            evaluation=json.dumps(evaluation or {}, ensure_ascii=False),
+            execution_state=json.dumps(execution_state or {}, ensure_ascii=False),
+        )
+        if not self.api_key:
+            return self._mock_resume_rewrite(
+                rewrite_mode,
+                resume_content,
+                resume_profile,
+                resume_authenticity,
+                project_candidate_profile,
+            ), {"mock": True}
+
+        content, raw_response = await self._chat_completion([{"role": "user", "content": prompt}])
+        return self._parse_json_object(
+            content,
+            self._mock_resume_rewrite(
+                rewrite_mode,
+                resume_content,
+                resume_profile,
+                resume_authenticity,
+                project_candidate_profile,
+            ),
+        ), raw_response
+
     async def _chat_completion(self, messages: list[dict[str, str]]) -> tuple[str, dict | None]:
         payload = {"model": self.model, "messages": messages, "temperature": 0.7}
         headers = {"Authorization": f"Bearer {self.api_key}"}
@@ -431,6 +519,92 @@ class LLMService:
             "learning_needs": ["补充项目量化指标", "准备关键技术方案的取舍说明"],
             "resume_optimization_focus": ["突出已验证的个人贡献", "弱化证据不足的夸大表述"],
             "summary": (evaluation or {}).get("summary", "已基于当前面试过程生成候选人项目画像。"),
+        }
+
+    def _mock_resume_authenticity_report(
+        self,
+        resume_content: str,
+        resume_profile: dict | None,
+        project_candidate_profile: dict | None,
+        evaluation: dict | None,
+        transcript_messages: list[InterviewMessage],
+    ) -> dict:
+        projects = (resume_profile or {}).get("projects") or []
+        project_name = projects[0].get("name", "简历项目") if projects else "简历项目"
+        user_answer_count = len([item for item in transcript_messages if item.role_type == "user"])
+        verified_contributions = []
+        for item in (project_candidate_profile or {}).get("project_experience", []):
+            verified_contributions.extend(item.get("verified_contributions") or [])
+
+        status = "partially_supported" if user_answer_count else "unclear"
+        overall = "medium" if user_answer_count >= 3 else "unknown"
+        return {
+            "overall_authenticity": overall,
+            "claim_checks": [
+                {
+                    "resume_claim": f"{project_name} 相关项目经历与技术贡献",
+                    "status": status,
+                    "evidence": "；".join(verified_contributions[:3]) or (evaluation or {}).get("summary", ""),
+                    "risk_level": "medium",
+                    "suggestion": "保留已能讲清的个人贡献，补充量化指标、上线效果和技术取舍；不要强化尚未被面试证据支撑的主导性表述。",
+                }
+            ],
+            "unsupported_claims": [],
+            "strongly_supported_claims": verified_contributions[:5],
+            "rewrite_constraints": [
+                "不要把未验证内容写成强事实",
+                "不要强化缺少证据的主导权或高并发规模",
+                "优先突出面试中已经讲清楚的个人贡献",
+            ],
+            "missing_evidence_to_collect": [
+                "项目量化指标",
+                "个人负责边界",
+                "技术方案取舍",
+                "上线后效果数据",
+            ],
+            "summary": "当前简历内容有一定面试证据支撑，但仍建议补充可量化结果和更清晰的个人贡献边界。",
+        }
+
+    def _mock_resume_rewrite(
+        self,
+        rewrite_mode: str,
+        resume_content: str,
+        resume_profile: dict | None,
+        resume_authenticity: dict | None,
+        project_candidate_profile: dict | None,
+    ) -> dict:
+        projects = (resume_profile or {}).get("projects") or []
+        project_name = projects[0].get("name", "简历项目") if projects else "简历项目"
+        constraints = (resume_authenticity or {}).get("rewrite_constraints") or []
+        verified = []
+        for item in (project_candidate_profile or {}).get("project_experience", []):
+            verified.extend(item.get("verified_contributions") or [])
+
+        rewritten = (
+            f"参与{project_name}相关后端功能建设，围绕已验证的项目职责梳理业务流程、技术实现和异常处理，"
+            "重点突出个人负责边界、方案取舍和上线效果。"
+        )
+        return {
+            "rewrite_mode": rewrite_mode,
+            "summary": "已基于当前面试证据和真实性约束生成安全版简历优化建议。",
+            "rewritten_sections": [
+                {
+                    "section": "project",
+                    "original": resume_content[:300],
+                    "rewritten": rewritten,
+                    "reason": "原始表述需要更突出个人贡献，并避免强化证据不足的内容。",
+                    "evidence_basis": verified[:5],
+                }
+            ],
+            "missing_info_to_collect": (resume_authenticity or {}).get("missing_evidence_to_collect")
+            or ["项目量化指标", "个人负责边界", "上线后效果"],
+            "risk_warnings": constraints
+            or ["不要把未验证内容写成强事实", "不要补造项目规模或性能指标"],
+            "ats_keywords": (resume_profile or {}).get("skills", []),
+            "final_suggestions": [
+                "补充可量化指标后再进一步强化项目结果",
+                "把面试中能讲清楚的贡献放在项目描述前半部分",
+            ],
         }
 
     def _mock_evaluation(self, history: list[InterviewMessage]) -> dict[str, str]:

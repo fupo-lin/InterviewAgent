@@ -103,6 +103,27 @@ class ProjectCandidateProfileResponse(BaseModel):
         populate_by_name = True
 
 
+class ResumeAuthenticityResponse(BaseModel):
+    report_id: int = Field(alias="reportId")
+    report: dict[str, Any]
+
+    class Config:
+        populate_by_name = True
+
+
+class ResumeRewriteRequest(BaseModel):
+    rewrite_mode: str = Field(default="jd_targeted", alias="rewriteMode", max_length=30)
+
+
+class ResumeRewriteResponse(BaseModel):
+    rewrite_id: int = Field(alias="rewriteId")
+    rewrite_mode: str = Field(alias="rewriteMode")
+    result: dict[str, Any]
+
+    class Config:
+        populate_by_name = True
+
+
 class ProjectOverviewResponse(BaseModel):
     project: dict[str, Any]
     jd: dict[str, Any] | None = None
@@ -112,6 +133,8 @@ class ProjectOverviewResponse(BaseModel):
     gap_analysis: dict[str, Any] | None = Field(default=None, alias="gapAnalysis")
     interview_plan: dict[str, Any] | None = Field(default=None, alias="interviewPlan")
     candidate_profile: dict[str, Any] | None = Field(default=None, alias="candidateProfile")
+    resume_authenticity: dict[str, Any] | None = Field(default=None, alias="resumeAuthenticity")
+    resume_rewrite: dict[str, Any] | None = Field(default=None, alias="resumeRewrite")
 
     class Config:
         populate_by_name = True

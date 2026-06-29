@@ -13,9 +13,12 @@ from app.schemas.preparation import (
     ProjectInterviewStartResponse,
     ProjectOverviewResponse,
     ProjectResponse,
+    ResumeAuthenticityResponse,
     ResumeDocumentRequest,
     ResumeDocumentResponse,
     ResumeProfileResponse,
+    ResumeRewriteRequest,
+    ResumeRewriteResponse,
 )
 from app.service.interview_service import InterviewService
 from app.service.preparation_service import PreparationService
@@ -98,6 +101,26 @@ async def generate_interview_plan(project_id: str, db: Session = Depends(get_db)
 async def generate_candidate_profile(project_id: str, db: Session = Depends(get_db)):
     service = PreparationService(db)
     return await service.generate_candidate_profile(project_id)
+
+
+@router.post(
+    "/projects/{project_id}/resume/authenticity",
+    response_model=ResumeAuthenticityResponse,
+    response_model_by_alias=True,
+)
+async def generate_resume_authenticity(project_id: str, db: Session = Depends(get_db)):
+    service = PreparationService(db)
+    return await service.generate_resume_authenticity(project_id)
+
+
+@router.post(
+    "/projects/{project_id}/resume/rewrite",
+    response_model=ResumeRewriteResponse,
+    response_model_by_alias=True,
+)
+async def rewrite_resume(project_id: str, payload: ResumeRewriteRequest, db: Session = Depends(get_db)):
+    service = PreparationService(db)
+    return await service.rewrite_resume(project_id, payload.rewrite_mode)
 
 
 @router.post(

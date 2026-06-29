@@ -25,21 +25,70 @@ use `interview_agent`;
 -- CREATE INDEX idx_interview_plan_executions_session
 --   ON interview_plan_executions(session_id, status);
 
-CREATE TABLE IF NOT EXISTS project_candidate_profiles (
+-- CREATE TABLE IF NOT EXISTS project_candidate_profiles (
+--   id BIGINT PRIMARY KEY AUTO_INCREMENT,
+--   project_id BIGINT NOT NULL,
+--   source_session_id BIGINT NULL,
+--   content JSON NOT NULL,
+--   raw_response JSON NULL,
+--   status VARCHAR(20) NOT NULL DEFAULT 'normal',
+--   create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+--   CONSTRAINT fk_project_candidate_profiles_project
+--     FOREIGN KEY (project_id) REFERENCES preparation_projects(id)
+--     ON DELETE CASCADE,
+--   CONSTRAINT fk_project_candidate_profiles_session
+--     FOREIGN KEY (source_session_id) REFERENCES interview_sessions(id)
+--     ON DELETE SET NULL
+-- ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- CREATE INDEX idx_project_candidate_profiles_project
+--   ON project_candidate_profiles(project_id, status);
+
+
+
+-- CREATE TABLE IF NOT EXISTS resume_authenticity_reports (
+--   id BIGINT PRIMARY KEY AUTO_INCREMENT,
+--   project_id BIGINT NOT NULL,
+--   resume_id BIGINT NOT NULL,
+--   session_id BIGINT NULL,
+--   content JSON NOT NULL,
+--   raw_response JSON NULL,
+--   status VARCHAR(20) NOT NULL DEFAULT 'normal',
+--   create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+--   CONSTRAINT fk_resume_auth_reports_project
+--     FOREIGN KEY (project_id) REFERENCES preparation_projects(id)
+--     ON DELETE CASCADE,
+--   CONSTRAINT fk_resume_auth_reports_resume
+--     FOREIGN KEY (resume_id) REFERENCES resume_documents(id)
+--     ON DELETE CASCADE,
+--   CONSTRAINT fk_resume_auth_reports_session
+--     FOREIGN KEY (session_id) REFERENCES interview_sessions(id)
+--     ON DELETE SET NULL
+-- ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- CREATE INDEX idx_resume_authenticity_reports_project
+--   ON resume_authenticity_reports(project_id, status);
+
+CREATE TABLE IF NOT EXISTS resume_rewrite_results (
   id BIGINT PRIMARY KEY AUTO_INCREMENT,
   project_id BIGINT NOT NULL,
-  source_session_id BIGINT NULL,
+  resume_id BIGINT NOT NULL,
+  authenticity_report_id BIGINT NULL,
+  rewrite_mode VARCHAR(30) NOT NULL,
   content JSON NOT NULL,
   raw_response JSON NULL,
   status VARCHAR(20) NOT NULL DEFAULT 'normal',
   create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  CONSTRAINT fk_project_candidate_profiles_project
+  CONSTRAINT fk_resume_rewrite_project
     FOREIGN KEY (project_id) REFERENCES preparation_projects(id)
     ON DELETE CASCADE,
-  CONSTRAINT fk_project_candidate_profiles_session
-    FOREIGN KEY (source_session_id) REFERENCES interview_sessions(id)
+  CONSTRAINT fk_resume_rewrite_resume
+    FOREIGN KEY (resume_id) REFERENCES resume_documents(id)
+    ON DELETE CASCADE,
+  CONSTRAINT fk_resume_rewrite_auth_report
+    FOREIGN KEY (authenticity_report_id) REFERENCES resume_authenticity_reports(id)
     ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-CREATE INDEX idx_project_candidate_profiles_project
-  ON project_candidate_profiles(project_id, status);
+CREATE INDEX idx_resume_rewrite_results_project
+  ON resume_rewrite_results(project_id, status);
