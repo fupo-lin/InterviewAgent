@@ -1,6 +1,8 @@
 **任务目标**
 请结合最近对话和候选人的上一轮回答，生成唯一的一个高质量追问，引导面试继续深入。
 
+如果系统上下文中存在 `InterviewPlanExecution`，必须优先服从其中的 `next_action`、`current_section_goals`、`missing_probe_points` 和 `suggested_probe_point`。面试计划执行状态优先级高于单纯围绕上一轮回答继续深挖。
+
 **追问策略**
 请根据候选人回答的实际情况，从以下方向中选择最合适的一个进行追问：
 
@@ -9,6 +11,14 @@
 3. 深化设计取舍：针对候选人的方案选择，追问为什么选择该方案、放弃了哪些替代方案、当时如何评估优缺点。
 4. 深化问题排查：针对故障、性能问题或复杂难点，追问排查路径、定位工具、关键日志、根因验证和最终修复效果。
 5. 场景化基础考察：当候选人回答明显空泛或项目信息不足时，结合其回答中的具体场景考察基础概念，避免机械背诵式问题。
+
+**计划执行规则**
+当存在 `InterviewPlanExecution` 时，请按以下规则生成问题：
+
+1. `continue_current_topic`：围绕当前回答继续深挖，但必须服务于当前 section 的 goals。
+2. `switch_topic_in_section`：切到当前 section 中尚未覆盖的 `suggested_probe_point` 或 `missing_probe_points`，自然承接上一轮回答，不要突兀跳题。
+3. `move_next_section`：自然过渡到新的当前 section，优先使用 `current_section_seed_question` 的方向；如果为空，再参考 `suggested_probe_point`。
+4. `wrap_up_interview`：生成一个收尾问题，引导候选人总结经验、复盘不足或补充遗漏信息。
 
 **输出约束**
 1. 只返回一个追问问题，不要输出分析过程、前缀、后缀或解释性文字。

@@ -1,7 +1,14 @@
 from sqlalchemy import select
+from sqlalchemy.orm.attributes import flag_modified
 from sqlalchemy.orm import Session
 
-from app.models.interview import InterviewEvaluation, InterviewMessage, InterviewSession, InterviewSummary
+from app.models.interview import (
+    InterviewEvaluation,
+    InterviewMessage,
+    InterviewPlanExecution,
+    InterviewSession,
+    InterviewSummary,
+)
 
 
 class InterviewSessionRepository:
@@ -9,8 +16,20 @@ class InterviewSessionRepository:
         self.db = db
 
 #
-    def create(self, session_uid: str, role_name: str) -> InterviewSession:
-        session = InterviewSession(session_uid=session_uid, role_name=role_name, status="active") # 在内存中创建一个Python对象
+    def create(
+        self,
+        session_uid: str,
+        role_name: str,
+        project_id: int | None = None,
+        interview_plan_id: int | None = None,
+    ) -> InterviewSession:
+        session = InterviewSession(
+            session_uid=session_uid,
+            role_name=role_name,
+            project_id=project_id,
+            interview_plan_id=interview_plan_id,
+            status="active",
+        ) # 在内存中创建一个Python对象
         self.db.add(session) # 加入Session的工作区，此时还没有进入数据库
         self.db.flush() # flush()会把内存中的对象同步到数据库中，但不会提交事务。此时session.id就有值了
         return session #返回带有 ID 的对象供后续使用
@@ -19,6 +38,17 @@ class InterviewSessionRepository:
         statement = select(InterviewSession).where(
             InterviewSession.session_uid == session_uid,
             InterviewSession.status != "deleted",
+        )
+        return self.db.scalars(statement).first()
+
+    def get_latest_by_project_id(self, project_id: int) -> InterviewSession | None:
+        statement = (
+            select(InterviewSession)
+            .where(
+                InterviewSession.project_id == project_id,
+                InterviewSession.status != "deleted",
+            )
+            .order_by(InterviewSession.id.desc())
         )
         return self.db.scalars(statement).first()
 
@@ -221,3 +251,64 @@ class InterviewSummaryRepository:
         summary.status = "deleted"
         self.db.flush()
         return summary
+
+
+class InterviewPlanExecutionRepository:
+    def __init__(self, db: Session):
+        self.db = db
+
+    def create(
+        self,
+        session_id: int,
+        interview_plan_id: int,
+        current_section_key: str | None,
+        current_section_index: int,
+        state: dict,
+    ) -> InterviewPlanExecution:
+        execution = InterviewPlanExecution(
+            session_id=session_id,
+            interview_plan_id=interview_plan_id,
+            current_section_key=current_section_key,
+            current_section_index=current_section_index,
+            current_section_round_no=0,
+            total_completed_round_no=0,
+            state=state,
+            status="active",
+        )
+        self.db.add(execution)
+        self.db.flush()
+        return execution
+
+    def get_active_by_session_id(self, session_id: int) -> InterviewPlanExecution | None:
+        statement = (
+            select(InterviewPlanExecution)
+            .where(
+                InterviewPlanExecution.session_id == session_id,
+                InterviewPlanExecution.status == "active",
+            )
+            .order_by(InterviewPlanExecution.id.desc())
+        )
+        return self.db.scalars(statement).first()
+
+    def get_latest_by_session_id(self, session_id: int) -> InterviewPlanExecution | None:
+        statement = (
+            select(InterviewPlanExecution)
+            .where(InterviewPlanExecution.session_id == session_id)
+            .order_by(InterviewPlanExecution.id.desc())
+        )
+        return self.db.scalars(statement).first()
+
+    def save(self, execution: InterviewPlanExecution) -> InterviewPlanExecution:
+        flag_modified(execution, "state")
+        self.db.flush()
+        return execution
+
+    def mark_finished(self, execution: InterviewPlanExecution) -> InterviewPlanExecution:
+        execution.status = "finished"
+        self.db.flush()
+        return execution
+
+    def soft_delete(self, execution: InterviewPlanExecution) -> InterviewPlanExecution:
+        execution.status = "deleted"
+        self.db.flush()
+        return execution

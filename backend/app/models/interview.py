@@ -12,6 +12,8 @@ class InterviewSession(Base):
     __tablename__ = "interview_sessions"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    project_id: Mapped[int | None] = mapped_column(ForeignKey("preparation_projects.id"), nullable=True)
+    interview_plan_id: Mapped[int | None] = mapped_column(ForeignKey("interview_plans.id"), nullable=True)
     session_uid: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
     role_name: Mapped[str] = mapped_column(String(50), nullable=False)
     status: Mapped[str] = mapped_column(String(20), default="active", nullable=False)
@@ -34,6 +36,10 @@ class InterviewSession(Base):
         cascade="all, delete-orphan",
     )
     summaries: Mapped[list["InterviewSummary"]] = relationship(
+        back_populates="session",
+        cascade="all, delete-orphan",
+    )
+    plan_executions: Mapped[list["InterviewPlanExecution"]] = relationship(
         back_populates="session",
         cascade="all, delete-orphan",
     )
@@ -89,3 +95,26 @@ class InterviewSummary(Base):
     create_time: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
 
     session: Mapped[InterviewSession] = relationship(back_populates="summaries")
+
+
+class InterviewPlanExecution(Base):
+    __tablename__ = "interview_plan_executions"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    session_id: Mapped[int] = mapped_column(ForeignKey("interview_sessions.id"), nullable=False)
+    interview_plan_id: Mapped[int] = mapped_column(ForeignKey("interview_plans.id"), nullable=False)
+    current_section_key: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    current_section_index: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    current_section_round_no: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    total_completed_round_no: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    state: Mapped[dict] = mapped_column(JSON, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="active", nullable=False)
+    create_time: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
+    update_time: Mapped[datetime] = mapped_column(
+        DateTime,
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    session: Mapped[InterviewSession] = relationship(back_populates="plan_executions")
