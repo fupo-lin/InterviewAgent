@@ -188,6 +188,47 @@ class LLMService:
         content, raw_response = await self._chat_completion([{"role": "user", "content": prompt}])
         return self._parse_json_object(content, self._mock_topic_completion(current_section, execution_state, user_answer)), raw_response
 
+    async def generate_project_candidate_profile(
+        self,
+        target_role: str | None,
+        jd_analysis: dict | None = None,
+        resume_profile: dict | None = None,
+        gap_analysis: dict | None = None,
+        execution_state: dict | None = None,
+        evaluation: dict | None = None,
+        transcript_messages: list[InterviewMessage] | None = None,
+    ) -> tuple[dict, dict | None]:
+        prompt = load_prompt(
+            "project_candidate_profile.txt",
+            target_role=target_role or "目标岗位",
+            jd_analysis=json.dumps(jd_analysis or {}, ensure_ascii=False),
+            resume_profile=json.dumps(resume_profile or {}, ensure_ascii=False),
+            gap_analysis=json.dumps(gap_analysis or {}, ensure_ascii=False),
+            execution_state=json.dumps(execution_state or {}, ensure_ascii=False),
+            evaluation=json.dumps(evaluation or {}, ensure_ascii=False),
+            transcript=self._format_transcript(transcript_messages or []),
+        )
+        if not self.api_key:
+            return self._mock_project_candidate_profile(
+                target_role,
+                resume_profile,
+                execution_state,
+                evaluation,
+                transcript_messages or [],
+            ), {"mock": True}
+
+        content, raw_response = await self._chat_completion([{"role": "user", "content": prompt}])
+        return self._parse_json_object(
+            content,
+            self._mock_project_candidate_profile(
+                target_role,
+                resume_profile,
+                execution_state,
+                evaluation,
+                transcript_messages or [],
+            ),
+        ), raw_response
+
     async def _chat_completion(self, messages: list[dict[str, str]]) -> tuple[str, dict | None]:
         payload = {"model": self.model, "messages": messages, "temperature": 0.7}
         headers = {"Authorization": f"Bearer {self.api_key}"}
@@ -328,6 +369,68 @@ class LLMService:
             "next_question_intent": f"围绕{missing[0]}继续提问" if missing else "进入下一个面试阶段",
             "reason": reason,
             "confidence": "medium",
+        }
+
+    def _mock_project_candidate_profile(
+        self,
+        target_role: str | None,
+        resume_profile: dict | None,
+        execution_state: dict | None,
+        evaluation: dict | None,
+        transcript_messages: list[InterviewMessage],
+    ) -> dict:
+        user_answers = [item.content for item in transcript_messages if item.role_type == "user"]
+        sections = (execution_state or {}).get("sections") or []
+        evidence = []
+        for section in sections:
+            for item in section.get("evidence") or []:
+                evidence.append(f"第 {item.get('round_no')} 轮：{item.get('answer_excerpt', '')[:120]}")
+
+        return {
+            "basic_profile": {
+                "target_role": target_role or (resume_profile or {}).get("target_role") or "unknown",
+                "years_of_experience": "unknown",
+                "main_domains": [],
+                "main_tech_stack": (resume_profile or {}).get("skills", []),
+            },
+            "project_experience": [
+                {
+                    "project_name": ((resume_profile or {}).get("projects") or [{}])[0].get("name", "简历项目"),
+                    "verified_level": "medium" if user_answers else "unknown",
+                    "candidate_role": "需要结合后续面试继续确认",
+                    "verified_contributions": evidence[:5],
+                    "unverified_claims": (resume_profile or {}).get("risks", []),
+                    "evidence_rounds": [item.round_no for item in transcript_messages if item.role_type == "user"],
+                }
+            ],
+            "capability_profile": {
+                "technical_depth": {
+                    "level": "unknown",
+                    "evidence": [],
+                },
+                "system_design": {
+                    "level": "unknown",
+                    "evidence": [],
+                },
+                "troubleshooting": {
+                    "level": "unknown",
+                    "evidence": [],
+                },
+                "communication": {
+                    "level": "medium" if user_answers else "unknown",
+                    "evidence": [f"已完成 {len(user_answers)} 轮面试回答"],
+                },
+            },
+            "risk_profile": [
+                {
+                    "risk": "部分经历仍缺少量化指标或强证据",
+                    "severity": "medium",
+                    "evidence": (evaluation or {}).get("weaknesses", ""),
+                }
+            ],
+            "learning_needs": ["补充项目量化指标", "准备关键技术方案的取舍说明"],
+            "resume_optimization_focus": ["突出已验证的个人贡献", "弱化证据不足的夸大表述"],
+            "summary": (evaluation or {}).get("summary", "已基于当前面试过程生成候选人项目画像。"),
         }
 
     def _mock_evaluation(self, history: list[InterviewMessage]) -> dict[str, str]:

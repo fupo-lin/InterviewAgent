@@ -95,6 +95,14 @@ class ProjectInterviewStartResponse(BaseModel):
         populate_by_name = True
 
 
+class ProjectCandidateProfileResponse(BaseModel):
+    profile_id: int = Field(alias="profileId")
+    profile: dict[str, Any]
+
+    class Config:
+        populate_by_name = True
+
+
 class ProjectOverviewResponse(BaseModel):
     project: dict[str, Any]
     jd: dict[str, Any] | None = None
@@ -103,6 +111,7 @@ class ProjectOverviewResponse(BaseModel):
     resume_profile: dict[str, Any] | None = Field(default=None, alias="resumeProfile")
     gap_analysis: dict[str, Any] | None = Field(default=None, alias="gapAnalysis")
     interview_plan: dict[str, Any] | None = Field(default=None, alias="interviewPlan")
+    candidate_profile: dict[str, Any] | None = Field(default=None, alias="candidateProfile")
 
     class Config:
         populate_by_name = True

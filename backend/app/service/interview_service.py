@@ -13,6 +13,7 @@ from app.repository.interview_repository import (
 )
 from app.repository.preparation_repository import InterviewPlanRepository, PreparationProjectRepository
 from app.service.interview_execution_service import InterviewExecutionService
+from app.service.preparation_service import PreparationService
 from app.schemas.interview import DeleteResponse, EvaluationResponse, HistoryResponse, MessageResponse
 from app.service.llm_service import LLMService
 
@@ -133,6 +134,7 @@ class InterviewService:
         if existing:
             self.session_repo.mark_finished(session)
             self.execution_service.mark_finished(session.id)
+            await self._generate_project_candidate_profile_if_needed(session, existing)
             self.db.commit()
             return self._evaluation_to_response(existing)
 
@@ -158,6 +160,7 @@ class InterviewService:
         )
         self.session_repo.mark_finished(session)
         self.execution_service.mark_finished(session.id)
+        await self._generate_project_candidate_profile_if_needed(session, saved)
         self.db.commit()
         return self._evaluation_to_response(saved)
 
@@ -363,3 +366,32 @@ class InterviewService:
             improvementSuggestions=evaluation.improvement_suggestions or "",
             summary=evaluation.summary,
         )
+
+    async def _generate_project_candidate_profile_if_needed(self, session, evaluation) -> None:
+        if not session.project_id:
+            return
+
+        execution = self.execution_repo.get_latest_by_session_id(session.id)
+        messages = self.message_repo.list_by_session_id(session.id)
+        evaluation_payload = {
+            "strengths": evaluation.strengths,
+            "weaknesses": evaluation.weaknesses,
+            "suggestions": evaluation.suggestions,
+            "technical_ability": evaluation.technical_ability,
+            "project_experience": evaluation.project_experience,
+            "communication": evaluation.communication,
+            "improvement_suggestions": evaluation.improvement_suggestions,
+            "summary": evaluation.summary,
+        }
+        service = PreparationService(self.db)
+        try:
+            await service.generate_candidate_profile_for_project(
+                project_id=session.project_id,
+                target_role=session.role_name,
+                source_session_id=session.id,
+                execution_state=execution.state if execution else None,
+                evaluation=evaluation_payload,
+                transcript_messages=messages,
+            )
+        except Exception:
+            logger.warning("Failed to generate project candidate profile", exc_info=True)

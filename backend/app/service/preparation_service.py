@@ -9,14 +9,22 @@ from app.repository.preparation_repository import (
     JDAnalysisRepository,
     JobDescriptionRepository,
     PreparationProjectRepository,
+    ProjectCandidateProfileRepository,
     ResumeDocumentRepository,
     ResumeProfileRepository,
+)
+from app.repository.interview_repository import (
+    InterviewEvaluationRepository,
+    InterviewMessageRepository,
+    InterviewPlanExecutionRepository,
+    InterviewSessionRepository,
 )
 from app.schemas.preparation import (
     AnalysisResponse,
     GapAnalysisResponse,
     InterviewPlanResponse,
     JobDescriptionResponse,
+    ProjectCandidateProfileResponse,
     ProjectOverviewResponse,
     ProjectResponse,
     ResumeDocumentResponse,
@@ -35,6 +43,11 @@ class PreparationService:
         self.resume_profile_repo = ResumeProfileRepository(db)
         self.gap_repo = GapAnalysisRepository(db)
         self.plan_repo = InterviewPlanRepository(db)
+        self.candidate_profile_repo = ProjectCandidateProfileRepository(db)
+        self.interview_session_repo = InterviewSessionRepository(db)
+        self.interview_message_repo = InterviewMessageRepository(db)
+        self.interview_evaluation_repo = InterviewEvaluationRepository(db)
+        self.interview_execution_repo = InterviewPlanExecutionRepository(db)
         self.llm = LLMService()
 
     def create_project(self, title: str, target_role: str | None = None) -> ProjectResponse:
@@ -208,6 +221,7 @@ class PreparationService:
         resume_profile = self.resume_profile_repo.get_latest_by_project_id(project.id)
         gap_analysis = self.gap_repo.get_latest_by_project_id(project.id)
         interview_plan = self.plan_repo.get_latest_by_project_id(project.id)
+        candidate_profile = self.candidate_profile_repo.get_latest_by_project_id(project.id)
         return ProjectOverviewResponse(
             project={
                 "projectId": project.project_uid,
@@ -221,6 +235,53 @@ class PreparationService:
             resumeProfile=resume_profile.content if resume_profile else None,
             gapAnalysis=gap_analysis.content if gap_analysis else None,
             interviewPlan=interview_plan.content if interview_plan else None,
+            candidateProfile=candidate_profile.content if candidate_profile else None,
+        )
+
+    async def generate_candidate_profile(self, project_uid: str) -> ProjectCandidateProfileResponse:
+        project = self._get_project(project_uid)
+        session = self.interview_session_repo.get_latest_by_project_id(project.id)
+        execution = self.interview_execution_repo.get_latest_by_session_id(session.id) if session else None
+        evaluation = self.interview_evaluation_repo.get_latest_by_session_id(session.id) if session else None
+        messages = self.interview_message_repo.list_by_session_id(session.id) if session else []
+        saved = await self.generate_candidate_profile_for_project(
+            project.id,
+            project.target_role,
+            source_session_id=session.id if session else None,
+            execution_state=execution.state if execution else None,
+            evaluation=self._evaluation_dict(evaluation) if evaluation else None,
+            transcript_messages=messages,
+        )
+        self.db.commit()
+        return ProjectCandidateProfileResponse(profileId=saved.id, profile=saved.content)
+
+    async def generate_candidate_profile_for_project(
+        self,
+        project_id: int,
+        target_role: str | None = None,
+        source_session_id: int | None = None,
+        execution_state: dict | None = None,
+        evaluation: dict | None = None,
+        transcript_messages: list | None = None,
+    ):
+        jd_analysis = self.jd_analysis_repo.get_latest_by_project_id(project_id)
+        resume_profile = self.resume_profile_repo.get_latest_by_project_id(project_id)
+        gap_analysis = self.gap_repo.get_latest_by_project_id(project_id)
+
+        content, raw_response = await self.llm.generate_project_candidate_profile(
+            target_role=target_role,
+            jd_analysis=jd_analysis.content if jd_analysis else None,
+            resume_profile=resume_profile.content if resume_profile else None,
+            gap_analysis=gap_analysis.content if gap_analysis else None,
+            execution_state=execution_state,
+            evaluation=evaluation,
+            transcript_messages=transcript_messages or [],
+        )
+        return self.candidate_profile_repo.create(
+            project_id=project_id,
+            source_session_id=source_session_id,
+            content=content,
+            raw_response=raw_response,
         )
 
     def get_latest_interview_plan(self, project_uid: str):
@@ -267,4 +328,16 @@ class PreparationService:
             "fileName": resume.file_name,
             "fileType": resume.file_type,
             "status": resume.status,
+        }
+
+    def _evaluation_dict(self, evaluation) -> dict:
+        return {
+            "strengths": evaluation.strengths,
+            "weaknesses": evaluation.weaknesses,
+            "suggestions": evaluation.suggestions,
+            "technical_ability": evaluation.technical_ability,
+            "project_experience": evaluation.project_experience,
+            "communication": evaluation.communication,
+            "improvement_suggestions": evaluation.improvement_suggestions,
+            "summary": evaluation.summary,
         }

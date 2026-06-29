@@ -41,6 +41,17 @@ class InterviewSessionRepository:
         )
         return self.db.scalars(statement).first()
 
+    def get_latest_by_project_id(self, project_id: int) -> InterviewSession | None:
+        statement = (
+            select(InterviewSession)
+            .where(
+                InterviewSession.project_id == project_id,
+                InterviewSession.status != "deleted",
+            )
+            .order_by(InterviewSession.id.desc())
+        )
+        return self.db.scalars(statement).first()
+
     def mark_finished(self, session: InterviewSession) -> InterviewSession:
         session.status = "finished"
         self.db.flush()

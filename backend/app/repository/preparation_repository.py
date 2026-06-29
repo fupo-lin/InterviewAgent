@@ -9,6 +9,7 @@ from app.models.preparation import (
     JDAnalysis,
     JobDescription,
     PreparationProject,
+    ProjectCandidateProfile,
     ResumeDocument,
     ResumeProfile,
 )
@@ -211,6 +212,27 @@ class InterviewPlanRepository(BaseProjectRepository):
             resume_profile_id=resume_profile_id,
             gap_analysis_id=gap_analysis_id,
             plan_mode=plan_mode,
+            content=content,
+            raw_response=raw_response,
+        )
+        self.db.add(item)
+        self.db.flush()
+        return item
+
+
+class ProjectCandidateProfileRepository(BaseProjectRepository):
+    model = ProjectCandidateProfile
+
+    def create(
+        self,
+        project_id: int,
+        content: dict,
+        source_session_id: int | None = None,
+        raw_response: dict | None = None,
+    ) -> ProjectCandidateProfile:
+        item = ProjectCandidateProfile(
+            project_id=project_id,
+            source_session_id=source_session_id,
             content=content,
             raw_response=raw_response,
         )

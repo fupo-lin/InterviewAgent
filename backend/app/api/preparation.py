@@ -8,6 +8,7 @@ from app.schemas.preparation import (
     InterviewPlanResponse,
     JobDescriptionRequest,
     JobDescriptionResponse,
+    ProjectCandidateProfileResponse,
     ProjectCreateRequest,
     ProjectInterviewStartResponse,
     ProjectOverviewResponse,
@@ -87,6 +88,16 @@ async def analyze_gap(project_id: str, db: Session = Depends(get_db)):
 async def generate_interview_plan(project_id: str, db: Session = Depends(get_db)):
     service = PreparationService(db)
     return await service.generate_interview_plan(project_id)
+
+
+@router.post(
+    "/projects/{project_id}/candidate-profile/generate",
+    response_model=ProjectCandidateProfileResponse,
+    response_model_by_alias=True,
+)
+async def generate_candidate_profile(project_id: str, db: Session = Depends(get_db)):
+    service = PreparationService(db)
+    return await service.generate_candidate_profile(project_id)
 
 
 @router.post(
