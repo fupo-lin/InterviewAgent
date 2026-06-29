@@ -79,3 +79,18 @@ class HistoryResponse(BaseModel):
 
 class DeleteResponse(BaseModel):
     success: bool
+
+
+class InterviewExecutionResponse(BaseModel):
+    current_section_key: str | None = Field(default=None, alias="currentSectionKey")
+    current_section_round_no: int = Field(default=0, alias="currentSectionRoundNo")
+    total_completed_round_no: int = Field(default=0, alias="totalCompletedRoundNo")
+    status: str
+    next_action: str | None = Field(default=None, alias="nextAction")
+    covered_probe_points: list[str] = Field(default_factory=list, alias="coveredProbePoints")
+    missing_probe_points: list[str] = Field(default_factory=list, alias="missingProbePoints")
+    last_topic_judge: dict = Field(default_factory=dict, alias="lastTopicJudge")
+    sections: list[dict] = Field(default_factory=list)
+
+    class Config:
+        populate_by_name = True

@@ -7,10 +7,12 @@ from sqlalchemy.orm import Session
 from app.repository.interview_repository import (
     InterviewEvaluationRepository,
     InterviewMessageRepository,
+    InterviewPlanExecutionRepository,
     InterviewSessionRepository,
     InterviewSummaryRepository,
 )
 from app.repository.preparation_repository import InterviewPlanRepository, PreparationProjectRepository
+from app.service.interview_execution_service import InterviewExecutionService
 from app.schemas.interview import DeleteResponse, EvaluationResponse, HistoryResponse, MessageResponse
 from app.service.llm_service import LLMService
 
@@ -25,6 +27,8 @@ class InterviewService:
         self.message_repo = InterviewMessageRepository(db)
         self.evaluation_repo = InterviewEvaluationRepository(db)
         self.summary_repo = InterviewSummaryRepository(db)
+        self.execution_repo = InterviewPlanExecutionRepository(db)
+        self.execution_service = InterviewExecutionService(self.execution_repo)
         self.project_repo = PreparationProjectRepository(db)
         self.plan_repo = InterviewPlanRepository(db)
         self.llm = LLMService()
@@ -68,13 +72,18 @@ class InterviewService:
                 role_name,
                 plan_context=self._plan_context(plan),
             )
+        execution = self.execution_service.initialize(
+            session_id=session.id,
+            interview_plan_id=plan.id,
+            plan_content=plan.content or {},
+        )
         self.message_repo.create(
             session_id=session.id,
             role_type="assistant",
             message_type="question",
             round_no=1,
             content=reply,
-            raw_response=raw_response,
+            raw_response={**(raw_response or {}), "executionId": execution.id},
         )
         self.db.commit()
         return session.session_uid, reply
@@ -91,11 +100,13 @@ class InterviewService:
         )
 
         latest_completed_round_no = self.message_repo.latest_completed_round_no(session.id)
+        recent_history = self.message_repo.list_recent_rounds(session.id, rounds=4)
+        execution = await self._advance_execution_if_needed(session, message, round_no, recent_history)
         await self._refresh_memory_if_needed(session.id, latest_completed_round_no)
         candidate_profile = self.summary_repo.get_latest_by_session_id(session.id, "candidate_profile")
         conversation_summary = self.summary_repo.get_latest_by_session_id(session.id, "conversation")
-        recent_history = self.message_repo.list_recent_rounds(session.id, rounds=4)
         plan_context = self._session_plan_context(session)
+        execution_context = self._session_execution_context(session, execution)
         reply, raw_response = await self.llm.generate_followup(
             session.role_name,
             message,
@@ -103,6 +114,7 @@ class InterviewService:
             candidate_profile=candidate_profile.content if candidate_profile else None,
             conversation_summary=conversation_summary.content if conversation_summary else None,
             plan_context=plan_context,
+            execution_context=execution_context,
         )
         self.message_repo.create(
             session_id=session.id,
@@ -110,7 +122,7 @@ class InterviewService:
             message_type="followup",
             round_no=round_no + 1,
             content=reply,
-            raw_response=raw_response,
+            raw_response={**(raw_response or {}), "execution": self.execution_service.response(execution) if execution else None},
         )
         self.db.commit()
         return reply, round_no + 1
@@ -120,6 +132,7 @@ class InterviewService:
         existing = self.evaluation_repo.get_latest_by_session_id(session.id)
         if existing:
             self.session_repo.mark_finished(session)
+            self.execution_service.mark_finished(session.id)
             self.db.commit()
             return self._evaluation_to_response(existing)
 
@@ -144,6 +157,7 @@ class InterviewService:
             improvement_suggestions=evaluation.get("improvement_suggestions"),
         )
         self.session_repo.mark_finished(session)
+        self.execution_service.mark_finished(session.id)
         self.db.commit()
         return self._evaluation_to_response(saved)
 
@@ -173,6 +187,7 @@ class InterviewService:
         existing_messages = self.message_repo.list_by_session_id(session.id)
         existing_evaluations = self.evaluation_repo.list_by_session_id(session.id)
         existing_summaries = self.summary_repo.list_by_session_id(session.id)
+        execution = self.execution_repo.get_latest_by_session_id(session.id)
 
         if existing_messages:
             for message in existing_messages:
@@ -186,9 +201,17 @@ class InterviewService:
             for summary in existing_summaries:
                 self.summary_repo.soft_delete(summary)
 
+        if execution:
+            self.execution_repo.soft_delete(execution)
+
         self.session_repo.soft_delete(session)
         self.db.commit()
         return DeleteResponse(success=True)
+
+    def execution(self, session_uid: str) -> dict:
+        session = self._get_session(session_uid)
+        execution = self.execution_service.get_latest(session.id)
+        return self.execution_service.response(execution)
 
     async def _refresh_memory_if_needed(self, session_id: int, latest_completed_round_no: int) -> None:
         if latest_completed_round_no < 10:
@@ -263,6 +286,33 @@ class InterviewService:
             return None
         plan = self.plan_repo.get_by_id(session.interview_plan_id)
         return self._plan_context(plan) if plan else None
+
+    def _session_execution_context(self, session, execution=None) -> str | None:
+        if not session.interview_plan_id:
+            return None
+        plan = self.plan_repo.get_by_id(session.interview_plan_id)
+        execution = execution or self.execution_repo.get_latest_by_session_id(session.id)
+        return self.execution_service.context_for_followup(execution, plan.content if plan else None)
+
+    async def _advance_execution_if_needed(self, session, answer: str, round_no: int, recent_history):
+        if not session.interview_plan_id:
+            return None
+        execution = self.execution_repo.get_active_by_session_id(session.id)
+        if not execution:
+            return None
+        current_section = self.execution_service.current_section(execution)
+        judge_result = None
+        if current_section:
+            try:
+                judge_result, _raw_response = await self.llm.judge_topic_completion(
+                    current_section=current_section,
+                    execution_state=execution.state or {},
+                    user_answer=answer,
+                    recent_history=recent_history,
+                )
+            except Exception:
+                logger.warning("Failed to judge topic completion", exc_info=True)
+        return self.execution_service.advance_after_answer(execution, answer, round_no, judge_result)
 
     def _plan_context(self, plan) -> str:
         content = plan.content or {}

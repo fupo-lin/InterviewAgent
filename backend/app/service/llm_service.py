@@ -37,11 +37,12 @@ class LLMService:
         candidate_profile: str | None = None,
         conversation_summary: str | None = None,
         plan_context: str | None = None,
+        execution_context: str | None = None,
     ) -> tuple[str, dict | None]:
         prompt = load_prompt("interviewer.txt", role_name=role_name)
         followup_prompt = load_prompt("followup.txt", user_answer=user_answer)
         if not self.api_key:
-            return self._mock_followup(user_answer), {"mock": True}
+            return self._mock_followup(user_answer, execution_context), {"mock": True}
 
         messages = [{"role": "system", "content": prompt}]
         context = self._build_memory_context(candidate_profile, conversation_summary)
@@ -49,6 +50,8 @@ class LLMService:
             messages.append({"role": "system", "content": context})
         if plan_context:
             messages.append({"role": "system", "content": plan_context})
+        if execution_context:
+            messages.append({"role": "system", "content": execution_context})
         for item in history:
             role = "assistant" if item.role_type == "assistant" else "user"
             messages.append({"role": role, "content": item.content})
@@ -165,6 +168,26 @@ class LLMService:
         content, raw_response = await self._chat_completion([{"role": "user", "content": prompt}])
         return self._parse_json_object(content, {"raw_text": content}), raw_response
 
+    async def judge_topic_completion(
+        self,
+        current_section: dict,
+        execution_state: dict,
+        user_answer: str,
+        recent_history: list[InterviewMessage],
+    ) -> tuple[dict, dict | None]:
+        prompt = load_prompt(
+            "topic_completion_judge.txt",
+            current_section=json.dumps(current_section or {}, ensure_ascii=False),
+            execution_state=json.dumps(execution_state or {}, ensure_ascii=False),
+            recent_history=self._format_transcript(recent_history),
+            user_answer=user_answer,
+        )
+        if not self.api_key:
+            return self._mock_topic_completion(current_section, execution_state, user_answer), {"mock": True}
+
+        content, raw_response = await self._chat_completion([{"role": "user", "content": prompt}])
+        return self._parse_json_object(content, self._mock_topic_completion(current_section, execution_state, user_answer)), raw_response
+
     async def _chat_completion(self, messages: list[dict[str, str]]) -> tuple[str, dict | None]:
         payload = {"model": self.model, "messages": messages, "temperature": 0.7}
         headers = {"Authorization": f"Bearer {self.api_key}"}
@@ -251,7 +274,15 @@ class LLMService:
     def _mock_first_question(self, role_name: str) -> str:
         return f"我们先从项目经验开始。请介绍一个你最能体现{role_name}能力的项目，以及你负责的核心模块。"
 
-    def _mock_followup(self, user_answer: str) -> str:
+    def _mock_followup(self, user_answer: str, execution_context: str | None = None) -> str:
+        if execution_context and "next_action: move_next_section" in execution_context:
+            return "我们切到下一个考察点。请结合一个具体场景说明你在这个方向上遇到过的主要难点，以及你当时怎么处理？"
+        if execution_context and "next_action: wrap_up_interview" in execution_context:
+            return "最后请你总结一下：如果重新做刚才提到的项目，你认为最值得改进的一点是什么？"
+        if execution_context and "suggested_probe_point:" in execution_context:
+            probe_point = execution_context.split("suggested_probe_point:", 1)[1].splitlines()[0].strip()
+            if probe_point:
+                return f"我们聚焦到「{probe_point}」。请结合你刚才的项目，说明这个点当时是怎么落地的，以及你个人负责了哪一部分？"
         if "Kafka" in user_answer or "消息" in user_answer:
             return "你刚才提到了消息相关系统。请具体说明如何保证消息不丢失，以及失败重试怎么设计？"
         if "MySQL" in user_answer or "数据库" in user_answer:
@@ -259,6 +290,45 @@ class LLMService:
         if "Spring" in user_answer or "接口" in user_answer:
             return "请进一步说明这个模块的接口边界、异常处理和上线后你关注过哪些指标？"
         return "请继续展开一个关键技术决策：当时为什么这样设计，有哪些替代方案，最终效果如何？"
+
+    def _mock_topic_completion(self, current_section: dict, execution_state: dict, user_answer: str) -> dict:
+        uncovered = list(current_section.get("uncovered_probe_points") or [])
+        completed_rounds = int(current_section.get("completed_rounds") or 0)
+        target_rounds = int(current_section.get("target_rounds") or 1)
+        answer = user_answer.strip()
+        answer_quality = "low" if len(answer) < 30 else "medium"
+        if any(keyword in answer for keyword in ("QPS", "指标", "上线", "压测", "故障", "方案", "原因", "负责", "设计")):
+            answer_quality = "high" if len(answer) >= 50 else "medium"
+
+        covered = []
+        if uncovered and answer_quality != "low":
+            covered.append(uncovered[0])
+        missing = [item for item in uncovered if item not in covered]
+
+        next_action = "continue_current_topic"
+        topic_status = "insufficient"
+        reason = "回答还比较简略，需要继续围绕当前话题追问"
+        if answer_quality == "low":
+            next_action = "continue_current_topic"
+        elif completed_rounds + 1 >= target_rounds or not missing:
+            next_action = "move_next_section"
+            topic_status = "complete"
+            reason = "当前 section 已达到目标轮数或关键 probe point 已基本覆盖"
+        elif missing:
+            next_action = "switch_topic_in_section"
+            topic_status = "complete"
+            reason = "本轮回答已有有效信息，可以切到当前 section 的下一个 probe point"
+
+        return {
+            "topic_status": topic_status,
+            "answer_quality": answer_quality,
+            "covered_probe_points": covered,
+            "missing_probe_points": missing,
+            "next_action": next_action,
+            "next_question_intent": f"围绕{missing[0]}继续提问" if missing else "进入下一个面试阶段",
+            "reason": reason,
+            "confidence": "medium",
+        }
 
     def _mock_evaluation(self, history: list[InterviewMessage]) -> dict[str, str]:
         answer_count = len([item for item in history if item.role_type == "user"])

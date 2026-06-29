@@ -1,7 +1,14 @@
 from sqlalchemy import select
+from sqlalchemy.orm.attributes import flag_modified
 from sqlalchemy.orm import Session
 
-from app.models.interview import InterviewEvaluation, InterviewMessage, InterviewSession, InterviewSummary
+from app.models.interview import (
+    InterviewEvaluation,
+    InterviewMessage,
+    InterviewPlanExecution,
+    InterviewSession,
+    InterviewSummary,
+)
 
 
 class InterviewSessionRepository:
@@ -233,3 +240,64 @@ class InterviewSummaryRepository:
         summary.status = "deleted"
         self.db.flush()
         return summary
+
+
+class InterviewPlanExecutionRepository:
+    def __init__(self, db: Session):
+        self.db = db
+
+    def create(
+        self,
+        session_id: int,
+        interview_plan_id: int,
+        current_section_key: str | None,
+        current_section_index: int,
+        state: dict,
+    ) -> InterviewPlanExecution:
+        execution = InterviewPlanExecution(
+            session_id=session_id,
+            interview_plan_id=interview_plan_id,
+            current_section_key=current_section_key,
+            current_section_index=current_section_index,
+            current_section_round_no=0,
+            total_completed_round_no=0,
+            state=state,
+            status="active",
+        )
+        self.db.add(execution)
+        self.db.flush()
+        return execution
+
+    def get_active_by_session_id(self, session_id: int) -> InterviewPlanExecution | None:
+        statement = (
+            select(InterviewPlanExecution)
+            .where(
+                InterviewPlanExecution.session_id == session_id,
+                InterviewPlanExecution.status == "active",
+            )
+            .order_by(InterviewPlanExecution.id.desc())
+        )
+        return self.db.scalars(statement).first()
+
+    def get_latest_by_session_id(self, session_id: int) -> InterviewPlanExecution | None:
+        statement = (
+            select(InterviewPlanExecution)
+            .where(InterviewPlanExecution.session_id == session_id)
+            .order_by(InterviewPlanExecution.id.desc())
+        )
+        return self.db.scalars(statement).first()
+
+    def save(self, execution: InterviewPlanExecution) -> InterviewPlanExecution:
+        flag_modified(execution, "state")
+        self.db.flush()
+        return execution
+
+    def mark_finished(self, execution: InterviewPlanExecution) -> InterviewPlanExecution:
+        execution.status = "finished"
+        self.db.flush()
+        return execution
+
+    def soft_delete(self, execution: InterviewPlanExecution) -> InterviewPlanExecution:
+        execution.status = "deleted"
+        self.db.flush()
+        return execution
