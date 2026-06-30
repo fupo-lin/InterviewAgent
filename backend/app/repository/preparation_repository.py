@@ -225,6 +225,9 @@ class InterviewPlanRepository(BaseProjectRepository):
         resume_profile_id: int | None = None,
         gap_analysis_id: int | None = None,
         raw_response: dict | None = None,
+        agent_run_id: int | None = None,
+        schema_version: str = "InterviewPlan.v1",
+        evidence_refs: list[str] | None = None,
     ) -> InterviewPlan:
         item = InterviewPlan(
             project_id=project_id,
@@ -232,6 +235,9 @@ class InterviewPlanRepository(BaseProjectRepository):
             resume_profile_id=resume_profile_id,
             gap_analysis_id=gap_analysis_id,
             plan_mode=plan_mode,
+            agent_run_id=agent_run_id,
+            schema_version=schema_version,
+            evidence_refs=evidence_refs or [],
             content=content,
             raw_response=raw_response,
         )

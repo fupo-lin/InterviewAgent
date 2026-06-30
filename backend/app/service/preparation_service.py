@@ -284,12 +284,69 @@ class PreparationService:
                 )
 
         plan_mode = self._plan_mode(jd_analysis, resume_profile)
-        plan_content, raw_response = await self.llm.generate_interview_plan(
+        evidence_packet = self.evidence_builder.build_interview_plan_packet(
+            project_id=project.id,
             plan_mode=plan_mode,
+            jd_analysis_id=jd_analysis.id if jd_analysis else None,
+            resume_profile_id=resume_profile.id if resume_profile else None,
+            gap_analysis_id=gap_analysis.id if gap_analysis else None,
             jd_analysis=jd_analysis.content if jd_analysis else None,
             resume_profile=resume_profile.content if resume_profile else None,
             gap_analysis=gap_analysis.content if gap_analysis else None,
-            target_role=project.target_role,
+        )
+        definition = prompt_registry.get("interview_plan")
+        evidence_refs = self.evidence_builder.refs(evidence_packet)
+        input_snapshot = {
+            "plan_mode": plan_mode,
+            "target_role": project.target_role,
+            "has_jd_analysis": bool(jd_analysis),
+            "has_resume_profile": bool(resume_profile),
+            "has_gap_analysis": bool(gap_analysis),
+            "evidence_packet": evidence_packet,
+        }
+        context_refs = {
+            "jd_analysis_id": jd_analysis.id if jd_analysis else None,
+            "resume_profile_id": resume_profile.id if resume_profile else None,
+            "gap_analysis_id": gap_analysis.id if gap_analysis else None,
+            "jd_analysis_agent_run_id": getattr(jd_analysis, "agent_run_id", None) if jd_analysis else None,
+            "resume_profile_agent_run_id": getattr(resume_profile, "agent_run_id", None) if resume_profile else None,
+            "gap_analysis_agent_run_id": getattr(gap_analysis, "agent_run_id", None) if gap_analysis else None,
+            "jd_analysis_evidence_refs": getattr(jd_analysis, "evidence_refs", None) or [],
+            "resume_profile_evidence_refs": getattr(resume_profile, "evidence_refs", None) or [],
+            "gap_analysis_evidence_refs": getattr(gap_analysis, "evidence_refs", None) or [],
+        }
+        try:
+            plan_content, raw_response = await self.llm.generate_interview_plan(
+                plan_mode=plan_mode,
+                jd_analysis=jd_analysis.content if jd_analysis else None,
+                resume_profile=resume_profile.content if resume_profile else None,
+                gap_analysis=gap_analysis.content if gap_analysis else None,
+                target_role=project.target_role,
+            )
+        except Exception as exc:
+            self.agent_run_recorder.record_failure(
+                definition=definition,
+                project_id=project.id,
+                session_id=None,
+                input_snapshot=input_snapshot,
+                context_refs=context_refs,
+                evidence_refs=evidence_refs,
+                error=exc,
+                model_name=self.llm.model,
+            )
+            self.db.commit()
+            raise
+
+        agent_run = self.agent_run_recorder.record_success(
+            definition=definition,
+            project_id=project.id,
+            session_id=None,
+            input_snapshot=input_snapshot,
+            context_refs=context_refs,
+            evidence_refs=evidence_refs,
+            output_snapshot=plan_content,
+            raw_response=raw_response,
+            model_name=self.llm.model,
         )
         saved = self.plan_repo.create(
             project_id=project.id,
@@ -299,6 +356,9 @@ class PreparationService:
             plan_mode=plan_mode,
             content=plan_content,
             raw_response=raw_response,
+            agent_run_id=agent_run.id,
+            schema_version=definition.output_schema,
+            evidence_refs=evidence_refs,
         )
         self.db.commit()
         return InterviewPlanResponse(

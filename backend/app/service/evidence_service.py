@@ -148,6 +148,33 @@ class EvidencePacketBuilder:
             "missing_evidence": self._missing_gap_evidence(items),
         }
 
+    def build_interview_plan_packet(
+        self,
+        project_id: int,
+        plan_mode: str,
+        jd_analysis_id: int | None = None,
+        resume_profile_id: int | None = None,
+        gap_analysis_id: int | None = None,
+        jd_analysis: dict | None = None,
+        resume_profile: dict | None = None,
+        gap_analysis: dict | None = None,
+    ) -> dict[str, Any]:
+        items: list[EvidenceItem] = []
+        if jd_analysis_id and jd_analysis:
+            items.extend(self._jd_requirements(project_id, jd_analysis_id, jd_analysis))
+        if resume_profile_id and resume_profile:
+            items.extend(self._resume_claims_from_profile(project_id, resume_profile_id, resume_profile))
+        if gap_analysis_id and gap_analysis:
+            items.extend(self._gap_findings(project_id, gap_analysis_id, gap_analysis))
+        return {
+            "packet_id": f"interview_plan_{project_id}_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}",
+            "task": "interview_plan_generation",
+            "project_id": project_id,
+            "plan_mode": plan_mode,
+            "evidence_items": [item.to_dict() for item in items],
+            "missing_evidence": self._missing_interview_plan_evidence(items, plan_mode),
+        }
+
     def refs(self, packet: dict[str, Any] | None) -> list[str]:
         if not packet:
             return []
@@ -200,6 +227,46 @@ class EvidencePacketBuilder:
             )
             for item in items
         ]
+
+    def _gap_findings(self, project_id: int, gap_analysis_id: int, gap_analysis: dict) -> list[EvidenceItem]:
+        items: list[EvidenceItem] = []
+        for index, point in enumerate(gap_analysis.get("gap_points") or [], start=1):
+            excerpt = (
+                f"{point.get('jd_requirement', '')}: "
+                f"{point.get('resume_current_evidence', '')}. "
+                f"{point.get('interview_probe', '')}"
+            )
+            items.append(
+                EvidenceItem(
+                    evidence_id=f"gap_analysis_{gap_analysis_id}_gap_point_{index}",
+                    evidence_type="gap_point",
+                    source_type="gap_analysis",
+                    source_id=gap_analysis_id,
+                    project_id=project_id,
+                    content_excerpt=self._excerpt(excerpt),
+                    tags=("gap", point.get("gap_level", "")),
+                    confidence="medium",
+                    metadata={
+                        "gap_level": point.get("gap_level", ""),
+                        "resume_suggestion": point.get("resume_suggestion", ""),
+                    },
+                )
+            )
+        for index, point in enumerate(gap_analysis.get("matched_points") or [], start=1):
+            excerpt = f"{point.get('jd_requirement', '')}: {point.get('resume_evidence', '')}"
+            items.append(
+                EvidenceItem(
+                    evidence_id=f"gap_analysis_{gap_analysis_id}_matched_point_{index}",
+                    evidence_type="matched_point",
+                    source_type="gap_analysis",
+                    source_id=gap_analysis_id,
+                    project_id=project_id,
+                    content_excerpt=self._excerpt(excerpt),
+                    tags=("match",),
+                    confidence=point.get("confidence") or "medium",
+                )
+            )
+        return items
 
     def _resume_claims(self, project_id: int, resume_profile: dict | None) -> list[EvidenceItem]:
         if not resume_profile:
@@ -341,6 +408,16 @@ class EvidencePacketBuilder:
             missing.append("jd_requirement")
         if not any(item.evidence_type == "resume_claim" for item in items):
             missing.append("resume_claim")
+        return missing
+
+    def _missing_interview_plan_evidence(self, items: list[EvidenceItem], plan_mode: str) -> list[str]:
+        missing = []
+        if plan_mode in {"jd_only", "jd_resume"} and not any(item.evidence_type == "jd_requirement" for item in items):
+            missing.append("jd_requirement")
+        if plan_mode in {"resume_only", "jd_resume"} and not any(item.evidence_type == "resume_claim" for item in items):
+            missing.append("resume_claim")
+        if plan_mode == "jd_resume" and not any(item.evidence_type == "gap_point" for item in items):
+            missing.append("gap_point")
         return missing
 
     def _missing_evaluation_evidence(self, items: list[EvidenceItem]) -> list[str]:
