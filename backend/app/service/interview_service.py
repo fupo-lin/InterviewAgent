@@ -42,7 +42,7 @@ class InterviewService:
     async def start(self, role_name: str) -> tuple[str, str]:
         session_uid = uuid4().hex
         session = self.session_repo.create(session_uid=session_uid, role_name=role_name)
-        reply, raw_response, agent_run, evidence_refs, definition = await self._generate_first_question_with_run(
+        message_fields = await self._generate_first_question_with_run(
             session=session,
             role_name=role_name,
         )
@@ -51,14 +51,10 @@ class InterviewService:
             role_type="assistant",
             message_type="question",
             round_no=1,
-            content=reply,
-            raw_response=raw_response,
-            agent_run_id=agent_run.id if agent_run else None,
-            schema_version=definition.output_schema if definition else None,
-            evidence_refs=evidence_refs,
+            **message_fields,
         )
         self.db.commit()
-        return session.session_uid, reply
+        return session.session_uid, message_fields["content"]
 
     async def start_with_project(self, project_uid: str) -> tuple[str, str]:
         project = self.project_repo.get_by_uid(project_uid)
@@ -79,11 +75,15 @@ class InterviewService:
         )
         reply = self._first_question_from_plan(plan.content)
         raw_response = {"source": "interview_plan", "planId": plan.id}
-        agent_run = None
-        evidence_refs = []
-        definition = self.agent_run_executor.definition("interviewer")
+        message_fields = {
+            "content": reply,
+            "raw_response": raw_response,
+            "agent_run_id": None,
+            "schema_version": None,
+            "evidence_refs": [],
+        }
         if not reply:
-            reply, raw_response, agent_run, evidence_refs, definition = await self._generate_first_question_with_run(
+            message_fields = await self._generate_first_question_with_run(
                 session=session,
                 role_name=role_name,
                 plan_context=self._plan_context(plan),
@@ -99,14 +99,13 @@ class InterviewService:
             role_type="assistant",
             message_type="question",
             round_no=1,
-            content=reply,
-            raw_response={**(raw_response or {}), "executionId": execution.id},
-            agent_run_id=agent_run.id if agent_run else None,
-            schema_version=definition.output_schema if agent_run else None,
-            evidence_refs=evidence_refs,
+            **{
+                **message_fields,
+                "raw_response": {**(message_fields.get("raw_response") or {}), "executionId": execution.id},
+            },
         )
         self.db.commit()
-        return session.session_uid, reply
+        return session.session_uid, message_fields["content"]
 
     async def chat(self, session_uid: str, message: str) -> tuple[str, int]:
         session = self._get_active_session(session_uid)
@@ -127,7 +126,7 @@ class InterviewService:
         conversation_summary = self.summary_repo.get_latest_by_session_id(session.id, "conversation")
         plan_context = self._session_plan_context(session)
         execution_context = self._session_execution_context(session, execution)
-        reply, raw_response, agent_run, evidence_refs, definition = await self._generate_followup_with_run(
+        message_fields = await self._generate_followup_with_run(
             session=session,
             answer_message=answer_message,
             recent_history=recent_history,
@@ -144,14 +143,16 @@ class InterviewService:
             role_type="assistant",
             message_type="followup",
             round_no=round_no + 1,
-            content=reply,
-            raw_response={**(raw_response or {}), "execution": self.execution_service.response(execution) if execution else None},
-            agent_run_id=agent_run.id,
-            schema_version=definition.output_schema,
-            evidence_refs=evidence_refs,
+            **{
+                **message_fields,
+                "raw_response": {
+                    **(message_fields.get("raw_response") or {}),
+                    "execution": self.execution_service.response(execution) if execution else None,
+                },
+            },
         )
         self.db.commit()
-        return reply, round_no + 1
+        return message_fields["content"], round_no + 1
 
     async def end(self, session_uid: str) -> EvaluationResponse:
         session = self._get_session(session_uid)
@@ -174,7 +175,7 @@ class InterviewService:
         )
         candidate_profile = self.summary_repo.get_latest_by_session_id(session.id, "candidate_profile")
         conversation_summary = self.summary_repo.get_latest_by_session_id(session.id, "conversation")
-        run_context = self.agent_run_executor.context(
+        run_result = await self.agent_run_executor.execute(
             prompt_id="evaluation",
             project_id=session.project_id,
             session_id=session.id,
@@ -192,9 +193,6 @@ class InterviewService:
                 "execution_id": execution.id if execution else None,
             },
             evidence_packet=evidence_packet,
-        )
-        evaluation, _raw_response, agent_run = await self.agent_run_executor.run_context(
-            context=run_context,
             model_name=self.llm.model,
             call=lambda: self.llm.generate_evaluation(
                 history,
@@ -206,17 +204,17 @@ class InterviewService:
         )
         saved = self.evaluation_repo.create(
             session_id=session.id,
-            strengths=evaluation["strengths"],
-            weaknesses=evaluation["weaknesses"],
-            suggestions=evaluation["suggestions"],
-            summary=evaluation.get("summary"),
-            technical_ability=evaluation.get("technical_ability"),
-            project_experience=evaluation.get("project_experience"),
-            communication=evaluation.get("communication"),
-            improvement_suggestions=evaluation.get("improvement_suggestions"),
-            agent_run_id=agent_run.id,
-            schema_version=run_context.definition.output_schema,
-            evidence_refs=run_context.evidence_refs,
+            strengths=run_result.output["strengths"],
+            weaknesses=run_result.output["weaknesses"],
+            suggestions=run_result.output["suggestions"],
+            summary=run_result.output.get("summary"),
+            technical_ability=run_result.output.get("technical_ability"),
+            project_experience=run_result.output.get("project_experience"),
+            communication=run_result.output.get("communication"),
+            improvement_suggestions=run_result.output.get("improvement_suggestions"),
+            agent_run_id=run_result.agent_run.id,
+            schema_version=run_result.output_schema,
+            evidence_refs=run_result.evidence_refs,
         )
         self.session_repo.mark_finished(session)
         self.execution_service.mark_finished(session.id)
@@ -290,7 +288,7 @@ class InterviewService:
             session_id=session.id,
             project_id=session.project_id,
         )
-        run_context = self.agent_run_executor.context(
+        run_result = await self.agent_run_executor.execute(
             prompt_id=prompt_id,
             project_id=session.project_id,
             session_id=session.id,
@@ -302,14 +300,11 @@ class InterviewService:
                 "interview_plan_id": plan.id if plan else session.interview_plan_id,
             },
             evidence_packet=evidence_packet,
-        )
-        reply, raw_response, agent_run = await self.agent_run_executor.run_context(
-            context=run_context,
             model_name=self.llm.model,
             call=lambda: self.llm.generate_first_question(role_name, plan_context=plan_context),
             output_snapshot=lambda output: {"reply": output},
         )
-        return reply, raw_response, agent_run, run_context.evidence_refs, run_context.definition
+        return run_result.message_fields()
 
     async def _generate_followup_with_run(
         self,
@@ -336,7 +331,7 @@ class InterviewService:
             recent_history=recent_history,
             execution_state=execution.state if execution else None,
         )
-        run_context = self.agent_run_executor.context(
+        run_result = await self.agent_run_executor.execute(
             prompt_id=prompt_id,
             project_id=session.project_id,
             session_id=session.id,
@@ -358,9 +353,6 @@ class InterviewService:
                 "answer_message_id": answer_message.id,
             },
             evidence_packet=evidence_packet,
-        )
-        reply, raw_response, agent_run = await self.agent_run_executor.run_context(
-            context=run_context,
             model_name=self.llm.model,
             call=lambda: self.llm.generate_followup(
                 session.role_name,
@@ -373,7 +365,7 @@ class InterviewService:
             ),
             output_snapshot=lambda output: {"reply": output},
         )
-        return reply, raw_response, agent_run, run_context.evidence_refs, run_context.definition
+        return run_result.message_fields()
 
     async def _generate_memory_with_run(
         self,
@@ -391,7 +383,13 @@ class InterviewService:
             project_id=session.project_id if session else None,
             messages=profile_messages,
         )
-        run_context = self.agent_run_executor.context(
+
+        async def generate_memory():
+            if prompt_id == "candidate_profile":
+                return await self.llm.generate_candidate_profile(previous_content, profile_messages)
+            return await self.llm.generate_conversation_summary(previous_content, profile_messages)
+
+        run_result = await self.agent_run_executor.execute(
             prompt_id=prompt_id,
             project_id=session.project_id if session else None,
             session_id=session_id,
@@ -407,20 +405,12 @@ class InterviewService:
                 "message_ids": [message.id for message in profile_messages or []],
             },
             evidence_packet=evidence_packet,
-        )
-
-        async def generate_memory():
-            if prompt_id == "candidate_profile":
-                return await self.llm.generate_candidate_profile(previous_content, profile_messages)
-            return await self.llm.generate_conversation_summary(previous_content, profile_messages)
-
-        content, raw_response, agent_run = await self.agent_run_executor.run_context(
-            context=run_context,
             model_name=self.llm.model,
             call=generate_memory,
             output_snapshot=lambda output: {"content": output},
         )
-        return content, raw_response, agent_run, run_context.evidence_refs, run_context.definition
+
+        return run_result.message_fields()
 
     async def _refresh_memory_if_needed(self, session_id: int, latest_completed_round_no: int) -> None:
         if latest_completed_round_no < 10:
@@ -438,7 +428,7 @@ class InterviewService:
             )
             if profile_messages:
                 try:
-                    profile_content, profile_raw, agent_run, evidence_refs, definition = await self._generate_memory_with_run(
+                    summary_fields = await self._generate_memory_with_run(
                         prompt_id="candidate_profile",
                         session_id=session_id,
                         previous_content=latest_profile.content if latest_profile else None,
@@ -453,11 +443,7 @@ class InterviewService:
                         summary_type="candidate_profile",
                         from_round_no=1,
                         to_round_no=latest_completed_round_no,
-                        content=profile_content,
-                        raw_response=profile_raw,
-                        agent_run_id=agent_run.id,
-                        schema_version=definition.output_schema,
-                        evidence_refs=evidence_refs,
+                        **summary_fields,
                     )
 
         last_summary_round = latest_conversation.to_round_no if latest_conversation else 0
@@ -474,7 +460,7 @@ class InterviewService:
             return
 
         try:
-            summary_content, summary_raw, agent_run, evidence_refs, definition = await self._generate_memory_with_run(
+            summary_fields = await self._generate_memory_with_run(
                 prompt_id="conversation_summary",
                 session_id=session_id,
                 previous_content=latest_conversation.content if latest_conversation else None,
@@ -489,11 +475,7 @@ class InterviewService:
                 summary_type="conversation",
                 from_round_no=1,
                 to_round_no=latest_completed_round_no,
-                content=summary_content,
-                raw_response=summary_raw,
-                agent_run_id=agent_run.id,
-                schema_version=definition.output_schema,
-                evidence_refs=evidence_refs,
+                **summary_fields,
             )
 
     def _evaluation_context(self, session_id: int):
@@ -535,29 +517,26 @@ class InterviewService:
                 current_section=current_section,
                 execution_state=execution.state or {},
             )
-            run_context = self.agent_run_executor.context(
-                prompt_id="topic_completion_judge",
-                project_id=session.project_id,
-                session_id=session.id,
-                input_snapshot={
-                    "round_no": round_no,
-                    "answer_message_id": answer_message.id,
-                    "current_section_key": current_section.get("section_key"),
-                    "current_section_completed_rounds": current_section.get("completed_rounds"),
-                    "current_section_target_rounds": current_section.get("target_rounds"),
-                    "recent_history_count": len(recent_history or []),
-                },
-                context_refs={
-                    "interview_plan_id": session.interview_plan_id,
-                    "execution_id": execution.id,
-                    "answer_message_id": answer_message.id,
-                    "current_section_key": current_section.get("section_key"),
-                },
-                evidence_packet=evidence_packet,
-            )
             try:
-                judge_result, _raw_response, agent_run = await self.agent_run_executor.run_context(
-                    context=run_context,
+                run_result = await self.agent_run_executor.execute(
+                    prompt_id="topic_completion_judge",
+                    project_id=session.project_id,
+                    session_id=session.id,
+                    input_snapshot={
+                        "round_no": round_no,
+                        "answer_message_id": answer_message.id,
+                        "current_section_key": current_section.get("section_key"),
+                        "current_section_completed_rounds": current_section.get("completed_rounds"),
+                        "current_section_target_rounds": current_section.get("target_rounds"),
+                        "recent_history_count": len(recent_history or []),
+                    },
+                    context_refs={
+                        "interview_plan_id": session.interview_plan_id,
+                        "execution_id": execution.id,
+                        "answer_message_id": answer_message.id,
+                        "current_section_key": current_section.get("section_key"),
+                    },
+                    evidence_packet=evidence_packet,
                     model_name=self.llm.model,
                     call=lambda: self.llm.judge_topic_completion(
                         current_section=current_section,
@@ -570,10 +549,10 @@ class InterviewService:
                 logger.warning("Failed to judge topic completion", exc_info=True)
             else:
                 judge_result = {
-                    **(judge_result or {}),
-                    "agent_run_id": agent_run.id,
-                    "schema_version": run_context.definition.output_schema,
-                    "evidence_refs": run_context.evidence_refs,
+                    **(run_result.output or {}),
+                    "agent_run_id": run_result.agent_run.id,
+                    "schema_version": run_result.output_schema,
+                    "evidence_refs": run_result.evidence_refs,
                 }
         return self.execution_service.advance_after_answer(execution, answer, round_no, judge_result)
 

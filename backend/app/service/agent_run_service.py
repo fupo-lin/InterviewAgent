@@ -8,6 +8,19 @@ from app.service.prompt_registry import PromptDefinition, prompt_registry
 
 
 @dataclass(frozen=True)
+class AgentSpec:
+    prompt_id: str
+    project_id: int | None
+    session_id: int | None
+    input_snapshot: dict[str, Any]
+    context_refs: dict[str, Any] = field(default_factory=dict)
+    evidence_packet: dict[str, Any] | None = None
+    evidence_refs: list[str] | None = None
+    output_snapshot: Callable[[Any], dict[str, Any]] | dict[str, Any] | None = None
+    commit_on_failure: bool = True
+
+
+@dataclass(frozen=True)
 class AgentRunContext:
     definition: PromptDefinition
     project_id: int | None
@@ -15,6 +28,44 @@ class AgentRunContext:
     input_snapshot: dict[str, Any]
     context_refs: dict[str, Any]
     evidence_refs: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class AgentRunResult:
+    output: Any
+    raw_response: dict | None
+    agent_run: AgentRun
+    context: AgentRunContext
+
+    @property
+    def definition(self) -> PromptDefinition:
+        return self.context.definition
+
+    @property
+    def output_schema(self) -> str:
+        return self.context.definition.output_schema
+
+    @property
+    def evidence_refs(self) -> list[str]:
+        return self.context.evidence_refs
+
+    def artifact_fields(self) -> dict[str, Any]:
+        return {
+            "content": self.output,
+            "raw_response": self.raw_response,
+            "agent_run_id": self.agent_run.id,
+            "schema_version": self.output_schema,
+            "evidence_refs": self.evidence_refs,
+        }
+
+    def message_fields(self) -> dict[str, Any]:
+        return {
+            "content": self.output,
+            "raw_response": self.raw_response,
+            "agent_run_id": self.agent_run.id,
+            "schema_version": self.output_schema,
+            "evidence_refs": self.evidence_refs,
+        }
 
 
 class AgentRunRecorder:
@@ -149,6 +200,30 @@ class AgentRunExecutor:
     def definition(self, prompt_id: str) -> PromptDefinition:
         return prompt_registry.get(prompt_id)
 
+    def spec(
+        self,
+        prompt_id: str,
+        project_id: int | None,
+        session_id: int | None,
+        input_snapshot: dict[str, Any],
+        context_refs: dict[str, Any] | None = None,
+        evidence_packet: dict[str, Any] | None = None,
+        evidence_refs: list[str] | None = None,
+        output_snapshot: Callable[[Any], dict[str, Any]] | dict[str, Any] | None = None,
+        commit_on_failure: bool = True,
+    ) -> AgentSpec:
+        return AgentSpec(
+            prompt_id=prompt_id,
+            project_id=project_id,
+            session_id=session_id,
+            input_snapshot=input_snapshot,
+            context_refs=context_refs or {},
+            evidence_packet=evidence_packet,
+            evidence_refs=evidence_refs,
+            output_snapshot=output_snapshot,
+            commit_on_failure=commit_on_failure,
+        )
+
     def context(
         self,
         prompt_id: str,
@@ -173,6 +248,69 @@ class AgentRunExecutor:
             input_snapshot=resolved_input_snapshot,
             context_refs=context_refs or {},
             evidence_refs=resolved_evidence_refs,
+        )
+
+    def context_from_spec(self, spec: AgentSpec) -> AgentRunContext:
+        return self.context(
+            prompt_id=spec.prompt_id,
+            project_id=spec.project_id,
+            session_id=spec.session_id,
+            input_snapshot=spec.input_snapshot,
+            context_refs=spec.context_refs,
+            evidence_packet=spec.evidence_packet,
+            evidence_refs=spec.evidence_refs,
+        )
+
+    async def execute(
+        self,
+        prompt_id: str,
+        project_id: int | None,
+        session_id: int | None,
+        input_snapshot: dict[str, Any],
+        model_name: str,
+        call: Callable[[], Awaitable[tuple[Any, dict | None]]],
+        context_refs: dict[str, Any] | None = None,
+        evidence_packet: dict[str, Any] | None = None,
+        evidence_refs: list[str] | None = None,
+        output_snapshot: Callable[[Any], dict[str, Any]] | dict[str, Any] | None = None,
+        commit_on_failure: bool = True,
+    ) -> AgentRunResult:
+        spec = self.spec(
+            prompt_id=prompt_id,
+            project_id=project_id,
+            session_id=session_id,
+            input_snapshot=input_snapshot,
+            context_refs=context_refs,
+            evidence_packet=evidence_packet,
+            evidence_refs=evidence_refs,
+            output_snapshot=output_snapshot,
+            commit_on_failure=commit_on_failure,
+        )
+        return await self.execute_spec(
+            spec=spec,
+            model_name=model_name,
+            call=call,
+        )
+
+    async def execute_spec(
+        self,
+        spec: AgentSpec,
+        model_name: str,
+        call: Callable[[], Awaitable[tuple[Any, dict | None]]],
+    ) -> AgentRunResult:
+        context = self.context_from_spec(spec)
+        output, raw_response, agent_run = await self.run_context(
+            context=context,
+            model_name=model_name,
+            call=call,
+            output_snapshot=spec.output_snapshot,
+            commit_on_failure=spec.commit_on_failure,
+        )
+        return AgentRunResult(
+            output=output,
+            raw_response=raw_response,
+            agent_run=agent_run,
+            context=context,
         )
 
     async def run(

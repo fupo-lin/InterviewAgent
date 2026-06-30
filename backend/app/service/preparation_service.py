@@ -106,7 +106,7 @@ class PreparationService:
             jd_id=jd.id,
             jd_content=jd.raw_content,
         )
-        run_context = self.agent_run_executor.context(
+        run_result = await self.agent_run_executor.execute(
             prompt_id="jd_analysis",
             project_id=project.id,
             session_id=None,
@@ -122,20 +122,13 @@ class PreparationService:
                 "project_id": project.id,
             },
             evidence_packet=evidence_packet,
-        )
-        content, raw_response, agent_run = await self.agent_run_executor.run_context(
-            context=run_context,
             model_name=self.llm.model,
             call=lambda: self.llm.generate_jd_analysis(jd.raw_content),
         )
         saved = self.jd_analysis_repo.create(
             project_id=project.id,
             jd_id=jd.id,
-            content=content,
-            raw_response=raw_response,
-            agent_run_id=agent_run.id,
-            schema_version=run_context.definition.output_schema,
-            evidence_refs=run_context.evidence_refs,
+            **run_result.artifact_fields(),
         )
         self.db.commit()
         return AnalysisResponse(analysisId=saved.id, analysis=saved.content)
@@ -173,7 +166,7 @@ class PreparationService:
             resume_id=resume.id,
             resume_content=resume.raw_content,
         )
-        run_context = self.agent_run_executor.context(
+        run_result = await self.agent_run_executor.execute(
             prompt_id="resume_analysis",
             project_id=project.id,
             session_id=None,
@@ -188,20 +181,13 @@ class PreparationService:
                 "project_id": project.id,
             },
             evidence_packet=evidence_packet,
-        )
-        content, raw_response, agent_run = await self.agent_run_executor.run_context(
-            context=run_context,
             model_name=self.llm.model,
             call=lambda: self.llm.generate_resume_profile(resume.raw_content),
         )
         saved = self.resume_profile_repo.create(
             project_id=project.id,
             resume_id=resume.id,
-            content=content,
-            raw_response=raw_response,
-            agent_run_id=agent_run.id,
-            schema_version=run_context.definition.output_schema,
-            evidence_refs=run_context.evidence_refs,
+            **run_result.artifact_fields(),
         )
         self.db.commit()
         return ResumeProfileResponse(profileId=saved.id, profile=saved.content)
@@ -256,7 +242,7 @@ class PreparationService:
             resume_profile=resume_profile.content if resume_profile else None,
             gap_analysis=gap_analysis.content if gap_analysis else None,
         )
-        run_context = self.agent_run_executor.context(
+        run_result = await self.agent_run_executor.execute(
             prompt_id="interview_plan",
             project_id=project.id,
             session_id=None,
@@ -279,9 +265,6 @@ class PreparationService:
                 "gap_analysis_evidence_refs": getattr(gap_analysis, "evidence_refs", None) or [],
             },
             evidence_packet=evidence_packet,
-        )
-        plan_content, raw_response, agent_run = await self.agent_run_executor.run_context(
-            context=run_context,
             model_name=self.llm.model,
             call=lambda: self.llm.generate_interview_plan(
                 plan_mode=plan_mode,
@@ -297,11 +280,7 @@ class PreparationService:
             resume_profile_id=resume_profile.id if resume_profile else None,
             gap_analysis_id=gap_analysis.id if gap_analysis else None,
             plan_mode=plan_mode,
-            content=plan_content,
-            raw_response=raw_response,
-            agent_run_id=agent_run.id,
-            schema_version=run_context.definition.output_schema,
-            evidence_refs=run_context.evidence_refs,
+            **run_result.artifact_fields(),
         )
         self.db.commit()
         return InterviewPlanResponse(
@@ -331,7 +310,7 @@ class PreparationService:
             jd_analysis=jd_analysis.content,
             resume_profile=resume_profile.content,
         )
-        run_context = self.agent_run_executor.context(
+        run_result = await self.agent_run_executor.execute(
             prompt_id="gap_analysis",
             project_id=project_id,
             session_id=None,
@@ -350,9 +329,6 @@ class PreparationService:
                 "resume_profile_evidence_refs": getattr(resume_profile, "evidence_refs", None) or [],
             },
             evidence_packet=evidence_packet,
-        )
-        content, raw_response, agent_run = await self.agent_run_executor.run_context(
-            context=run_context,
             model_name=self.llm.model,
             call=lambda: self.llm.generate_gap_analysis(
                 jd_analysis.content,
@@ -363,11 +339,7 @@ class PreparationService:
             project_id=project_id,
             jd_analysis_id=jd_analysis.id,
             resume_profile_id=resume_profile.id,
-            content=content,
-            raw_response=raw_response,
-            agent_run_id=agent_run.id,
-            schema_version=run_context.definition.output_schema,
-            evidence_refs=run_context.evidence_refs,
+            **run_result.artifact_fields(),
         )
 
     def overview(self, project_uid: str) -> ProjectOverviewResponse:
@@ -488,7 +460,7 @@ class PreparationService:
             execution_state=execution_state,
             transcript_messages=transcript_messages or [],
         )
-        run_context = self.agent_run_executor.context(
+        spec = self.agent_run_executor.spec(
             prompt_id="project_candidate_profile",
             project_id=project_id,
             session_id=source_session_id,
@@ -508,8 +480,8 @@ class PreparationService:
             },
             evidence_packet=evidence_packet,
         )
-        content, raw_response, agent_run = await self.agent_run_executor.run_context(
-            context=run_context,
+        run_result = await self.agent_run_executor.execute_spec(
+            spec=spec,
             model_name=self.llm.model,
             call=lambda: self.llm.generate_project_candidate_profile(
                 target_role=target_role,
@@ -525,11 +497,7 @@ class PreparationService:
         return self.candidate_profile_repo.create(
             project_id=project_id,
             source_session_id=source_session_id,
-            content=content,
-            raw_response=raw_response,
-            agent_run_id=agent_run.id,
-            schema_version=run_context.definition.output_schema,
-            evidence_refs=run_context.evidence_refs,
+            **run_result.artifact_fields(),
         )
 
     async def generate_resume_authenticity_for_project(
@@ -553,7 +521,7 @@ class PreparationService:
             execution_state=execution_state,
             transcript_messages=transcript_messages or [],
         )
-        run_context = self.agent_run_executor.context(
+        spec = self.agent_run_executor.spec(
             prompt_id="resume_authenticity",
             project_id=project_id,
             session_id=session_id,
@@ -572,8 +540,8 @@ class PreparationService:
             },
             evidence_packet=evidence_packet,
         )
-        content, raw_response, agent_run = await self.agent_run_executor.run_context(
-            context=run_context,
+        run_result = await self.agent_run_executor.execute_spec(
+            spec=spec,
             model_name=self.llm.model,
             call=lambda: self.llm.generate_resume_authenticity_report(
                 resume_content=resume_content,
@@ -591,11 +559,7 @@ class PreparationService:
             project_id=project_id,
             resume_id=resume_id,
             session_id=session_id,
-            content=content,
-            raw_response=raw_response,
-            agent_run_id=agent_run.id,
-            schema_version=run_context.definition.output_schema,
-            evidence_refs=run_context.evidence_refs,
+            **run_result.artifact_fields(),
         )
 
     async def generate_resume_authenticity_for_latest_resume(
@@ -643,7 +607,7 @@ class PreparationService:
             transcript_messages=transcript_messages or [],
             authenticity_report=resume_authenticity,
         )
-        run_context = self.agent_run_executor.context(
+        spec = self.agent_run_executor.spec(
             prompt_id="resume_rewrite",
             project_id=project_id,
             session_id=None,
@@ -665,8 +629,8 @@ class PreparationService:
             },
             evidence_packet=evidence_packet,
         )
-        content, raw_response, agent_run = await self.agent_run_executor.run_context(
-            context=run_context,
+        run_result = await self.agent_run_executor.execute_spec(
+            spec=spec,
             model_name=self.llm.model,
             call=lambda: self.llm.generate_resume_rewrite(
                 rewrite_mode=rewrite_mode,
@@ -686,11 +650,7 @@ class PreparationService:
             resume_id=resume_id,
             rewrite_mode=rewrite_mode,
             authenticity_report_id=authenticity_report_id,
-            content=content,
-            raw_response=raw_response,
-            agent_run_id=agent_run.id,
-            schema_version=run_context.definition.output_schema,
-            evidence_refs=run_context.evidence_refs,
+            **run_result.artifact_fields(),
         )
 
     def get_latest_interview_plan(self, project_uid: str):
