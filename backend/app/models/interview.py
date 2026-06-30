@@ -67,6 +67,9 @@ class InterviewEvaluation(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     session_id: Mapped[int] = mapped_column(ForeignKey("interview_sessions.id"), nullable=False)
+    agent_run_id: Mapped[int | None] = mapped_column(ForeignKey("agent_runs.id"), nullable=True)
+    schema_version: Mapped[str] = mapped_column(String(80), default="InterviewEvaluation.v1", nullable=False)
+    evidence_refs: Mapped[list | None] = mapped_column(JSON, nullable=True)
     strengths: Mapped[str | None] = mapped_column(Text, nullable=True)
     weaknesses: Mapped[str | None] = mapped_column(Text, nullable=True)
     suggestions: Mapped[str | None] = mapped_column(Text, nullable=True)

@@ -12,10 +12,13 @@ from app.repository.interview_repository import (
     InterviewSummaryRepository,
 )
 from app.repository.preparation_repository import InterviewPlanRepository, PreparationProjectRepository
+from app.service.agent_run_service import AgentRunRecorder
+from app.service.evidence_service import EvidencePacketBuilder
 from app.service.interview_execution_service import InterviewExecutionService
 from app.service.preparation_service import PreparationService
 from app.schemas.interview import DeleteResponse, EvaluationResponse, HistoryResponse, MessageResponse
 from app.service.llm_service import LLMService
+from app.service.prompt_registry import prompt_registry
 
 
 logger = logging.getLogger(__name__)
@@ -33,6 +36,8 @@ class InterviewService:
         self.project_repo = PreparationProjectRepository(db)
         self.plan_repo = InterviewPlanRepository(db)
         self.llm = LLMService()
+        self.evidence_builder = EvidencePacketBuilder()
+        self.agent_run_recorder = AgentRunRecorder(db)
 
     async def start(self, role_name: str) -> tuple[str, str]:
         session_uid = uuid4().hex
@@ -139,6 +144,14 @@ class InterviewService:
             return self._evaluation_to_response(existing)
 
         history = self._evaluation_context(session.id)
+        full_history = self.message_repo.list_by_session_id(session.id)
+        execution = self.execution_repo.get_latest_by_session_id(session.id)
+        evidence_packet = self.evidence_builder.build_evaluation_packet(
+            session_id=session.id,
+            project_id=session.project_id,
+            execution_state=execution.state if execution else None,
+            transcript_messages=full_history,
+        )
         candidate_profile = self.summary_repo.get_latest_by_session_id(session.id, "candidate_profile")
         conversation_summary = self.summary_repo.get_latest_by_session_id(session.id, "conversation")
         evaluation, _raw_response = await self.llm.generate_evaluation(
@@ -146,6 +159,31 @@ class InterviewService:
             candidate_profile=candidate_profile.content if candidate_profile else None,
             conversation_summary=conversation_summary.content if conversation_summary else None,
             plan_context=self._session_plan_context(session),
+            evidence_packet=evidence_packet,
+        )
+        definition = prompt_registry.get("evaluation")
+        agent_run = self.agent_run_recorder.record_success(
+            definition=definition,
+            project_id=session.project_id,
+            session_id=session.id,
+            input_snapshot={
+                "history_message_count": len(history),
+                "full_history_message_count": len(full_history),
+                "has_candidate_profile": bool(candidate_profile),
+                "has_conversation_summary": bool(conversation_summary),
+                "has_interview_plan": bool(session.interview_plan_id),
+                "evidence_packet": evidence_packet,
+            },
+            context_refs={
+                "candidate_profile_summary_id": candidate_profile.id if candidate_profile else None,
+                "conversation_summary_id": conversation_summary.id if conversation_summary else None,
+                "interview_plan_id": session.interview_plan_id,
+                "execution_id": execution.id if execution else None,
+            },
+            evidence_refs=self.evidence_builder.refs(evidence_packet),
+            output_snapshot=evaluation,
+            raw_response=_raw_response,
+            model_name=self.llm.model,
         )
         saved = self.evaluation_repo.create(
             session_id=session.id,
@@ -157,6 +195,9 @@ class InterviewService:
             project_experience=evaluation.get("project_experience"),
             communication=evaluation.get("communication"),
             improvement_suggestions=evaluation.get("improvement_suggestions"),
+            agent_run_id=agent_run.id,
+            schema_version=definition.output_schema,
+            evidence_refs=self.evidence_builder.refs(evidence_packet),
         )
         self.session_repo.mark_finished(session)
         self.execution_service.mark_finished(session.id)

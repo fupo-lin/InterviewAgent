@@ -21,6 +21,18 @@ class PromptRegistry:
             item.prompt_id: item
             for item in (
                 PromptDefinition(
+                    prompt_id="evaluation",
+                    prompt_file="evaluation.txt",
+                    version="3.0.0",
+                    owner_agent="EvaluationAgent",
+                    task="evaluation_generation",
+                    input_schema="EvaluationInput.v1",
+                    output_schema="InterviewEvaluation.v1",
+                    required_context=(),
+                    optional_context=("InterviewPlan", "CandidateProfile", "ConversationSummary"),
+                    required_evidence=("interview_answer", "execution_probe"),
+                ),
+                PromptDefinition(
                     prompt_id="resume_authenticity",
                     prompt_file="resume_authenticity.txt",
                     version="3.0.0",

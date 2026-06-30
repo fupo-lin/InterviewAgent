@@ -64,6 +64,7 @@ class LLMService:
         candidate_profile: str | None = None,
         conversation_summary: str | None = None,
         plan_context: str | None = None,
+        evidence_packet: dict | None = None,
     ) -> tuple[dict[str, str], dict | None]:
         prompt = load_prompt("evaluation.txt")
         transcript = self._format_transcript(history)
@@ -76,6 +77,13 @@ class LLMService:
             messages.append({"role": "system", "content": context})
         if plan_context:
             messages.append({"role": "system", "content": plan_context})
+        if evidence_packet:
+            messages.append(
+                {
+                    "role": "system",
+                    "content": f"结构化证据包 EvidencePacket:\n{json.dumps(evidence_packet, ensure_ascii=False)}",
+                }
+            )
         messages.append({"role": "user", "content": transcript})
         content, raw_response = await self._chat_completion(messages)
         return self._parse_evaluation(content), raw_response

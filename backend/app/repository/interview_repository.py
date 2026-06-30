@@ -166,9 +166,15 @@ class InterviewEvaluationRepository:
         project_experience: str | None = None,
         communication: str | None = None,
         improvement_suggestions: str | None = None,
+        agent_run_id: int | None = None,
+        schema_version: str = "InterviewEvaluation.v1",
+        evidence_refs: list[str] | None = None,
     ) -> InterviewEvaluation:
         evaluation = InterviewEvaluation(
             session_id=session_id,
+            agent_run_id=agent_run_id,
+            schema_version=schema_version,
+            evidence_refs=evidence_refs or [],
             strengths=strengths,
             weaknesses=weaknesses,
             suggestions=suggestions,

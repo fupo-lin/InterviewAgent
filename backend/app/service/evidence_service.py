@@ -36,6 +36,25 @@ class EvidenceItem:
 
 
 class EvidencePacketBuilder:
+    def build_evaluation_packet(
+        self,
+        session_id: int,
+        project_id: int | None = None,
+        execution_state: dict | None = None,
+        transcript_messages: list[InterviewMessage] | None = None,
+    ) -> dict[str, Any]:
+        items: list[EvidenceItem] = []
+        items.extend(self._interview_answers(project_id, transcript_messages or []))
+        items.extend(self._execution_probes(project_id, execution_state or {}))
+        return {
+            "packet_id": f"evaluation_{session_id}_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}",
+            "task": "evaluation_generation",
+            "project_id": project_id,
+            "session_id": session_id,
+            "evidence_items": [item.to_dict() for item in items],
+            "missing_evidence": self._missing_evaluation_evidence(items),
+        }
+
     def build_resume_packet(
         self,
         task: str,
@@ -117,7 +136,7 @@ class EvidencePacketBuilder:
             )
         return items
 
-    def _interview_answers(self, project_id: int, messages: list[InterviewMessage]) -> list[EvidenceItem]:
+    def _interview_answers(self, project_id: int | None, messages: list[InterviewMessage]) -> list[EvidenceItem]:
         return [
             EvidenceItem(
                 evidence_id=f"interview_answer_{message.id}",
@@ -135,7 +154,7 @@ class EvidencePacketBuilder:
             if message.role_type == "user"
         ]
 
-    def _execution_probes(self, project_id: int, execution_state: dict) -> list[EvidenceItem]:
+    def _execution_probes(self, project_id: int | None, execution_state: dict) -> list[EvidenceItem]:
         items: list[EvidenceItem] = []
         for section_index, section in enumerate(execution_state.get("sections") or [], start=1):
             section_key = section.get("section_key") or f"section_{section_index}"
@@ -196,6 +215,14 @@ class EvidencePacketBuilder:
         if not any("指标" in item.content_excerpt or "QPS" in item.content_excerpt for item in items):
             missing.append("量化指标")
         return list(dict.fromkeys(item for item in missing if item))
+
+    def _missing_evaluation_evidence(self, items: list[EvidenceItem]) -> list[str]:
+        missing = []
+        if not any(item.evidence_type == "interview_answer" for item in items):
+            missing.append("面试回答证据")
+        if not any(item.evidence_type == "execution_probe" for item in items):
+            missing.append("面试计划执行证据")
+        return missing
 
     def _excerpt(self, content: str, limit: int = 300) -> str:
         text = " ".join(str(content).split())
