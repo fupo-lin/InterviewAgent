@@ -254,16 +254,10 @@ class PreparationService:
                 detail="Gap analysis requires both JD analysis and resume profile",
             )
 
-        content, raw_response = await self.llm.generate_gap_analysis(
-            jd_analysis.content,
-            resume_profile.content,
-        )
-        saved = self.gap_repo.create(
+        saved = await self.generate_gap_analysis_for_project(
             project_id=project.id,
-            jd_analysis_id=jd_analysis.id,
-            resume_profile_id=resume_profile.id,
-            content=content,
-            raw_response=raw_response,
+            jd_analysis=jd_analysis,
+            resume_profile=resume_profile,
         )
         self.db.commit()
         return GapAnalysisResponse(gapAnalysisId=saved.id, gapAnalysis=saved.content)
@@ -283,16 +277,10 @@ class PreparationService:
         if jd_analysis and resume_profile:
             gap_analysis = self.gap_repo.get_latest_by_project_id(project.id)
             if not gap_analysis:
-                gap_content, gap_raw = await self.llm.generate_gap_analysis(
-                    jd_analysis.content,
-                    resume_profile.content,
-                )
-                gap_analysis = self.gap_repo.create(
+                gap_analysis = await self.generate_gap_analysis_for_project(
                     project_id=project.id,
-                    jd_analysis_id=jd_analysis.id,
-                    resume_profile_id=resume_profile.id,
-                    content=gap_content,
-                    raw_response=gap_raw,
+                    jd_analysis=jd_analysis,
+                    resume_profile=resume_profile,
                 )
 
         plan_mode = self._plan_mode(jd_analysis, resume_profile)
@@ -317,6 +305,85 @@ class PreparationService:
             interviewPlanId=saved.id,
             planMode=saved.plan_mode,
             plan=saved.content,
+        )
+
+    async def generate_gap_analysis_for_project(
+        self,
+        project_id: int,
+        jd_analysis=None,
+        resume_profile=None,
+    ):
+        jd_analysis = jd_analysis or self.jd_analysis_repo.get_latest_by_project_id(project_id)
+        resume_profile = resume_profile or self.resume_profile_repo.get_latest_by_project_id(project_id)
+        if not jd_analysis or not resume_profile:
+            raise HTTPException(
+                status_code=400,
+                detail="Gap analysis requires both JD analysis and resume profile",
+            )
+
+        evidence_packet = self.evidence_builder.build_gap_analysis_packet(
+            project_id=project_id,
+            jd_analysis_id=jd_analysis.id,
+            resume_profile_id=resume_profile.id,
+            jd_analysis=jd_analysis.content,
+            resume_profile=resume_profile.content,
+        )
+        definition = prompt_registry.get("gap_analysis")
+        evidence_refs = self.evidence_builder.refs(evidence_packet)
+        input_snapshot = {
+            "jd_analysis_id": jd_analysis.id,
+            "resume_profile_id": resume_profile.id,
+            "jd_analysis_schema_version": getattr(jd_analysis, "schema_version", None),
+            "resume_profile_schema_version": getattr(resume_profile, "schema_version", None),
+            "evidence_packet": evidence_packet,
+        }
+        context_refs = {
+            "jd_analysis_id": jd_analysis.id,
+            "resume_profile_id": resume_profile.id,
+            "jd_analysis_agent_run_id": getattr(jd_analysis, "agent_run_id", None),
+            "resume_profile_agent_run_id": getattr(resume_profile, "agent_run_id", None),
+            "jd_analysis_evidence_refs": getattr(jd_analysis, "evidence_refs", None) or [],
+            "resume_profile_evidence_refs": getattr(resume_profile, "evidence_refs", None) or [],
+        }
+        try:
+            content, raw_response = await self.llm.generate_gap_analysis(
+                jd_analysis.content,
+                resume_profile.content,
+            )
+        except Exception as exc:
+            self.agent_run_recorder.record_failure(
+                definition=definition,
+                project_id=project_id,
+                session_id=None,
+                input_snapshot=input_snapshot,
+                context_refs=context_refs,
+                evidence_refs=evidence_refs,
+                error=exc,
+                model_name=self.llm.model,
+            )
+            self.db.commit()
+            raise
+
+        agent_run = self.agent_run_recorder.record_success(
+            definition=definition,
+            project_id=project_id,
+            session_id=None,
+            input_snapshot=input_snapshot,
+            context_refs=context_refs,
+            evidence_refs=evidence_refs,
+            output_snapshot=content,
+            raw_response=raw_response,
+            model_name=self.llm.model,
+        )
+        return self.gap_repo.create(
+            project_id=project_id,
+            jd_analysis_id=jd_analysis.id,
+            resume_profile_id=resume_profile.id,
+            content=content,
+            raw_response=raw_response,
+            agent_run_id=agent_run.id,
+            schema_version=definition.output_schema,
+            evidence_refs=evidence_refs,
         )
 
     def overview(self, project_uid: str) -> ProjectOverviewResponse:

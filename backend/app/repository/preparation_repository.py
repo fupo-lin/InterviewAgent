@@ -194,11 +194,17 @@ class GapAnalysisRepository(BaseProjectRepository):
         resume_profile_id: int,
         content: dict,
         raw_response: dict | None = None,
+        agent_run_id: int | None = None,
+        schema_version: str = "GapAnalysis.v1",
+        evidence_refs: list[str] | None = None,
     ) -> GapAnalysis:
         item = GapAnalysis(
             project_id=project_id,
             jd_analysis_id=jd_analysis_id,
             resume_profile_id=resume_profile_id,
+            agent_run_id=agent_run_id,
+            schema_version=schema_version,
+            evidence_refs=evidence_refs or [],
             content=content,
             raw_response=raw_response,
         )

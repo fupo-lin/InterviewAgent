@@ -129,10 +129,77 @@ class EvidencePacketBuilder:
             "missing_evidence": [] if resume_content.strip() else ["resume_source_text"],
         }
 
+    def build_gap_analysis_packet(
+        self,
+        project_id: int,
+        jd_analysis_id: int,
+        resume_profile_id: int,
+        jd_analysis: dict,
+        resume_profile: dict,
+    ) -> dict[str, Any]:
+        items: list[EvidenceItem] = []
+        items.extend(self._jd_requirements(project_id, jd_analysis_id, jd_analysis))
+        items.extend(self._resume_claims_from_profile(project_id, resume_profile_id, resume_profile))
+        return {
+            "packet_id": f"gap_analysis_{project_id}_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}",
+            "task": "gap_analysis",
+            "project_id": project_id,
+            "evidence_items": [item.to_dict() for item in items],
+            "missing_evidence": self._missing_gap_evidence(items),
+        }
+
     def refs(self, packet: dict[str, Any] | None) -> list[str]:
         if not packet:
             return []
         return [item.get("evidence_id", "") for item in packet.get("evidence_items", []) if item.get("evidence_id")]
+
+    def _jd_requirements(self, project_id: int, jd_analysis_id: int, jd_analysis: dict) -> list[EvidenceItem]:
+        items: list[EvidenceItem] = []
+        requirement_sources = (
+            ("core_responsibilities", "responsibility"),
+            ("required_skills", "required_skill"),
+            ("preferred_skills", "preferred_skill"),
+            ("interview_focus", "interview_focus"),
+        )
+        for field_name, tag in requirement_sources:
+            for index, value in enumerate(jd_analysis.get(field_name) or [], start=1):
+                items.append(
+                    EvidenceItem(
+                        evidence_id=f"jd_analysis_{jd_analysis_id}_{field_name}_{index}",
+                        evidence_type="jd_requirement",
+                        source_type="jd_analysis",
+                        source_id=jd_analysis_id,
+                        project_id=project_id,
+                        content_excerpt=self._excerpt(str(value)),
+                        tags=("jd", tag),
+                        confidence="medium",
+                    )
+                )
+        return items
+
+    def _resume_claims_from_profile(
+        self,
+        project_id: int,
+        resume_profile_id: int,
+        resume_profile: dict,
+    ) -> list[EvidenceItem]:
+        items = self._resume_claims(project_id, resume_profile)
+        return [
+            EvidenceItem(
+                evidence_id=f"resume_profile_{resume_profile_id}_{item.evidence_id}",
+                evidence_type=item.evidence_type,
+                source_type="resume_profile",
+                source_id=resume_profile_id,
+                project_id=item.project_id,
+                session_id=item.session_id,
+                round_no=item.round_no,
+                content_excerpt=item.content_excerpt,
+                tags=item.tags,
+                confidence=item.confidence,
+                metadata=item.metadata,
+            )
+            for item in items
+        ]
 
     def _resume_claims(self, project_id: int, resume_profile: dict | None) -> list[EvidenceItem]:
         if not resume_profile:
@@ -267,6 +334,14 @@ class EvidencePacketBuilder:
         if not any("指标" in item.content_excerpt or "QPS" in item.content_excerpt for item in items):
             missing.append("量化指标")
         return list(dict.fromkeys(item for item in missing if item))
+
+    def _missing_gap_evidence(self, items: list[EvidenceItem]) -> list[str]:
+        missing = []
+        if not any(item.evidence_type == "jd_requirement" for item in items):
+            missing.append("jd_requirement")
+        if not any(item.evidence_type == "resume_claim" for item in items):
+            missing.append("resume_claim")
+        return missing
 
     def _missing_evaluation_evidence(self, items: list[EvidenceItem]) -> list[str]:
         missing = []
