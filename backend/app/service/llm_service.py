@@ -6,6 +6,7 @@ import httpx
 from app.config.settings import settings
 from app.models.interview import InterviewMessage
 from app.service.prompt_service import load_prompt
+from app.service.prompt_registry import prompt_registry
 
 
 class LLMService:
@@ -66,7 +67,7 @@ class LLMService:
         plan_context: str | None = None,
         evidence_packet: dict | None = None,
     ) -> tuple[dict[str, str], dict | None]:
-        prompt = load_prompt("evaluation.txt")
+        prompt = load_prompt(prompt_registry.prompt_file("evaluation"))
         transcript = self._format_transcript(history)
         if not self.api_key:
             return self._mock_evaluation(history), {"mock": True}
@@ -208,7 +209,7 @@ class LLMService:
         evidence_packet: dict | None = None,
     ) -> tuple[dict, dict | None]:
         prompt = load_prompt(
-            "project_candidate_profile.txt",
+            prompt_registry.prompt_file("project_candidate_profile"),
             target_role=target_role or "目标岗位",
             jd_analysis=json.dumps(jd_analysis or {}, ensure_ascii=False),
             resume_profile=json.dumps(resume_profile or {}, ensure_ascii=False),
@@ -252,7 +253,7 @@ class LLMService:
         evidence_packet: dict | None = None,
     ) -> tuple[dict, dict | None]:
         prompt = load_prompt(
-            "resume_authenticity.txt",
+            prompt_registry.prompt_file("resume_authenticity"),
             resume_content=resume_content,
             resume_profile=json.dumps(resume_profile or {}, ensure_ascii=False),
             jd_analysis=json.dumps(jd_analysis or {}, ensure_ascii=False),
@@ -298,7 +299,7 @@ class LLMService:
         evidence_packet: dict | None = None,
     ) -> tuple[dict, dict | None]:
         prompt = load_prompt(
-            "resume_rewrite.txt",
+            prompt_registry.prompt_file("resume_rewrite"),
             rewrite_mode=rewrite_mode,
             resume_content=resume_content,
             resume_profile=json.dumps(resume_profile or {}, ensure_ascii=False),

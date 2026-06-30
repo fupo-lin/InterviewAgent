@@ -35,6 +35,9 @@ class PromptRegistry:
             raise KeyError(f"Prompt definition not found: {prompt_id}")
         return definition
 
+    def prompt_file(self, prompt_id: str) -> str:
+        return self.get(prompt_id).prompt_file
+
     def _load_manifest(self, manifest_path: Path) -> list[PromptDefinition]:
         if not manifest_path.exists():
             raise FileNotFoundError(f"Prompt manifest not found: {manifest_path}")
