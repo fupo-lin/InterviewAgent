@@ -154,32 +154,49 @@ class InterviewService:
         )
         candidate_profile = self.summary_repo.get_latest_by_session_id(session.id, "candidate_profile")
         conversation_summary = self.summary_repo.get_latest_by_session_id(session.id, "conversation")
-        evaluation, _raw_response = await self.llm.generate_evaluation(
-            history,
-            candidate_profile=candidate_profile.content if candidate_profile else None,
-            conversation_summary=conversation_summary.content if conversation_summary else None,
-            plan_context=self._session_plan_context(session),
-            evidence_packet=evidence_packet,
-        )
         definition = prompt_registry.get("evaluation")
+        input_snapshot = {
+            "history_message_count": len(history),
+            "full_history_message_count": len(full_history),
+            "has_candidate_profile": bool(candidate_profile),
+            "has_conversation_summary": bool(conversation_summary),
+            "has_interview_plan": bool(session.interview_plan_id),
+            "evidence_packet": evidence_packet,
+        }
+        context_refs = {
+            "candidate_profile_summary_id": candidate_profile.id if candidate_profile else None,
+            "conversation_summary_id": conversation_summary.id if conversation_summary else None,
+            "interview_plan_id": session.interview_plan_id,
+            "execution_id": execution.id if execution else None,
+        }
+        try:
+            evaluation, _raw_response = await self.llm.generate_evaluation(
+                history,
+                candidate_profile=candidate_profile.content if candidate_profile else None,
+                conversation_summary=conversation_summary.content if conversation_summary else None,
+                plan_context=self._session_plan_context(session),
+                evidence_packet=evidence_packet,
+            )
+        except Exception as exc:
+            self.agent_run_recorder.record_failure(
+                definition=definition,
+                project_id=session.project_id,
+                session_id=session.id,
+                input_snapshot=input_snapshot,
+                context_refs=context_refs,
+                evidence_refs=self.evidence_builder.refs(evidence_packet),
+                error=exc,
+                model_name=self.llm.model,
+            )
+            self.db.commit()
+            raise
+
         agent_run = self.agent_run_recorder.record_success(
             definition=definition,
             project_id=session.project_id,
             session_id=session.id,
-            input_snapshot={
-                "history_message_count": len(history),
-                "full_history_message_count": len(full_history),
-                "has_candidate_profile": bool(candidate_profile),
-                "has_conversation_summary": bool(conversation_summary),
-                "has_interview_plan": bool(session.interview_plan_id),
-                "evidence_packet": evidence_packet,
-            },
-            context_refs={
-                "candidate_profile_summary_id": candidate_profile.id if candidate_profile else None,
-                "conversation_summary_id": conversation_summary.id if conversation_summary else None,
-                "interview_plan_id": session.interview_plan_id,
-                "execution_id": execution.id if execution else None,
-            },
+            input_snapshot=input_snapshot,
+            context_refs=context_refs,
             evidence_refs=self.evidence_builder.refs(evidence_packet),
             output_snapshot=evaluation,
             raw_response=_raw_response,

@@ -20,27 +20,18 @@ class AgentRunRecorder:
         evidence_refs: list[str] | None = None,
         context_refs: dict[str, Any] | None = None,
     ) -> AgentRun:
-        item = AgentRun(
-            agent_name=definition.owner_agent,
-            agent_version="1.0.0",
-            task_name=definition.task,
+        return self._create(
+            definition=definition,
             project_id=project_id,
             session_id=session_id,
-            input_schema_version=definition.input_schema,
-            output_schema_version=definition.output_schema,
-            prompt_id=definition.prompt_id,
-            prompt_version=definition.version,
-            model_name=model_name,
             input_snapshot=input_snapshot,
-            context_refs=context_refs or {},
-            evidence_refs=evidence_refs or [],
             output_snapshot=output_snapshot,
             raw_response=raw_response,
+            model_name=model_name,
+            evidence_refs=evidence_refs,
+            context_refs=context_refs,
             status="success",
         )
-        self.db.add(item)
-        self.db.flush()
-        return item
 
     def record_failure(
         self,
@@ -52,6 +43,34 @@ class AgentRunRecorder:
         model_name: str,
         evidence_refs: list[str] | None = None,
         context_refs: dict[str, Any] | None = None,
+    ) -> AgentRun:
+        return self._create(
+            definition=definition,
+            project_id=project_id,
+            session_id=session_id,
+            input_snapshot=input_snapshot,
+            output_snapshot={},
+            raw_response=None,
+            model_name=model_name,
+            evidence_refs=evidence_refs,
+            context_refs=context_refs,
+            status="failed",
+            error_message=str(error),
+        )
+
+    def _create(
+        self,
+        definition: PromptDefinition,
+        project_id: int | None,
+        session_id: int | None,
+        input_snapshot: dict[str, Any],
+        output_snapshot: dict[str, Any],
+        raw_response: dict | None,
+        model_name: str,
+        evidence_refs: list[str] | None,
+        context_refs: dict[str, Any] | None,
+        status: str,
+        error_message: str | None = None,
     ) -> AgentRun:
         item = AgentRun(
             agent_name=definition.owner_agent,
@@ -68,10 +87,11 @@ class AgentRunRecorder:
             context_refs=context_refs or {},
             evidence_refs=evidence_refs or [],
             output_snapshot={},
-            raw_response=None,
-            status="failed",
-            error_message=str(error),
+            raw_response=raw_response,
+            status=status,
+            error_message=error_message,
         )
+        item.output_snapshot = output_snapshot
         self.db.add(item)
         self.db.flush()
         return item

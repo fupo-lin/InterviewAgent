@@ -380,6 +380,7 @@ class PreparationService:
                 error=exc,
                 model_name=self.llm.model,
             )
+            self.db.commit()
             raise
 
         agent_run = self.agent_run_recorder.record_success(
@@ -424,37 +425,53 @@ class PreparationService:
             execution_state=execution_state,
             transcript_messages=transcript_messages or [],
         )
-
-        content, raw_response = await self.llm.generate_resume_authenticity_report(
-            resume_content=resume_content,
-            resume_profile=resume_profile.content if resume_profile else None,
-            jd_analysis=jd_analysis.content if jd_analysis else None,
-            gap_analysis=gap_analysis.content if gap_analysis else None,
-            project_candidate_profile=candidate_profile.content if candidate_profile else None,
-            execution_state=execution_state,
-            evaluation=evaluation,
-            transcript_messages=transcript_messages or [],
-            evidence_packet=evidence_packet,
-        )
         definition = prompt_registry.get("resume_authenticity")
+        input_snapshot = {
+            "resume_id": resume_id,
+            "has_resume_profile": bool(resume_profile),
+            "has_jd_analysis": bool(jd_analysis),
+            "has_gap_analysis": bool(gap_analysis),
+            "has_project_candidate_profile": bool(candidate_profile),
+            "evidence_packet": evidence_packet,
+        }
+        context_refs = {
+            "resume_profile_id": resume_profile.id if resume_profile else None,
+            "jd_analysis_id": jd_analysis.id if jd_analysis else None,
+            "gap_analysis_id": gap_analysis.id if gap_analysis else None,
+            "project_candidate_profile_id": candidate_profile.id if candidate_profile else None,
+        }
+        try:
+            content, raw_response = await self.llm.generate_resume_authenticity_report(
+                resume_content=resume_content,
+                resume_profile=resume_profile.content if resume_profile else None,
+                jd_analysis=jd_analysis.content if jd_analysis else None,
+                gap_analysis=gap_analysis.content if gap_analysis else None,
+                project_candidate_profile=candidate_profile.content if candidate_profile else None,
+                execution_state=execution_state,
+                evaluation=evaluation,
+                transcript_messages=transcript_messages or [],
+                evidence_packet=evidence_packet,
+            )
+        except Exception as exc:
+            self.agent_run_recorder.record_failure(
+                definition=definition,
+                project_id=project_id,
+                session_id=session_id,
+                input_snapshot=input_snapshot,
+                context_refs=context_refs,
+                evidence_refs=self.evidence_builder.refs(evidence_packet),
+                error=exc,
+                model_name=self.llm.model,
+            )
+            self.db.commit()
+            raise
+
         agent_run = self.agent_run_recorder.record_success(
             definition=definition,
             project_id=project_id,
             session_id=session_id,
-            input_snapshot={
-                "resume_id": resume_id,
-                "has_resume_profile": bool(resume_profile),
-                "has_jd_analysis": bool(jd_analysis),
-                "has_gap_analysis": bool(gap_analysis),
-                "has_project_candidate_profile": bool(candidate_profile),
-                "evidence_packet": evidence_packet,
-            },
-            context_refs={
-                "resume_profile_id": resume_profile.id if resume_profile else None,
-                "jd_analysis_id": jd_analysis.id if jd_analysis else None,
-                "gap_analysis_id": gap_analysis.id if gap_analysis else None,
-                "project_candidate_profile_id": candidate_profile.id if candidate_profile else None,
-            },
+            input_snapshot=input_snapshot,
+            context_refs=context_refs,
             evidence_refs=self.evidence_builder.refs(evidence_packet),
             output_snapshot=content,
             raw_response=raw_response,
@@ -516,41 +533,57 @@ class PreparationService:
             transcript_messages=transcript_messages or [],
             authenticity_report=resume_authenticity,
         )
-
-        content, raw_response = await self.llm.generate_resume_rewrite(
-            rewrite_mode=rewrite_mode,
-            resume_content=resume_content,
-            resume_profile=resume_profile.content if resume_profile else None,
-            jd_analysis=jd_analysis.content if jd_analysis else None,
-            gap_analysis=gap_analysis.content if gap_analysis else None,
-            project_candidate_profile=candidate_profile.content if candidate_profile else None,
-            resume_authenticity=resume_authenticity,
-            evaluation=evaluation,
-            execution_state=execution_state,
-            evidence_packet=evidence_packet,
-        )
         definition = prompt_registry.get("resume_rewrite")
+        input_snapshot = {
+            "resume_id": resume_id,
+            "rewrite_mode": rewrite_mode,
+            "authenticity_report_id": authenticity_report_id,
+            "has_resume_profile": bool(resume_profile),
+            "has_jd_analysis": bool(jd_analysis),
+            "has_gap_analysis": bool(gap_analysis),
+            "has_project_candidate_profile": bool(candidate_profile),
+            "evidence_packet": evidence_packet,
+        }
+        context_refs = {
+            "resume_profile_id": resume_profile.id if resume_profile else None,
+            "jd_analysis_id": jd_analysis.id if jd_analysis else None,
+            "gap_analysis_id": gap_analysis.id if gap_analysis else None,
+            "project_candidate_profile_id": candidate_profile.id if candidate_profile else None,
+            "authenticity_report_id": authenticity_report_id,
+        }
+        try:
+            content, raw_response = await self.llm.generate_resume_rewrite(
+                rewrite_mode=rewrite_mode,
+                resume_content=resume_content,
+                resume_profile=resume_profile.content if resume_profile else None,
+                jd_analysis=jd_analysis.content if jd_analysis else None,
+                gap_analysis=gap_analysis.content if gap_analysis else None,
+                project_candidate_profile=candidate_profile.content if candidate_profile else None,
+                resume_authenticity=resume_authenticity,
+                evaluation=evaluation,
+                execution_state=execution_state,
+                evidence_packet=evidence_packet,
+            )
+        except Exception as exc:
+            self.agent_run_recorder.record_failure(
+                definition=definition,
+                project_id=project_id,
+                session_id=None,
+                input_snapshot=input_snapshot,
+                context_refs=context_refs,
+                evidence_refs=self.evidence_builder.refs(evidence_packet),
+                error=exc,
+                model_name=self.llm.model,
+            )
+            self.db.commit()
+            raise
+
         agent_run = self.agent_run_recorder.record_success(
             definition=definition,
             project_id=project_id,
             session_id=None,
-            input_snapshot={
-                "resume_id": resume_id,
-                "rewrite_mode": rewrite_mode,
-                "authenticity_report_id": authenticity_report_id,
-                "has_resume_profile": bool(resume_profile),
-                "has_jd_analysis": bool(jd_analysis),
-                "has_gap_analysis": bool(gap_analysis),
-                "has_project_candidate_profile": bool(candidate_profile),
-                "evidence_packet": evidence_packet,
-            },
-            context_refs={
-                "resume_profile_id": resume_profile.id if resume_profile else None,
-                "jd_analysis_id": jd_analysis.id if jd_analysis else None,
-                "gap_analysis_id": gap_analysis.id if gap_analysis else None,
-                "project_candidate_profile_id": candidate_profile.id if candidate_profile else None,
-                "authenticity_report_id": authenticity_report_id,
-            },
+            input_snapshot=input_snapshot,
+            context_refs=context_refs,
             evidence_refs=self.evidence_builder.refs(evidence_packet),
             output_snapshot=content,
             raw_response=raw_response,
