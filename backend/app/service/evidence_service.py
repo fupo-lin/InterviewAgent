@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from app.models.interview import InterviewMessage
@@ -47,7 +47,7 @@ class EvidencePacketBuilder:
         items.extend(self._interview_answers(project_id, transcript_messages or []))
         items.extend(self._execution_probes(project_id, execution_state or {}))
         return {
-            "packet_id": f"evaluation_{session_id}_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}",
+            "packet_id": self._packet_id("evaluation", session_id),
             "task": "evaluation_generation",
             "project_id": project_id,
             "session_id": session_id,
@@ -70,7 +70,7 @@ class EvidencePacketBuilder:
         items.extend(self._execution_probes(project_id, execution_state or {}))
         items.extend(self._authenticity_checks(project_id, authenticity_report or {}))
         return {
-            "packet_id": f"{task}_{project_id}_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}",
+            "packet_id": self._packet_id(task, project_id),
             "task": task,
             "project_id": project_id,
             "evidence_items": [item.to_dict() for item in items],
@@ -96,7 +96,7 @@ class EvidencePacketBuilder:
             )
         ]
         return {
-            "packet_id": f"jd_analysis_{project_id}_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}",
+            "packet_id": self._packet_id("jd_analysis", project_id),
             "task": "jd_analysis",
             "project_id": project_id,
             "evidence_items": [item.to_dict() for item in items],
@@ -122,7 +122,7 @@ class EvidencePacketBuilder:
             )
         ]
         return {
-            "packet_id": f"resume_analysis_{project_id}_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}",
+            "packet_id": self._packet_id("resume_analysis", project_id),
             "task": "resume_analysis",
             "project_id": project_id,
             "evidence_items": [item.to_dict() for item in items],
@@ -141,7 +141,7 @@ class EvidencePacketBuilder:
         items.extend(self._jd_requirements(project_id, jd_analysis_id, jd_analysis))
         items.extend(self._resume_claims_from_profile(project_id, resume_profile_id, resume_profile))
         return {
-            "packet_id": f"gap_analysis_{project_id}_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}",
+            "packet_id": self._packet_id("gap_analysis", project_id),
             "task": "gap_analysis",
             "project_id": project_id,
             "evidence_items": [item.to_dict() for item in items],
@@ -167,7 +167,7 @@ class EvidencePacketBuilder:
         if gap_analysis_id and gap_analysis:
             items.extend(self._gap_findings(project_id, gap_analysis_id, gap_analysis))
         return {
-            "packet_id": f"interview_plan_{project_id}_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}",
+            "packet_id": self._packet_id("interview_plan", project_id),
             "task": "interview_plan_generation",
             "project_id": project_id,
             "plan_mode": plan_mode,
@@ -224,7 +224,7 @@ class EvidencePacketBuilder:
                 )
             )
         return {
-            "packet_id": f"topic_judge_{session_id}_{round_no}_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}",
+            "packet_id": self._packet_id("topic_judge", session_id, round_no),
             "task": "topic_completion_judge",
             "project_id": project_id,
             "session_id": session_id,
@@ -263,7 +263,7 @@ class EvidencePacketBuilder:
         items.extend(self._interview_answers(project_id, recent_history or []))
         items.extend(self._execution_probes(project_id, execution_state or {}))
         return {
-            "packet_id": f"{task}_{session_id}_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}",
+            "packet_id": self._packet_id(task, session_id),
             "task": task,
             "project_id": project_id,
             "session_id": session_id,
@@ -281,7 +281,7 @@ class EvidencePacketBuilder:
     ) -> dict[str, Any]:
         items = self._interview_answers(project_id, messages)
         return {
-            "packet_id": f"{task}_{session_id}_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}",
+            "packet_id": self._packet_id(task, session_id),
             "task": task,
             "project_id": project_id,
             "session_id": session_id,
@@ -571,3 +571,10 @@ class EvidencePacketBuilder:
     def _excerpt(self, content: str, limit: int = 300) -> str:
         text = " ".join(str(content).split())
         return text[:limit]
+
+    def _packet_id(self, *parts: object) -> str:
+        prefix = "_".join(str(part) for part in parts if part is not None)
+        return f"{prefix}_{self._timestamp()}"
+
+    def _timestamp(self) -> str:
+        return datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")

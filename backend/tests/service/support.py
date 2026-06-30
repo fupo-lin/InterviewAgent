@@ -20,7 +20,9 @@ def _install_model_stubs() -> None:
     agent_module = ModuleType("app.models.agent")
 
     class AgentRun:
-        pass
+        def __init__(self, **kwargs):
+            for key, value in kwargs.items():
+                setattr(self, key, value)
 
     agent_module.AgentRun = AgentRun
     sys.modules["app.models.agent"] = agent_module
