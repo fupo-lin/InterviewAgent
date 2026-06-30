@@ -1,3 +1,4 @@
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from app.models.agent import AgentRun
@@ -127,3 +128,63 @@ class AgentRunRecorder:
             **(input_snapshot or {}),
             "prompt_contract_validation": validation,
         }
+
+
+class AgentRunExecutor:
+    def __init__(self, db, recorder: AgentRunRecorder | None = None):
+        self.db = db
+        self.recorder = recorder or AgentRunRecorder(db)
+
+    async def run(
+        self,
+        definition: PromptDefinition,
+        project_id: int | None,
+        session_id: int | None,
+        input_snapshot: dict[str, Any],
+        context_refs: dict[str, Any],
+        evidence_refs: list[str],
+        model_name: str,
+        call: Callable[[], Awaitable[tuple[Any, dict | None]]],
+        output_snapshot: Callable[[Any], dict[str, Any]] | dict[str, Any] | None = None,
+        commit_on_failure: bool = True,
+    ) -> tuple[Any, dict | None, AgentRun]:
+        try:
+            output, raw_response = await call()
+        except Exception as exc:
+            self.recorder.record_failure(
+                definition=definition,
+                project_id=project_id,
+                session_id=session_id,
+                input_snapshot=input_snapshot,
+                context_refs=context_refs,
+                evidence_refs=evidence_refs,
+                error=exc,
+                model_name=model_name,
+            )
+            if commit_on_failure:
+                self.db.commit()
+            raise
+
+        agent_run = self.recorder.record_success(
+            definition=definition,
+            project_id=project_id,
+            session_id=session_id,
+            input_snapshot=input_snapshot,
+            context_refs=context_refs,
+            evidence_refs=evidence_refs,
+            output_snapshot=self._output_snapshot(output, output_snapshot),
+            raw_response=raw_response,
+            model_name=model_name,
+        )
+        return output, raw_response, agent_run
+
+    def _output_snapshot(
+        self,
+        output: Any,
+        output_snapshot: Callable[[Any], dict[str, Any]] | dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        if callable(output_snapshot):
+            return output_snapshot(output)
+        if output_snapshot is not None:
+            return output_snapshot
+        return output if isinstance(output, dict) else {"result": output}

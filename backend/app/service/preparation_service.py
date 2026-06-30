@@ -34,7 +34,7 @@ from app.schemas.preparation import (
     ResumeProfileResponse,
     ResumeRewriteResponse,
 )
-from app.service.agent_run_service import AgentRunRecorder
+from app.service.agent_run_service import AgentRunExecutor, AgentRunRecorder
 from app.service.evidence_service import EvidencePacketBuilder
 from app.service.llm_service import LLMService
 from app.service.prompt_registry import prompt_registry
@@ -60,6 +60,7 @@ class PreparationService:
         self.llm = LLMService()
         self.evidence_builder = EvidencePacketBuilder()
         self.agent_run_recorder = AgentRunRecorder(db)
+        self.agent_run_executor = AgentRunExecutor(db, self.agent_run_recorder)
 
     def create_project(self, title: str, target_role: str | None = None) -> ProjectResponse:
         project = self.project_repo.create(
@@ -120,32 +121,15 @@ class PreparationService:
             "project_id": project.id,
         }
         evidence_refs = self.evidence_builder.refs(evidence_packet)
-        try:
-            content, raw_response = await self.llm.generate_jd_analysis(jd.raw_content)
-        except Exception as exc:
-            self.agent_run_recorder.record_failure(
-                definition=definition,
-                project_id=project.id,
-                session_id=None,
-                input_snapshot=input_snapshot,
-                context_refs=context_refs,
-                evidence_refs=evidence_refs,
-                error=exc,
-                model_name=self.llm.model,
-            )
-            self.db.commit()
-            raise
-
-        agent_run = self.agent_run_recorder.record_success(
+        content, raw_response, agent_run = await self.agent_run_executor.run(
             definition=definition,
             project_id=project.id,
             session_id=None,
             input_snapshot=input_snapshot,
             context_refs=context_refs,
             evidence_refs=evidence_refs,
-            output_snapshot=content,
-            raw_response=raw_response,
             model_name=self.llm.model,
+            call=lambda: self.llm.generate_jd_analysis(jd.raw_content),
         )
         saved = self.jd_analysis_repo.create(
             project_id=project.id,
@@ -205,32 +189,15 @@ class PreparationService:
             "project_id": project.id,
         }
         evidence_refs = self.evidence_builder.refs(evidence_packet)
-        try:
-            content, raw_response = await self.llm.generate_resume_profile(resume.raw_content)
-        except Exception as exc:
-            self.agent_run_recorder.record_failure(
-                definition=definition,
-                project_id=project.id,
-                session_id=None,
-                input_snapshot=input_snapshot,
-                context_refs=context_refs,
-                evidence_refs=evidence_refs,
-                error=exc,
-                model_name=self.llm.model,
-            )
-            self.db.commit()
-            raise
-
-        agent_run = self.agent_run_recorder.record_success(
+        content, raw_response, agent_run = await self.agent_run_executor.run(
             definition=definition,
             project_id=project.id,
             session_id=None,
             input_snapshot=input_snapshot,
             context_refs=context_refs,
             evidence_refs=evidence_refs,
-            output_snapshot=content,
-            raw_response=raw_response,
             model_name=self.llm.model,
+            call=lambda: self.llm.generate_resume_profile(resume.raw_content),
         )
         saved = self.resume_profile_repo.create(
             project_id=project.id,
@@ -315,38 +282,21 @@ class PreparationService:
             "resume_profile_evidence_refs": getattr(resume_profile, "evidence_refs", None) or [],
             "gap_analysis_evidence_refs": getattr(gap_analysis, "evidence_refs", None) or [],
         }
-        try:
-            plan_content, raw_response = await self.llm.generate_interview_plan(
-                plan_mode=plan_mode,
-                jd_analysis=jd_analysis.content if jd_analysis else None,
-                resume_profile=resume_profile.content if resume_profile else None,
-                gap_analysis=gap_analysis.content if gap_analysis else None,
-                target_role=project.target_role,
-            )
-        except Exception as exc:
-            self.agent_run_recorder.record_failure(
-                definition=definition,
-                project_id=project.id,
-                session_id=None,
-                input_snapshot=input_snapshot,
-                context_refs=context_refs,
-                evidence_refs=evidence_refs,
-                error=exc,
-                model_name=self.llm.model,
-            )
-            self.db.commit()
-            raise
-
-        agent_run = self.agent_run_recorder.record_success(
+        plan_content, raw_response, agent_run = await self.agent_run_executor.run(
             definition=definition,
             project_id=project.id,
             session_id=None,
             input_snapshot=input_snapshot,
             context_refs=context_refs,
             evidence_refs=evidence_refs,
-            output_snapshot=plan_content,
-            raw_response=raw_response,
             model_name=self.llm.model,
+            call=lambda: self.llm.generate_interview_plan(
+                plan_mode=plan_mode,
+                jd_analysis=jd_analysis.content if jd_analysis else None,
+                resume_profile=resume_profile.content if resume_profile else None,
+                gap_analysis=gap_analysis.content if gap_analysis else None,
+                target_role=project.target_role,
+            ),
         )
         saved = self.plan_repo.create(
             project_id=project.id,
@@ -405,35 +355,18 @@ class PreparationService:
             "jd_analysis_evidence_refs": getattr(jd_analysis, "evidence_refs", None) or [],
             "resume_profile_evidence_refs": getattr(resume_profile, "evidence_refs", None) or [],
         }
-        try:
-            content, raw_response = await self.llm.generate_gap_analysis(
-                jd_analysis.content,
-                resume_profile.content,
-            )
-        except Exception as exc:
-            self.agent_run_recorder.record_failure(
-                definition=definition,
-                project_id=project_id,
-                session_id=None,
-                input_snapshot=input_snapshot,
-                context_refs=context_refs,
-                evidence_refs=evidence_refs,
-                error=exc,
-                model_name=self.llm.model,
-            )
-            self.db.commit()
-            raise
-
-        agent_run = self.agent_run_recorder.record_success(
+        content, raw_response, agent_run = await self.agent_run_executor.run(
             definition=definition,
             project_id=project_id,
             session_id=None,
             input_snapshot=input_snapshot,
             context_refs=context_refs,
             evidence_refs=evidence_refs,
-            output_snapshot=content,
-            raw_response=raw_response,
             model_name=self.llm.model,
+            call=lambda: self.llm.generate_gap_analysis(
+                jd_analysis.content,
+                resume_profile.content,
+            ),
         )
         return self.gap_repo.create(
             project_id=project_id,
@@ -580,8 +513,15 @@ class PreparationService:
             "gap_analysis_id": gap_analysis.id if gap_analysis else None,
             "source_session_id": source_session_id,
         }
-        try:
-            content, raw_response = await self.llm.generate_project_candidate_profile(
+        content, raw_response, agent_run = await self.agent_run_executor.run(
+            definition=definition,
+            project_id=project_id,
+            session_id=source_session_id,
+            input_snapshot=input_snapshot,
+            context_refs=context_refs,
+            evidence_refs=self.evidence_builder.refs(evidence_packet),
+            model_name=self.llm.model,
+            call=lambda: self.llm.generate_project_candidate_profile(
                 target_role=target_role,
                 jd_analysis=jd_analysis.content if jd_analysis else None,
                 resume_profile=resume_profile.content if resume_profile else None,
@@ -590,31 +530,7 @@ class PreparationService:
                 evaluation=evaluation,
                 transcript_messages=transcript_messages or [],
                 evidence_packet=evidence_packet,
-            )
-        except Exception as exc:
-            self.agent_run_recorder.record_failure(
-                definition=definition,
-                project_id=project_id,
-                session_id=source_session_id,
-                input_snapshot=input_snapshot,
-                context_refs=context_refs,
-                evidence_refs=self.evidence_builder.refs(evidence_packet),
-                error=exc,
-                model_name=self.llm.model,
-            )
-            self.db.commit()
-            raise
-
-        agent_run = self.agent_run_recorder.record_success(
-            definition=definition,
-            project_id=project_id,
-            session_id=source_session_id,
-            input_snapshot=input_snapshot,
-            context_refs=context_refs,
-            evidence_refs=self.evidence_builder.refs(evidence_packet),
-            output_snapshot=content,
-            raw_response=raw_response,
-            model_name=self.llm.model,
+            ),
         )
         return self.candidate_profile_repo.create(
             project_id=project_id,
@@ -662,8 +578,15 @@ class PreparationService:
             "gap_analysis_id": gap_analysis.id if gap_analysis else None,
             "project_candidate_profile_id": candidate_profile.id if candidate_profile else None,
         }
-        try:
-            content, raw_response = await self.llm.generate_resume_authenticity_report(
+        content, raw_response, agent_run = await self.agent_run_executor.run(
+            definition=definition,
+            project_id=project_id,
+            session_id=session_id,
+            input_snapshot=input_snapshot,
+            context_refs=context_refs,
+            evidence_refs=self.evidence_builder.refs(evidence_packet),
+            model_name=self.llm.model,
+            call=lambda: self.llm.generate_resume_authenticity_report(
                 resume_content=resume_content,
                 resume_profile=resume_profile.content if resume_profile else None,
                 jd_analysis=jd_analysis.content if jd_analysis else None,
@@ -673,31 +596,7 @@ class PreparationService:
                 evaluation=evaluation,
                 transcript_messages=transcript_messages or [],
                 evidence_packet=evidence_packet,
-            )
-        except Exception as exc:
-            self.agent_run_recorder.record_failure(
-                definition=definition,
-                project_id=project_id,
-                session_id=session_id,
-                input_snapshot=input_snapshot,
-                context_refs=context_refs,
-                evidence_refs=self.evidence_builder.refs(evidence_packet),
-                error=exc,
-                model_name=self.llm.model,
-            )
-            self.db.commit()
-            raise
-
-        agent_run = self.agent_run_recorder.record_success(
-            definition=definition,
-            project_id=project_id,
-            session_id=session_id,
-            input_snapshot=input_snapshot,
-            context_refs=context_refs,
-            evidence_refs=self.evidence_builder.refs(evidence_packet),
-            output_snapshot=content,
-            raw_response=raw_response,
-            model_name=self.llm.model,
+            ),
         )
         return self.authenticity_repo.create(
             project_id=project_id,
@@ -773,8 +672,15 @@ class PreparationService:
             "project_candidate_profile_id": candidate_profile.id if candidate_profile else None,
             "authenticity_report_id": authenticity_report_id,
         }
-        try:
-            content, raw_response = await self.llm.generate_resume_rewrite(
+        content, raw_response, agent_run = await self.agent_run_executor.run(
+            definition=definition,
+            project_id=project_id,
+            session_id=None,
+            input_snapshot=input_snapshot,
+            context_refs=context_refs,
+            evidence_refs=self.evidence_builder.refs(evidence_packet),
+            model_name=self.llm.model,
+            call=lambda: self.llm.generate_resume_rewrite(
                 rewrite_mode=rewrite_mode,
                 resume_content=resume_content,
                 resume_profile=resume_profile.content if resume_profile else None,
@@ -785,31 +691,7 @@ class PreparationService:
                 evaluation=evaluation,
                 execution_state=execution_state,
                 evidence_packet=evidence_packet,
-            )
-        except Exception as exc:
-            self.agent_run_recorder.record_failure(
-                definition=definition,
-                project_id=project_id,
-                session_id=None,
-                input_snapshot=input_snapshot,
-                context_refs=context_refs,
-                evidence_refs=self.evidence_builder.refs(evidence_packet),
-                error=exc,
-                model_name=self.llm.model,
-            )
-            self.db.commit()
-            raise
-
-        agent_run = self.agent_run_recorder.record_success(
-            definition=definition,
-            project_id=project_id,
-            session_id=None,
-            input_snapshot=input_snapshot,
-            context_refs=context_refs,
-            evidence_refs=self.evidence_builder.refs(evidence_packet),
-            output_snapshot=content,
-            raw_response=raw_response,
-            model_name=self.llm.model,
+            ),
         )
         return self.rewrite_repo.create(
             project_id=project_id,

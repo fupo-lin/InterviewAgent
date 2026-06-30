@@ -12,7 +12,7 @@ from app.repository.interview_repository import (
     InterviewSummaryRepository,
 )
 from app.repository.preparation_repository import InterviewPlanRepository, PreparationProjectRepository
-from app.service.agent_run_service import AgentRunRecorder
+from app.service.agent_run_service import AgentRunExecutor, AgentRunRecorder
 from app.service.evidence_service import EvidencePacketBuilder
 from app.service.interview_execution_service import InterviewExecutionService
 from app.service.preparation_service import PreparationService
@@ -38,6 +38,7 @@ class InterviewService:
         self.llm = LLMService()
         self.evidence_builder = EvidencePacketBuilder()
         self.agent_run_recorder = AgentRunRecorder(db)
+        self.agent_run_executor = AgentRunExecutor(db, self.agent_run_recorder)
 
     async def start(self, role_name: str) -> tuple[str, str]:
         session_uid = uuid4().hex
@@ -189,38 +190,21 @@ class InterviewService:
             "interview_plan_id": session.interview_plan_id,
             "execution_id": execution.id if execution else None,
         }
-        try:
-            evaluation, _raw_response = await self.llm.generate_evaluation(
-                history,
-                candidate_profile=candidate_profile.content if candidate_profile else None,
-                conversation_summary=conversation_summary.content if conversation_summary else None,
-                plan_context=self._session_plan_context(session),
-                evidence_packet=evidence_packet,
-            )
-        except Exception as exc:
-            self.agent_run_recorder.record_failure(
-                definition=definition,
-                project_id=session.project_id,
-                session_id=session.id,
-                input_snapshot=input_snapshot,
-                context_refs=context_refs,
-                evidence_refs=self.evidence_builder.refs(evidence_packet),
-                error=exc,
-                model_name=self.llm.model,
-            )
-            self.db.commit()
-            raise
-
-        agent_run = self.agent_run_recorder.record_success(
+        evaluation, _raw_response, agent_run = await self.agent_run_executor.run(
             definition=definition,
             project_id=session.project_id,
             session_id=session.id,
             input_snapshot=input_snapshot,
             context_refs=context_refs,
             evidence_refs=self.evidence_builder.refs(evidence_packet),
-            output_snapshot=evaluation,
-            raw_response=_raw_response,
             model_name=self.llm.model,
+            call=lambda: self.llm.generate_evaluation(
+                history,
+                candidate_profile=candidate_profile.content if candidate_profile else None,
+                conversation_summary=conversation_summary.content if conversation_summary else None,
+                plan_context=self._session_plan_context(session),
+                evidence_packet=evidence_packet,
+            ),
         )
         saved = self.evaluation_repo.create(
             session_id=session.id,
@@ -316,32 +300,16 @@ class InterviewService:
         context_refs = {
             "interview_plan_id": plan.id if plan else session.interview_plan_id,
         }
-        try:
-            reply, raw_response = await self.llm.generate_first_question(role_name, plan_context=plan_context)
-        except Exception as exc:
-            self.agent_run_recorder.record_failure(
-                definition=definition,
-                project_id=session.project_id,
-                session_id=session.id,
-                input_snapshot=input_snapshot,
-                context_refs=context_refs,
-                evidence_refs=evidence_refs,
-                error=exc,
-                model_name=self.llm.model,
-            )
-            self.db.commit()
-            raise
-
-        agent_run = self.agent_run_recorder.record_success(
+        reply, raw_response, agent_run = await self.agent_run_executor.run(
             definition=definition,
             project_id=session.project_id,
             session_id=session.id,
             input_snapshot=input_snapshot,
             context_refs=context_refs,
             evidence_refs=evidence_refs,
-            output_snapshot={"reply": reply},
-            raw_response=raw_response,
             model_name=self.llm.model,
+            call=lambda: self.llm.generate_first_question(role_name, plan_context=plan_context),
+            output_snapshot=lambda output: {"reply": output},
         )
         return reply, raw_response, agent_run, evidence_refs, definition
 
@@ -388,8 +356,15 @@ class InterviewService:
             "execution_id": execution.id if execution else None,
             "answer_message_id": answer_message.id,
         }
-        try:
-            reply, raw_response = await self.llm.generate_followup(
+        reply, raw_response, agent_run = await self.agent_run_executor.run(
+            definition=definition,
+            project_id=session.project_id,
+            session_id=session.id,
+            input_snapshot=input_snapshot,
+            context_refs=context_refs,
+            evidence_refs=evidence_refs,
+            model_name=self.llm.model,
+            call=lambda: self.llm.generate_followup(
                 session.role_name,
                 answer_message.content,
                 recent_history,
@@ -397,31 +372,8 @@ class InterviewService:
                 conversation_summary=conversation_summary,
                 plan_context=plan_context,
                 execution_context=execution_context,
-            )
-        except Exception as exc:
-            self.agent_run_recorder.record_failure(
-                definition=definition,
-                project_id=session.project_id,
-                session_id=session.id,
-                input_snapshot=input_snapshot,
-                context_refs=context_refs,
-                evidence_refs=evidence_refs,
-                error=exc,
-                model_name=self.llm.model,
-            )
-            self.db.commit()
-            raise
-
-        agent_run = self.agent_run_recorder.record_success(
-            definition=definition,
-            project_id=session.project_id,
-            session_id=session.id,
-            input_snapshot=input_snapshot,
-            context_refs=context_refs,
-            evidence_refs=evidence_refs,
-            output_snapshot={"reply": reply},
-            raw_response=raw_response,
-            model_name=self.llm.model,
+            ),
+            output_snapshot=lambda output: {"reply": output},
         )
         return reply, raw_response, agent_run, evidence_refs, definition
 
@@ -454,35 +406,22 @@ class InterviewService:
             "previous_summary_id": previous_summary_id,
             "message_ids": [message.id for message in profile_messages or []],
         }
-        try:
-            if prompt_id == "candidate_profile":
-                content, raw_response = await self.llm.generate_candidate_profile(previous_content, profile_messages)
-            else:
-                content, raw_response = await self.llm.generate_conversation_summary(previous_content, profile_messages)
-        except Exception as exc:
-            self.agent_run_recorder.record_failure(
-                definition=definition,
-                project_id=session.project_id if session else None,
-                session_id=session_id,
-                input_snapshot=input_snapshot,
-                context_refs=context_refs,
-                evidence_refs=evidence_refs,
-                error=exc,
-                model_name=self.llm.model,
-            )
-            self.db.commit()
-            raise
 
-        agent_run = self.agent_run_recorder.record_success(
+        async def generate_memory():
+            if prompt_id == "candidate_profile":
+                return await self.llm.generate_candidate_profile(previous_content, profile_messages)
+            return await self.llm.generate_conversation_summary(previous_content, profile_messages)
+
+        content, raw_response, agent_run = await self.agent_run_executor.run(
             definition=definition,
             project_id=session.project_id if session else None,
             session_id=session_id,
             input_snapshot=input_snapshot,
             context_refs=context_refs,
             evidence_refs=evidence_refs,
-            output_snapshot={"content": content},
-            raw_response=raw_response,
             model_name=self.llm.model,
+            call=generate_memory,
+            output_snapshot=lambda output: {"content": output},
         )
         return content, raw_response, agent_run, evidence_refs, definition
 
@@ -617,37 +556,24 @@ class InterviewService:
                 "current_section_key": current_section.get("section_key"),
             }
             try:
-                judge_result, _raw_response = await self.llm.judge_topic_completion(
-                    current_section=current_section,
-                    execution_state=execution.state or {},
-                    user_answer=answer,
-                    recent_history=recent_history,
-                )
-            except Exception as exc:
-                self.agent_run_recorder.record_failure(
+                judge_result, _raw_response, agent_run = await self.agent_run_executor.run(
                     definition=definition,
                     project_id=session.project_id,
                     session_id=session.id,
                     input_snapshot=input_snapshot,
                     context_refs=context_refs,
                     evidence_refs=evidence_refs,
-                    error=exc,
                     model_name=self.llm.model,
+                    call=lambda: self.llm.judge_topic_completion(
+                        current_section=current_section,
+                        execution_state=execution.state or {},
+                        user_answer=answer,
+                        recent_history=recent_history,
+                    ),
                 )
-                self.db.commit()
+            except Exception:
                 logger.warning("Failed to judge topic completion", exc_info=True)
             else:
-                agent_run = self.agent_run_recorder.record_success(
-                    definition=definition,
-                    project_id=session.project_id,
-                    session_id=session.id,
-                    input_snapshot=input_snapshot,
-                    context_refs=context_refs,
-                    evidence_refs=evidence_refs,
-                    output_snapshot=judge_result,
-                    raw_response=_raw_response,
-                    model_name=self.llm.model,
-                )
                 judge_result = {
                     **(judge_result or {}),
                     "agent_run_id": agent_run.id,
