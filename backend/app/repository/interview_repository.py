@@ -41,6 +41,13 @@ class InterviewSessionRepository:
         )
         return self.db.scalars(statement).first()
 
+    def get_by_id(self, session_id: int) -> InterviewSession | None:
+        statement = select(InterviewSession).where(
+            InterviewSession.id == session_id,
+            InterviewSession.status != "deleted",
+        )
+        return self.db.scalars(statement).first()
+
     def get_latest_by_project_id(self, project_id: int) -> InterviewSession | None:
         statement = (
             select(InterviewSession)
@@ -75,12 +82,18 @@ class InterviewMessageRepository:
         round_no: int,
         content: str,
         raw_response: dict | None = None,
+        agent_run_id: int | None = None,
+        schema_version: str | None = None,
+        evidence_refs: list[str] | None = None,
     ) -> InterviewMessage:
         message = InterviewMessage(
             session_id=session_id,
             role_type=role_type,
             message_type=message_type,
             round_no=round_no,
+            agent_run_id=agent_run_id,
+            schema_version=schema_version,
+            evidence_refs=evidence_refs or [],
             content=content,
             raw_response=raw_response,
         )
@@ -221,12 +234,18 @@ class InterviewSummaryRepository:
         to_round_no: int,
         content: str,
         raw_response: dict | None = None,
+        agent_run_id: int | None = None,
+        schema_version: str | None = None,
+        evidence_refs: list[str] | None = None,
     ) -> InterviewSummary:
         summary = InterviewSummary(
             session_id=session_id,
             summary_type=summary_type,
             from_round_no=from_round_no,
             to_round_no=to_round_no,
+            agent_run_id=agent_run_id,
+            schema_version=schema_version,
+            evidence_refs=evidence_refs or [],
             content=content,
             raw_response=raw_response,
         )

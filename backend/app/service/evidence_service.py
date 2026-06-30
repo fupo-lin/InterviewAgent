@@ -175,10 +175,129 @@ class EvidencePacketBuilder:
             "missing_evidence": self._missing_interview_plan_evidence(items, plan_mode),
         }
 
+    def build_topic_judge_packet(
+        self,
+        session_id: int,
+        project_id: int | None,
+        answer_message_id: int | None,
+        round_no: int,
+        user_answer: str,
+        current_section: dict,
+        execution_state: dict,
+    ) -> dict[str, Any]:
+        items = [
+            EvidenceItem(
+                evidence_id=f"interview_answer_{answer_message_id or round_no}",
+                evidence_type="interview_answer",
+                source_type="interview_message",
+                source_id=answer_message_id,
+                project_id=project_id,
+                session_id=session_id,
+                round_no=round_no,
+                content_excerpt=self._excerpt(user_answer),
+                tags=("topic_judge", "answer"),
+                confidence="source_message" if answer_message_id else "medium",
+                metadata={
+                    "section_key": current_section.get("section_key", ""),
+                    "current_section_round_no": current_section.get("completed_rounds", 0),
+                },
+            )
+        ]
+        probe_point = self._first_uncovered_probe_point(current_section)
+        if probe_point:
+            items.append(
+                EvidenceItem(
+                    evidence_id=f"topic_probe_{current_section.get('section_key') or 'section'}_{round_no}",
+                    evidence_type="execution_probe",
+                    source_type="interview_plan_execution",
+                    source_id=None,
+                    project_id=project_id,
+                    session_id=session_id,
+                    round_no=round_no,
+                    content_excerpt=self._excerpt(probe_point),
+                    tags=("topic_judge", "probe"),
+                    confidence="medium",
+                    metadata={
+                        "section_key": current_section.get("section_key", ""),
+                        "execution_next_action": (execution_state.get("next_action") or {}).get("type", ""),
+                    },
+                )
+            )
+        return {
+            "packet_id": f"topic_judge_{session_id}_{round_no}_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}",
+            "task": "topic_completion_judge",
+            "project_id": project_id,
+            "session_id": session_id,
+            "round_no": round_no,
+            "evidence_items": [item.to_dict() for item in items],
+            "missing_evidence": self._missing_topic_judge_evidence(items),
+        }
+
+    def build_question_generation_packet(
+        self,
+        task: str,
+        session_id: int,
+        project_id: int | None = None,
+        user_answer_message_id: int | None = None,
+        user_answer: str | None = None,
+        round_no: int | None = None,
+        recent_history: list[InterviewMessage] | None = None,
+        execution_state: dict | None = None,
+    ) -> dict[str, Any]:
+        items: list[EvidenceItem] = []
+        if user_answer:
+            items.append(
+                EvidenceItem(
+                    evidence_id=f"interview_answer_{user_answer_message_id or round_no or 'latest'}",
+                    evidence_type="interview_answer",
+                    source_type="interview_message",
+                    source_id=user_answer_message_id,
+                    project_id=project_id,
+                    session_id=session_id,
+                    round_no=round_no,
+                    content_excerpt=self._excerpt(user_answer),
+                    tags=("question_generation", "answer"),
+                    confidence="source_message" if user_answer_message_id else "medium",
+                )
+            )
+        items.extend(self._interview_answers(project_id, recent_history or []))
+        items.extend(self._execution_probes(project_id, execution_state or {}))
+        return {
+            "packet_id": f"{task}_{session_id}_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}",
+            "task": task,
+            "project_id": project_id,
+            "session_id": session_id,
+            "round_no": round_no,
+            "evidence_items": [item.to_dict() for item in items],
+            "missing_evidence": self._missing_question_generation_evidence(items, task),
+        }
+
+    def build_memory_packet(
+        self,
+        task: str,
+        session_id: int,
+        project_id: int | None,
+        messages: list[InterviewMessage],
+    ) -> dict[str, Any]:
+        items = self._interview_answers(project_id, messages)
+        return {
+            "packet_id": f"{task}_{session_id}_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}",
+            "task": task,
+            "project_id": project_id,
+            "session_id": session_id,
+            "evidence_items": [item.to_dict() for item in items],
+            "missing_evidence": [] if items else ["interview_answer"],
+        }
+
     def refs(self, packet: dict[str, Any] | None) -> list[str]:
         if not packet:
             return []
-        return [item.get("evidence_id", "") for item in packet.get("evidence_items", []) if item.get("evidence_id")]
+        refs = []
+        for item in packet.get("evidence_items", []):
+            evidence_id = item.get("evidence_id", "")
+            if evidence_id and evidence_id not in refs:
+                refs.append(evidence_id)
+        return refs
 
     def _jd_requirements(self, project_id: int, jd_analysis_id: int, jd_analysis: dict) -> list[EvidenceItem]:
         items: list[EvidenceItem] = []
@@ -267,6 +386,13 @@ class EvidencePacketBuilder:
                 )
             )
         return items
+
+    def _first_uncovered_probe_point(self, current_section: dict) -> str:
+        uncovered = current_section.get("uncovered_probe_points") or []
+        if uncovered:
+            return str(uncovered[0])
+        probe_points = current_section.get("probe_points") or []
+        return str(probe_points[-1]) if probe_points else ""
 
     def _resume_claims(self, project_id: int, resume_profile: dict | None) -> list[EvidenceItem]:
         if not resume_profile:
@@ -418,6 +544,20 @@ class EvidencePacketBuilder:
             missing.append("resume_claim")
         if plan_mode == "jd_resume" and not any(item.evidence_type == "gap_point" for item in items):
             missing.append("gap_point")
+        return missing
+
+    def _missing_topic_judge_evidence(self, items: list[EvidenceItem]) -> list[str]:
+        missing = []
+        if not any(item.evidence_type == "interview_answer" for item in items):
+            missing.append("interview_answer")
+        if not any(item.evidence_type == "execution_probe" for item in items):
+            missing.append("execution_probe")
+        return missing
+
+    def _missing_question_generation_evidence(self, items: list[EvidenceItem], task: str) -> list[str]:
+        missing = []
+        if task == "followup_generation" and not any(item.evidence_type == "interview_answer" for item in items):
+            missing.append("interview_answer")
         return missing
 
     def _missing_evaluation_evidence(self, items: list[EvidenceItem]) -> list[str]:

@@ -42,7 +42,10 @@ class InterviewService:
     async def start(self, role_name: str) -> tuple[str, str]:
         session_uid = uuid4().hex
         session = self.session_repo.create(session_uid=session_uid, role_name=role_name)
-        reply, raw_response = await self.llm.generate_first_question(role_name)
+        reply, raw_response, agent_run, evidence_refs, definition = await self._generate_first_question_with_run(
+            session=session,
+            role_name=role_name,
+        )
         self.message_repo.create(
             session_id=session.id,
             role_type="assistant",
@@ -50,6 +53,9 @@ class InterviewService:
             round_no=1,
             content=reply,
             raw_response=raw_response,
+            agent_run_id=agent_run.id if agent_run else None,
+            schema_version=definition.output_schema if definition else None,
+            evidence_refs=evidence_refs,
         )
         self.db.commit()
         return session.session_uid, reply
@@ -73,10 +79,15 @@ class InterviewService:
         )
         reply = self._first_question_from_plan(plan.content)
         raw_response = {"source": "interview_plan", "planId": plan.id}
+        agent_run = None
+        evidence_refs = []
+        definition = prompt_registry.get("interviewer")
         if not reply:
-            reply, raw_response = await self.llm.generate_first_question(
-                role_name,
+            reply, raw_response, agent_run, evidence_refs, definition = await self._generate_first_question_with_run(
+                session=session,
+                role_name=role_name,
                 plan_context=self._plan_context(plan),
+                plan=plan,
             )
         execution = self.execution_service.initialize(
             session_id=session.id,
@@ -90,6 +101,9 @@ class InterviewService:
             round_no=1,
             content=reply,
             raw_response={**(raw_response or {}), "executionId": execution.id},
+            agent_run_id=agent_run.id if agent_run else None,
+            schema_version=definition.output_schema if agent_run else None,
+            evidence_refs=evidence_refs,
         )
         self.db.commit()
         return session.session_uid, reply
@@ -97,7 +111,7 @@ class InterviewService:
     async def chat(self, session_uid: str, message: str) -> tuple[str, int]:
         session = self._get_active_session(session_uid)
         round_no = self.message_repo.latest_assistant_question_round_no(session.id)
-        self.message_repo.create(
+        answer_message = self.message_repo.create(
             session_id=session.id,
             role_type="user",
             message_type="answer",
@@ -107,20 +121,23 @@ class InterviewService:
 
         latest_completed_round_no = self.message_repo.latest_completed_round_no(session.id)
         recent_history = self.message_repo.list_recent_rounds(session.id, rounds=4)
-        execution = await self._advance_execution_if_needed(session, message, round_no, recent_history)
+        execution = await self._advance_execution_if_needed(session, answer_message, recent_history)
         await self._refresh_memory_if_needed(session.id, latest_completed_round_no)
         candidate_profile = self.summary_repo.get_latest_by_session_id(session.id, "candidate_profile")
         conversation_summary = self.summary_repo.get_latest_by_session_id(session.id, "conversation")
         plan_context = self._session_plan_context(session)
         execution_context = self._session_execution_context(session, execution)
-        reply, raw_response = await self.llm.generate_followup(
-            session.role_name,
-            message,
-            recent_history,
+        reply, raw_response, agent_run, evidence_refs, definition = await self._generate_followup_with_run(
+            session=session,
+            answer_message=answer_message,
+            recent_history=recent_history,
             candidate_profile=candidate_profile.content if candidate_profile else None,
             conversation_summary=conversation_summary.content if conversation_summary else None,
             plan_context=plan_context,
             execution_context=execution_context,
+            candidate_profile_id=candidate_profile.id if candidate_profile else None,
+            conversation_summary_id=conversation_summary.id if conversation_summary else None,
+            execution=execution,
         )
         self.message_repo.create(
             session_id=session.id,
@@ -129,6 +146,9 @@ class InterviewService:
             round_no=round_no + 1,
             content=reply,
             raw_response={**(raw_response or {}), "execution": self.execution_service.response(execution) if execution else None},
+            agent_run_id=agent_run.id,
+            schema_version=definition.output_schema,
+            evidence_refs=evidence_refs,
         )
         self.db.commit()
         return reply, round_no + 1
@@ -274,6 +294,198 @@ class InterviewService:
         execution = self.execution_service.get_latest(session.id)
         return self.execution_service.response(execution)
 
+    async def _generate_first_question_with_run(
+        self,
+        session,
+        role_name: str,
+        plan_context: str | None = None,
+        plan=None,
+    ):
+        definition = prompt_registry.get("interviewer")
+        evidence_packet = self.evidence_builder.build_question_generation_packet(
+            task=definition.task,
+            session_id=session.id,
+            project_id=session.project_id,
+        )
+        evidence_refs = self.evidence_builder.refs(evidence_packet)
+        input_snapshot = {
+            "role_name": role_name,
+            "has_plan_context": bool(plan_context),
+            "evidence_packet": evidence_packet,
+        }
+        context_refs = {
+            "interview_plan_id": plan.id if plan else session.interview_plan_id,
+        }
+        try:
+            reply, raw_response = await self.llm.generate_first_question(role_name, plan_context=plan_context)
+        except Exception as exc:
+            self.agent_run_recorder.record_failure(
+                definition=definition,
+                project_id=session.project_id,
+                session_id=session.id,
+                input_snapshot=input_snapshot,
+                context_refs=context_refs,
+                evidence_refs=evidence_refs,
+                error=exc,
+                model_name=self.llm.model,
+            )
+            self.db.commit()
+            raise
+
+        agent_run = self.agent_run_recorder.record_success(
+            definition=definition,
+            project_id=session.project_id,
+            session_id=session.id,
+            input_snapshot=input_snapshot,
+            context_refs=context_refs,
+            evidence_refs=evidence_refs,
+            output_snapshot={"reply": reply},
+            raw_response=raw_response,
+            model_name=self.llm.model,
+        )
+        return reply, raw_response, agent_run, evidence_refs, definition
+
+    async def _generate_followup_with_run(
+        self,
+        session,
+        answer_message,
+        recent_history,
+        candidate_profile: str | None = None,
+        conversation_summary: str | None = None,
+        plan_context: str | None = None,
+        execution_context: str | None = None,
+        candidate_profile_id: int | None = None,
+        conversation_summary_id: int | None = None,
+        execution=None,
+    ):
+        definition = prompt_registry.get("followup")
+        evidence_packet = self.evidence_builder.build_question_generation_packet(
+            task=definition.task,
+            session_id=session.id,
+            project_id=session.project_id,
+            user_answer_message_id=answer_message.id,
+            user_answer=answer_message.content,
+            round_no=answer_message.round_no,
+            recent_history=recent_history,
+            execution_state=execution.state if execution else None,
+        )
+        evidence_refs = self.evidence_builder.refs(evidence_packet)
+        input_snapshot = {
+            "role_name": session.role_name,
+            "answer_message_id": answer_message.id,
+            "round_no": answer_message.round_no,
+            "recent_history_count": len(recent_history or []),
+            "has_candidate_profile": bool(candidate_profile),
+            "has_conversation_summary": bool(conversation_summary),
+            "has_plan_context": bool(plan_context),
+            "has_execution_context": bool(execution_context),
+            "evidence_packet": evidence_packet,
+        }
+        context_refs = {
+            "candidate_profile_summary_id": candidate_profile_id,
+            "conversation_summary_id": conversation_summary_id,
+            "interview_plan_id": session.interview_plan_id,
+            "execution_id": execution.id if execution else None,
+            "answer_message_id": answer_message.id,
+        }
+        try:
+            reply, raw_response = await self.llm.generate_followup(
+                session.role_name,
+                answer_message.content,
+                recent_history,
+                candidate_profile=candidate_profile,
+                conversation_summary=conversation_summary,
+                plan_context=plan_context,
+                execution_context=execution_context,
+            )
+        except Exception as exc:
+            self.agent_run_recorder.record_failure(
+                definition=definition,
+                project_id=session.project_id,
+                session_id=session.id,
+                input_snapshot=input_snapshot,
+                context_refs=context_refs,
+                evidence_refs=evidence_refs,
+                error=exc,
+                model_name=self.llm.model,
+            )
+            self.db.commit()
+            raise
+
+        agent_run = self.agent_run_recorder.record_success(
+            definition=definition,
+            project_id=session.project_id,
+            session_id=session.id,
+            input_snapshot=input_snapshot,
+            context_refs=context_refs,
+            evidence_refs=evidence_refs,
+            output_snapshot={"reply": reply},
+            raw_response=raw_response,
+            model_name=self.llm.model,
+        )
+        return reply, raw_response, agent_run, evidence_refs, definition
+
+    async def _generate_memory_with_run(
+        self,
+        prompt_id: str,
+        session_id: int,
+        previous_content: str | None,
+        profile_messages: list,
+        previous_summary_id: int | None = None,
+    ):
+        session = self._get_session_by_id(session_id)
+        definition = prompt_registry.get(prompt_id)
+        evidence_packet = self.evidence_builder.build_memory_packet(
+            task=definition.task,
+            session_id=session_id,
+            project_id=session.project_id if session else None,
+            messages=profile_messages,
+        )
+        evidence_refs = self.evidence_builder.refs(evidence_packet)
+        input_snapshot = {
+            "summary_type": "candidate_profile" if prompt_id == "candidate_profile" else "conversation",
+            "message_count": len(profile_messages or []),
+            "from_round_no": profile_messages[0].round_no if profile_messages else None,
+            "to_round_no": profile_messages[-1].round_no if profile_messages else None,
+            "has_previous_content": bool(previous_content),
+            "evidence_packet": evidence_packet,
+        }
+        context_refs = {
+            "previous_summary_id": previous_summary_id,
+            "message_ids": [message.id for message in profile_messages or []],
+        }
+        try:
+            if prompt_id == "candidate_profile":
+                content, raw_response = await self.llm.generate_candidate_profile(previous_content, profile_messages)
+            else:
+                content, raw_response = await self.llm.generate_conversation_summary(previous_content, profile_messages)
+        except Exception as exc:
+            self.agent_run_recorder.record_failure(
+                definition=definition,
+                project_id=session.project_id if session else None,
+                session_id=session_id,
+                input_snapshot=input_snapshot,
+                context_refs=context_refs,
+                evidence_refs=evidence_refs,
+                error=exc,
+                model_name=self.llm.model,
+            )
+            self.db.commit()
+            raise
+
+        agent_run = self.agent_run_recorder.record_success(
+            definition=definition,
+            project_id=session.project_id if session else None,
+            session_id=session_id,
+            input_snapshot=input_snapshot,
+            context_refs=context_refs,
+            evidence_refs=evidence_refs,
+            output_snapshot={"content": content},
+            raw_response=raw_response,
+            model_name=self.llm.model,
+        )
+        return content, raw_response, agent_run, evidence_refs, definition
+
     async def _refresh_memory_if_needed(self, session_id: int, latest_completed_round_no: int) -> None:
         if latest_completed_round_no < 10:
             return
@@ -290,9 +502,12 @@ class InterviewService:
             )
             if profile_messages:
                 try:
-                    profile_content, profile_raw = await self.llm.generate_candidate_profile(
-                        latest_profile.content if latest_profile else None,
-                        profile_messages,
+                    profile_content, profile_raw, agent_run, evidence_refs, definition = await self._generate_memory_with_run(
+                        prompt_id="candidate_profile",
+                        session_id=session_id,
+                        previous_content=latest_profile.content if latest_profile else None,
+                        profile_messages=profile_messages,
+                        previous_summary_id=latest_profile.id if latest_profile else None,
                     )
                 except Exception:
                     logger.warning("Failed to refresh candidate profile summary", exc_info=True)
@@ -304,6 +519,9 @@ class InterviewService:
                         to_round_no=latest_completed_round_no,
                         content=profile_content,
                         raw_response=profile_raw,
+                        agent_run_id=agent_run.id,
+                        schema_version=definition.output_schema,
+                        evidence_refs=evidence_refs,
                     )
 
         last_summary_round = latest_conversation.to_round_no if latest_conversation else 0
@@ -320,9 +538,12 @@ class InterviewService:
             return
 
         try:
-            summary_content, summary_raw = await self.llm.generate_conversation_summary(
-                latest_conversation.content if latest_conversation else None,
-                new_messages,
+            summary_content, summary_raw, agent_run, evidence_refs, definition = await self._generate_memory_with_run(
+                prompt_id="conversation_summary",
+                session_id=session_id,
+                previous_content=latest_conversation.content if latest_conversation else None,
+                profile_messages=new_messages,
+                previous_summary_id=latest_conversation.id if latest_conversation else None,
             )
         except Exception:
             logger.warning("Failed to refresh conversation summary", exc_info=True)
@@ -334,6 +555,9 @@ class InterviewService:
                 to_round_no=latest_completed_round_no,
                 content=summary_content,
                 raw_response=summary_raw,
+                agent_run_id=agent_run.id,
+                schema_version=definition.output_schema,
+                evidence_refs=evidence_refs,
             )
 
     def _evaluation_context(self, session_id: int):
@@ -355,7 +579,7 @@ class InterviewService:
         execution = execution or self.execution_repo.get_latest_by_session_id(session.id)
         return self.execution_service.context_for_followup(execution, plan.content if plan else None)
 
-    async def _advance_execution_if_needed(self, session, answer: str, round_no: int, recent_history):
+    async def _advance_execution_if_needed(self, session, answer_message, recent_history):
         if not session.interview_plan_id:
             return None
         execution = self.execution_repo.get_active_by_session_id(session.id)
@@ -363,7 +587,35 @@ class InterviewService:
             return None
         current_section = self.execution_service.current_section(execution)
         judge_result = None
+        answer = answer_message.content
+        round_no = answer_message.round_no
         if current_section:
+            evidence_packet = self.evidence_builder.build_topic_judge_packet(
+                session_id=session.id,
+                project_id=session.project_id,
+                answer_message_id=answer_message.id,
+                round_no=round_no,
+                user_answer=answer,
+                current_section=current_section,
+                execution_state=execution.state or {},
+            )
+            definition = prompt_registry.get("topic_completion_judge")
+            evidence_refs = self.evidence_builder.refs(evidence_packet)
+            input_snapshot = {
+                "round_no": round_no,
+                "answer_message_id": answer_message.id,
+                "current_section_key": current_section.get("section_key"),
+                "current_section_completed_rounds": current_section.get("completed_rounds"),
+                "current_section_target_rounds": current_section.get("target_rounds"),
+                "recent_history_count": len(recent_history or []),
+                "evidence_packet": evidence_packet,
+            }
+            context_refs = {
+                "interview_plan_id": session.interview_plan_id,
+                "execution_id": execution.id,
+                "answer_message_id": answer_message.id,
+                "current_section_key": current_section.get("section_key"),
+            }
             try:
                 judge_result, _raw_response = await self.llm.judge_topic_completion(
                     current_section=current_section,
@@ -371,8 +623,37 @@ class InterviewService:
                     user_answer=answer,
                     recent_history=recent_history,
                 )
-            except Exception:
+            except Exception as exc:
+                self.agent_run_recorder.record_failure(
+                    definition=definition,
+                    project_id=session.project_id,
+                    session_id=session.id,
+                    input_snapshot=input_snapshot,
+                    context_refs=context_refs,
+                    evidence_refs=evidence_refs,
+                    error=exc,
+                    model_name=self.llm.model,
+                )
+                self.db.commit()
                 logger.warning("Failed to judge topic completion", exc_info=True)
+            else:
+                agent_run = self.agent_run_recorder.record_success(
+                    definition=definition,
+                    project_id=session.project_id,
+                    session_id=session.id,
+                    input_snapshot=input_snapshot,
+                    context_refs=context_refs,
+                    evidence_refs=evidence_refs,
+                    output_snapshot=judge_result,
+                    raw_response=_raw_response,
+                    model_name=self.llm.model,
+                )
+                judge_result = {
+                    **(judge_result or {}),
+                    "agent_run_id": agent_run.id,
+                    "schema_version": definition.output_schema,
+                    "evidence_refs": evidence_refs,
+                }
         return self.execution_service.advance_after_answer(execution, answer, round_no, judge_result)
 
     def _plan_context(self, plan) -> str:
@@ -406,6 +687,9 @@ class InterviewService:
         if not session:
             raise HTTPException(status_code=404, detail="Interview session not found")
         return session
+
+    def _get_session_by_id(self, session_id: int):
+        return self.session_repo.get_by_id(session_id)
 
     def _get_active_session(self, session_uid: str):
         session = self._get_session(session_uid)
