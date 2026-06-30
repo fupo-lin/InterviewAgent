@@ -20,7 +20,7 @@ class LLMService:
         role_name: str,
         plan_context: str | None = None,
     ) -> tuple[str, dict | None]:
-        prompt = load_prompt("interviewer.txt", role_name=role_name)
+        prompt = load_prompt(prompt_registry.prompt_file("interviewer"), role_name=role_name)
         if not self.api_key:
             return self._mock_first_question(role_name), {"mock": True}
 
@@ -40,8 +40,8 @@ class LLMService:
         plan_context: str | None = None,
         execution_context: str | None = None,
     ) -> tuple[str, dict | None]:
-        prompt = load_prompt("interviewer.txt", role_name=role_name)
-        followup_prompt = load_prompt("followup.txt", user_answer=user_answer)
+        prompt = load_prompt(prompt_registry.prompt_file("interviewer"), role_name=role_name)
+        followup_prompt = load_prompt(prompt_registry.prompt_file("followup"), user_answer=user_answer)
         if not self.api_key:
             return self._mock_followup(user_answer, execution_context), {"mock": True}
 
@@ -99,7 +99,7 @@ class LLMService:
             return previous_profile or "", {"mock": True}
 
         prompt = load_prompt(
-            "candidate_profile.txt",
+            prompt_registry.prompt_file("candidate_profile"),
             previous_profile=previous_profile or "暂无",
             new_transcript=transcript,
         )
@@ -118,7 +118,7 @@ class LLMService:
             return previous_summary or "", {"mock": True}
 
         prompt = load_prompt(
-            "conversation_summary.txt",
+            prompt_registry.prompt_file("conversation_summary"),
             previous_summary=previous_summary or "暂无",
             new_transcript=transcript,
         )
@@ -128,7 +128,7 @@ class LLMService:
         return await self._chat_completion([{"role": "user", "content": prompt}])
 
     async def generate_jd_analysis(self, jd_content: str) -> tuple[dict, dict | None]:
-        prompt = load_prompt("jd_analysis.txt", jd_content=jd_content)
+        prompt = load_prompt(prompt_registry.prompt_file("jd_analysis"), jd_content=jd_content)
         if not self.api_key:
             return self._mock_jd_analysis(jd_content), {"mock": True}
 
@@ -136,7 +136,7 @@ class LLMService:
         return self._parse_json_object(content, {"raw_text": content}), raw_response
 
     async def generate_resume_profile(self, resume_content: str) -> tuple[dict, dict | None]:
-        prompt = load_prompt("resume_analysis.txt", resume_content=resume_content)
+        prompt = load_prompt(prompt_registry.prompt_file("resume_analysis"), resume_content=resume_content)
         if not self.api_key:
             return self._mock_resume_profile(resume_content), {"mock": True}
 
@@ -145,7 +145,7 @@ class LLMService:
 
     async def generate_gap_analysis(self, jd_analysis: dict, resume_profile: dict) -> tuple[dict, dict | None]:
         prompt = load_prompt(
-            "gap_analysis.txt",
+            prompt_registry.prompt_file("gap_analysis"),
             jd_analysis=json.dumps(jd_analysis, ensure_ascii=False),
             resume_profile=json.dumps(resume_profile, ensure_ascii=False),
         )
@@ -164,7 +164,7 @@ class LLMService:
         target_role: str | None = None,
     ) -> tuple[dict, dict | None]:
         prompt = load_prompt(
-            "interview_plan.txt",
+            prompt_registry.prompt_file("interview_plan"),
             plan_mode=plan_mode,
             target_role=target_role or "目标岗位",
             jd_analysis=json.dumps(jd_analysis or {}, ensure_ascii=False),
@@ -185,7 +185,7 @@ class LLMService:
         recent_history: list[InterviewMessage],
     ) -> tuple[dict, dict | None]:
         prompt = load_prompt(
-            "topic_completion_judge.txt",
+            prompt_registry.prompt_file("topic_completion_judge"),
             current_section=json.dumps(current_section or {}, ensure_ascii=False),
             execution_state=json.dumps(execution_state or {}, ensure_ascii=False),
             recent_history=self._format_transcript(recent_history),
