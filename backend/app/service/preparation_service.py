@@ -37,7 +37,6 @@ from app.schemas.preparation import (
 from app.service.agent_run_service import AgentRunExecutor, AgentRunRecorder
 from app.service.evidence_service import EvidencePacketBuilder
 from app.service.llm_service import LLMService
-from app.service.prompt_registry import prompt_registry
 
 
 class PreparationService:
@@ -107,27 +106,25 @@ class PreparationService:
             jd_id=jd.id,
             jd_content=jd.raw_content,
         )
-        definition = prompt_registry.get("jd_analysis")
-        input_snapshot = {
-            "jd_id": jd.id,
-            "content_length": len(jd.raw_content or ""),
-            "has_title": bool(jd.title),
-            "has_company_name": bool(jd.company_name),
-            "has_source_url": bool(jd.source_url),
-            "evidence_packet": evidence_packet,
-        }
-        context_refs = {
-            "jd_id": jd.id,
-            "project_id": project.id,
-        }
-        evidence_refs = self.evidence_builder.refs(evidence_packet)
-        content, raw_response, agent_run = await self.agent_run_executor.run(
-            definition=definition,
+        run_context = self.agent_run_executor.context(
+            prompt_id="jd_analysis",
             project_id=project.id,
             session_id=None,
-            input_snapshot=input_snapshot,
-            context_refs=context_refs,
-            evidence_refs=evidence_refs,
+            input_snapshot={
+                "jd_id": jd.id,
+                "content_length": len(jd.raw_content or ""),
+                "has_title": bool(jd.title),
+                "has_company_name": bool(jd.company_name),
+                "has_source_url": bool(jd.source_url),
+            },
+            context_refs={
+                "jd_id": jd.id,
+                "project_id": project.id,
+            },
+            evidence_packet=evidence_packet,
+        )
+        content, raw_response, agent_run = await self.agent_run_executor.run_context(
+            context=run_context,
             model_name=self.llm.model,
             call=lambda: self.llm.generate_jd_analysis(jd.raw_content),
         )
@@ -137,8 +134,8 @@ class PreparationService:
             content=content,
             raw_response=raw_response,
             agent_run_id=agent_run.id,
-            schema_version=definition.output_schema,
-            evidence_refs=evidence_refs,
+            schema_version=run_context.definition.output_schema,
+            evidence_refs=run_context.evidence_refs,
         )
         self.db.commit()
         return AnalysisResponse(analysisId=saved.id, analysis=saved.content)
@@ -176,26 +173,24 @@ class PreparationService:
             resume_id=resume.id,
             resume_content=resume.raw_content,
         )
-        definition = prompt_registry.get("resume_analysis")
-        input_snapshot = {
-            "resume_id": resume.id,
-            "content_length": len(resume.raw_content or ""),
-            "file_name": resume.file_name,
-            "file_type": resume.file_type,
-            "evidence_packet": evidence_packet,
-        }
-        context_refs = {
-            "resume_id": resume.id,
-            "project_id": project.id,
-        }
-        evidence_refs = self.evidence_builder.refs(evidence_packet)
-        content, raw_response, agent_run = await self.agent_run_executor.run(
-            definition=definition,
+        run_context = self.agent_run_executor.context(
+            prompt_id="resume_analysis",
             project_id=project.id,
             session_id=None,
-            input_snapshot=input_snapshot,
-            context_refs=context_refs,
-            evidence_refs=evidence_refs,
+            input_snapshot={
+                "resume_id": resume.id,
+                "content_length": len(resume.raw_content or ""),
+                "file_name": resume.file_name,
+                "file_type": resume.file_type,
+            },
+            context_refs={
+                "resume_id": resume.id,
+                "project_id": project.id,
+            },
+            evidence_packet=evidence_packet,
+        )
+        content, raw_response, agent_run = await self.agent_run_executor.run_context(
+            context=run_context,
             model_name=self.llm.model,
             call=lambda: self.llm.generate_resume_profile(resume.raw_content),
         )
@@ -205,8 +200,8 @@ class PreparationService:
             content=content,
             raw_response=raw_response,
             agent_run_id=agent_run.id,
-            schema_version=definition.output_schema,
-            evidence_refs=evidence_refs,
+            schema_version=run_context.definition.output_schema,
+            evidence_refs=run_context.evidence_refs,
         )
         self.db.commit()
         return ResumeProfileResponse(profileId=saved.id, profile=saved.content)
@@ -261,34 +256,32 @@ class PreparationService:
             resume_profile=resume_profile.content if resume_profile else None,
             gap_analysis=gap_analysis.content if gap_analysis else None,
         )
-        definition = prompt_registry.get("interview_plan")
-        evidence_refs = self.evidence_builder.refs(evidence_packet)
-        input_snapshot = {
-            "plan_mode": plan_mode,
-            "target_role": project.target_role,
-            "has_jd_analysis": bool(jd_analysis),
-            "has_resume_profile": bool(resume_profile),
-            "has_gap_analysis": bool(gap_analysis),
-            "evidence_packet": evidence_packet,
-        }
-        context_refs = {
-            "jd_analysis_id": jd_analysis.id if jd_analysis else None,
-            "resume_profile_id": resume_profile.id if resume_profile else None,
-            "gap_analysis_id": gap_analysis.id if gap_analysis else None,
-            "jd_analysis_agent_run_id": getattr(jd_analysis, "agent_run_id", None) if jd_analysis else None,
-            "resume_profile_agent_run_id": getattr(resume_profile, "agent_run_id", None) if resume_profile else None,
-            "gap_analysis_agent_run_id": getattr(gap_analysis, "agent_run_id", None) if gap_analysis else None,
-            "jd_analysis_evidence_refs": getattr(jd_analysis, "evidence_refs", None) or [],
-            "resume_profile_evidence_refs": getattr(resume_profile, "evidence_refs", None) or [],
-            "gap_analysis_evidence_refs": getattr(gap_analysis, "evidence_refs", None) or [],
-        }
-        plan_content, raw_response, agent_run = await self.agent_run_executor.run(
-            definition=definition,
+        run_context = self.agent_run_executor.context(
+            prompt_id="interview_plan",
             project_id=project.id,
             session_id=None,
-            input_snapshot=input_snapshot,
-            context_refs=context_refs,
-            evidence_refs=evidence_refs,
+            input_snapshot={
+                "plan_mode": plan_mode,
+                "target_role": project.target_role,
+                "has_jd_analysis": bool(jd_analysis),
+                "has_resume_profile": bool(resume_profile),
+                "has_gap_analysis": bool(gap_analysis),
+            },
+            context_refs={
+                "jd_analysis_id": jd_analysis.id if jd_analysis else None,
+                "resume_profile_id": resume_profile.id if resume_profile else None,
+                "gap_analysis_id": gap_analysis.id if gap_analysis else None,
+                "jd_analysis_agent_run_id": getattr(jd_analysis, "agent_run_id", None) if jd_analysis else None,
+                "resume_profile_agent_run_id": getattr(resume_profile, "agent_run_id", None) if resume_profile else None,
+                "gap_analysis_agent_run_id": getattr(gap_analysis, "agent_run_id", None) if gap_analysis else None,
+                "jd_analysis_evidence_refs": getattr(jd_analysis, "evidence_refs", None) or [],
+                "resume_profile_evidence_refs": getattr(resume_profile, "evidence_refs", None) or [],
+                "gap_analysis_evidence_refs": getattr(gap_analysis, "evidence_refs", None) or [],
+            },
+            evidence_packet=evidence_packet,
+        )
+        plan_content, raw_response, agent_run = await self.agent_run_executor.run_context(
+            context=run_context,
             model_name=self.llm.model,
             call=lambda: self.llm.generate_interview_plan(
                 plan_mode=plan_mode,
@@ -307,8 +300,8 @@ class PreparationService:
             content=plan_content,
             raw_response=raw_response,
             agent_run_id=agent_run.id,
-            schema_version=definition.output_schema,
-            evidence_refs=evidence_refs,
+            schema_version=run_context.definition.output_schema,
+            evidence_refs=run_context.evidence_refs,
         )
         self.db.commit()
         return InterviewPlanResponse(
@@ -338,30 +331,28 @@ class PreparationService:
             jd_analysis=jd_analysis.content,
             resume_profile=resume_profile.content,
         )
-        definition = prompt_registry.get("gap_analysis")
-        evidence_refs = self.evidence_builder.refs(evidence_packet)
-        input_snapshot = {
-            "jd_analysis_id": jd_analysis.id,
-            "resume_profile_id": resume_profile.id,
-            "jd_analysis_schema_version": getattr(jd_analysis, "schema_version", None),
-            "resume_profile_schema_version": getattr(resume_profile, "schema_version", None),
-            "evidence_packet": evidence_packet,
-        }
-        context_refs = {
-            "jd_analysis_id": jd_analysis.id,
-            "resume_profile_id": resume_profile.id,
-            "jd_analysis_agent_run_id": getattr(jd_analysis, "agent_run_id", None),
-            "resume_profile_agent_run_id": getattr(resume_profile, "agent_run_id", None),
-            "jd_analysis_evidence_refs": getattr(jd_analysis, "evidence_refs", None) or [],
-            "resume_profile_evidence_refs": getattr(resume_profile, "evidence_refs", None) or [],
-        }
-        content, raw_response, agent_run = await self.agent_run_executor.run(
-            definition=definition,
+        run_context = self.agent_run_executor.context(
+            prompt_id="gap_analysis",
             project_id=project_id,
             session_id=None,
-            input_snapshot=input_snapshot,
-            context_refs=context_refs,
-            evidence_refs=evidence_refs,
+            input_snapshot={
+                "jd_analysis_id": jd_analysis.id,
+                "resume_profile_id": resume_profile.id,
+                "jd_analysis_schema_version": getattr(jd_analysis, "schema_version", None),
+                "resume_profile_schema_version": getattr(resume_profile, "schema_version", None),
+            },
+            context_refs={
+                "jd_analysis_id": jd_analysis.id,
+                "resume_profile_id": resume_profile.id,
+                "jd_analysis_agent_run_id": getattr(jd_analysis, "agent_run_id", None),
+                "resume_profile_agent_run_id": getattr(resume_profile, "agent_run_id", None),
+                "jd_analysis_evidence_refs": getattr(jd_analysis, "evidence_refs", None) or [],
+                "resume_profile_evidence_refs": getattr(resume_profile, "evidence_refs", None) or [],
+            },
+            evidence_packet=evidence_packet,
+        )
+        content, raw_response, agent_run = await self.agent_run_executor.run_context(
+            context=run_context,
             model_name=self.llm.model,
             call=lambda: self.llm.generate_gap_analysis(
                 jd_analysis.content,
@@ -375,8 +366,8 @@ class PreparationService:
             content=content,
             raw_response=raw_response,
             agent_run_id=agent_run.id,
-            schema_version=definition.output_schema,
-            evidence_refs=evidence_refs,
+            schema_version=run_context.definition.output_schema,
+            evidence_refs=run_context.evidence_refs,
         )
 
     def overview(self, project_uid: str) -> ProjectOverviewResponse:
@@ -497,29 +488,28 @@ class PreparationService:
             execution_state=execution_state,
             transcript_messages=transcript_messages or [],
         )
-        definition = prompt_registry.get("project_candidate_profile")
-        input_snapshot = {
-            "target_role": target_role,
-            "has_jd_analysis": bool(jd_analysis),
-            "has_resume_profile": bool(resume_profile),
-            "has_gap_analysis": bool(gap_analysis),
-            "has_evaluation": bool(evaluation),
-            "transcript_message_count": len(transcript_messages or []),
-            "evidence_packet": evidence_packet,
-        }
-        context_refs = {
-            "jd_analysis_id": jd_analysis.id if jd_analysis else None,
-            "resume_profile_id": resume_profile.id if resume_profile else None,
-            "gap_analysis_id": gap_analysis.id if gap_analysis else None,
-            "source_session_id": source_session_id,
-        }
-        content, raw_response, agent_run = await self.agent_run_executor.run(
-            definition=definition,
+        run_context = self.agent_run_executor.context(
+            prompt_id="project_candidate_profile",
             project_id=project_id,
             session_id=source_session_id,
-            input_snapshot=input_snapshot,
-            context_refs=context_refs,
-            evidence_refs=self.evidence_builder.refs(evidence_packet),
+            input_snapshot={
+                "target_role": target_role,
+                "has_jd_analysis": bool(jd_analysis),
+                "has_resume_profile": bool(resume_profile),
+                "has_gap_analysis": bool(gap_analysis),
+                "has_evaluation": bool(evaluation),
+                "transcript_message_count": len(transcript_messages or []),
+            },
+            context_refs={
+                "jd_analysis_id": jd_analysis.id if jd_analysis else None,
+                "resume_profile_id": resume_profile.id if resume_profile else None,
+                "gap_analysis_id": gap_analysis.id if gap_analysis else None,
+                "source_session_id": source_session_id,
+            },
+            evidence_packet=evidence_packet,
+        )
+        content, raw_response, agent_run = await self.agent_run_executor.run_context(
+            context=run_context,
             model_name=self.llm.model,
             call=lambda: self.llm.generate_project_candidate_profile(
                 target_role=target_role,
@@ -538,8 +528,8 @@ class PreparationService:
             content=content,
             raw_response=raw_response,
             agent_run_id=agent_run.id,
-            schema_version=definition.output_schema,
-            evidence_refs=self.evidence_builder.refs(evidence_packet),
+            schema_version=run_context.definition.output_schema,
+            evidence_refs=run_context.evidence_refs,
         )
 
     async def generate_resume_authenticity_for_project(
@@ -563,28 +553,27 @@ class PreparationService:
             execution_state=execution_state,
             transcript_messages=transcript_messages or [],
         )
-        definition = prompt_registry.get("resume_authenticity")
-        input_snapshot = {
-            "resume_id": resume_id,
-            "has_resume_profile": bool(resume_profile),
-            "has_jd_analysis": bool(jd_analysis),
-            "has_gap_analysis": bool(gap_analysis),
-            "has_project_candidate_profile": bool(candidate_profile),
-            "evidence_packet": evidence_packet,
-        }
-        context_refs = {
-            "resume_profile_id": resume_profile.id if resume_profile else None,
-            "jd_analysis_id": jd_analysis.id if jd_analysis else None,
-            "gap_analysis_id": gap_analysis.id if gap_analysis else None,
-            "project_candidate_profile_id": candidate_profile.id if candidate_profile else None,
-        }
-        content, raw_response, agent_run = await self.agent_run_executor.run(
-            definition=definition,
+        run_context = self.agent_run_executor.context(
+            prompt_id="resume_authenticity",
             project_id=project_id,
             session_id=session_id,
-            input_snapshot=input_snapshot,
-            context_refs=context_refs,
-            evidence_refs=self.evidence_builder.refs(evidence_packet),
+            input_snapshot={
+                "resume_id": resume_id,
+                "has_resume_profile": bool(resume_profile),
+                "has_jd_analysis": bool(jd_analysis),
+                "has_gap_analysis": bool(gap_analysis),
+                "has_project_candidate_profile": bool(candidate_profile),
+            },
+            context_refs={
+                "resume_profile_id": resume_profile.id if resume_profile else None,
+                "jd_analysis_id": jd_analysis.id if jd_analysis else None,
+                "gap_analysis_id": gap_analysis.id if gap_analysis else None,
+                "project_candidate_profile_id": candidate_profile.id if candidate_profile else None,
+            },
+            evidence_packet=evidence_packet,
+        )
+        content, raw_response, agent_run = await self.agent_run_executor.run_context(
+            context=run_context,
             model_name=self.llm.model,
             call=lambda: self.llm.generate_resume_authenticity_report(
                 resume_content=resume_content,
@@ -605,8 +594,8 @@ class PreparationService:
             content=content,
             raw_response=raw_response,
             agent_run_id=agent_run.id,
-            schema_version=definition.output_schema,
-            evidence_refs=self.evidence_builder.refs(evidence_packet),
+            schema_version=run_context.definition.output_schema,
+            evidence_refs=run_context.evidence_refs,
         )
 
     async def generate_resume_authenticity_for_latest_resume(
@@ -654,31 +643,30 @@ class PreparationService:
             transcript_messages=transcript_messages or [],
             authenticity_report=resume_authenticity,
         )
-        definition = prompt_registry.get("resume_rewrite")
-        input_snapshot = {
-            "resume_id": resume_id,
-            "rewrite_mode": rewrite_mode,
-            "authenticity_report_id": authenticity_report_id,
-            "has_resume_profile": bool(resume_profile),
-            "has_jd_analysis": bool(jd_analysis),
-            "has_gap_analysis": bool(gap_analysis),
-            "has_project_candidate_profile": bool(candidate_profile),
-            "evidence_packet": evidence_packet,
-        }
-        context_refs = {
-            "resume_profile_id": resume_profile.id if resume_profile else None,
-            "jd_analysis_id": jd_analysis.id if jd_analysis else None,
-            "gap_analysis_id": gap_analysis.id if gap_analysis else None,
-            "project_candidate_profile_id": candidate_profile.id if candidate_profile else None,
-            "authenticity_report_id": authenticity_report_id,
-        }
-        content, raw_response, agent_run = await self.agent_run_executor.run(
-            definition=definition,
+        run_context = self.agent_run_executor.context(
+            prompt_id="resume_rewrite",
             project_id=project_id,
             session_id=None,
-            input_snapshot=input_snapshot,
-            context_refs=context_refs,
-            evidence_refs=self.evidence_builder.refs(evidence_packet),
+            input_snapshot={
+                "resume_id": resume_id,
+                "rewrite_mode": rewrite_mode,
+                "authenticity_report_id": authenticity_report_id,
+                "has_resume_profile": bool(resume_profile),
+                "has_jd_analysis": bool(jd_analysis),
+                "has_gap_analysis": bool(gap_analysis),
+                "has_project_candidate_profile": bool(candidate_profile),
+            },
+            context_refs={
+                "resume_profile_id": resume_profile.id if resume_profile else None,
+                "jd_analysis_id": jd_analysis.id if jd_analysis else None,
+                "gap_analysis_id": gap_analysis.id if gap_analysis else None,
+                "project_candidate_profile_id": candidate_profile.id if candidate_profile else None,
+                "authenticity_report_id": authenticity_report_id,
+            },
+            evidence_packet=evidence_packet,
+        )
+        content, raw_response, agent_run = await self.agent_run_executor.run_context(
+            context=run_context,
             model_name=self.llm.model,
             call=lambda: self.llm.generate_resume_rewrite(
                 rewrite_mode=rewrite_mode,
@@ -701,8 +689,8 @@ class PreparationService:
             content=content,
             raw_response=raw_response,
             agent_run_id=agent_run.id,
-            schema_version=definition.output_schema,
-            evidence_refs=self.evidence_builder.refs(evidence_packet),
+            schema_version=run_context.definition.output_schema,
+            evidence_refs=run_context.evidence_refs,
         )
 
     def get_latest_interview_plan(self, project_uid: str):

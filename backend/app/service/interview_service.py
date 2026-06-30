@@ -18,7 +18,6 @@ from app.service.interview_execution_service import InterviewExecutionService
 from app.service.preparation_service import PreparationService
 from app.schemas.interview import DeleteResponse, EvaluationResponse, HistoryResponse, MessageResponse
 from app.service.llm_service import LLMService
-from app.service.prompt_registry import prompt_registry
 
 
 logger = logging.getLogger(__name__)
@@ -82,7 +81,7 @@ class InterviewService:
         raw_response = {"source": "interview_plan", "planId": plan.id}
         agent_run = None
         evidence_refs = []
-        definition = prompt_registry.get("interviewer")
+        definition = self.agent_run_executor.definition("interviewer")
         if not reply:
             reply, raw_response, agent_run, evidence_refs, definition = await self._generate_first_question_with_run(
                 session=session,
@@ -175,28 +174,27 @@ class InterviewService:
         )
         candidate_profile = self.summary_repo.get_latest_by_session_id(session.id, "candidate_profile")
         conversation_summary = self.summary_repo.get_latest_by_session_id(session.id, "conversation")
-        definition = prompt_registry.get("evaluation")
-        input_snapshot = {
-            "history_message_count": len(history),
-            "full_history_message_count": len(full_history),
-            "has_candidate_profile": bool(candidate_profile),
-            "has_conversation_summary": bool(conversation_summary),
-            "has_interview_plan": bool(session.interview_plan_id),
-            "evidence_packet": evidence_packet,
-        }
-        context_refs = {
-            "candidate_profile_summary_id": candidate_profile.id if candidate_profile else None,
-            "conversation_summary_id": conversation_summary.id if conversation_summary else None,
-            "interview_plan_id": session.interview_plan_id,
-            "execution_id": execution.id if execution else None,
-        }
-        evaluation, _raw_response, agent_run = await self.agent_run_executor.run(
-            definition=definition,
+        run_context = self.agent_run_executor.context(
+            prompt_id="evaluation",
             project_id=session.project_id,
             session_id=session.id,
-            input_snapshot=input_snapshot,
-            context_refs=context_refs,
-            evidence_refs=self.evidence_builder.refs(evidence_packet),
+            input_snapshot={
+                "history_message_count": len(history),
+                "full_history_message_count": len(full_history),
+                "has_candidate_profile": bool(candidate_profile),
+                "has_conversation_summary": bool(conversation_summary),
+                "has_interview_plan": bool(session.interview_plan_id),
+            },
+            context_refs={
+                "candidate_profile_summary_id": candidate_profile.id if candidate_profile else None,
+                "conversation_summary_id": conversation_summary.id if conversation_summary else None,
+                "interview_plan_id": session.interview_plan_id,
+                "execution_id": execution.id if execution else None,
+            },
+            evidence_packet=evidence_packet,
+        )
+        evaluation, _raw_response, agent_run = await self.agent_run_executor.run_context(
+            context=run_context,
             model_name=self.llm.model,
             call=lambda: self.llm.generate_evaluation(
                 history,
@@ -217,8 +215,8 @@ class InterviewService:
             communication=evaluation.get("communication"),
             improvement_suggestions=evaluation.get("improvement_suggestions"),
             agent_run_id=agent_run.id,
-            schema_version=definition.output_schema,
-            evidence_refs=self.evidence_builder.refs(evidence_packet),
+            schema_version=run_context.definition.output_schema,
+            evidence_refs=run_context.evidence_refs,
         )
         self.session_repo.mark_finished(session)
         self.execution_service.mark_finished(session.id)
@@ -285,33 +283,33 @@ class InterviewService:
         plan_context: str | None = None,
         plan=None,
     ):
-        definition = prompt_registry.get("interviewer")
+        prompt_id = "interviewer"
+        definition = self.agent_run_executor.definition(prompt_id)
         evidence_packet = self.evidence_builder.build_question_generation_packet(
             task=definition.task,
             session_id=session.id,
             project_id=session.project_id,
         )
-        evidence_refs = self.evidence_builder.refs(evidence_packet)
-        input_snapshot = {
-            "role_name": role_name,
-            "has_plan_context": bool(plan_context),
-            "evidence_packet": evidence_packet,
-        }
-        context_refs = {
-            "interview_plan_id": plan.id if plan else session.interview_plan_id,
-        }
-        reply, raw_response, agent_run = await self.agent_run_executor.run(
-            definition=definition,
+        run_context = self.agent_run_executor.context(
+            prompt_id=prompt_id,
             project_id=session.project_id,
             session_id=session.id,
-            input_snapshot=input_snapshot,
-            context_refs=context_refs,
-            evidence_refs=evidence_refs,
+            input_snapshot={
+                "role_name": role_name,
+                "has_plan_context": bool(plan_context),
+            },
+            context_refs={
+                "interview_plan_id": plan.id if plan else session.interview_plan_id,
+            },
+            evidence_packet=evidence_packet,
+        )
+        reply, raw_response, agent_run = await self.agent_run_executor.run_context(
+            context=run_context,
             model_name=self.llm.model,
             call=lambda: self.llm.generate_first_question(role_name, plan_context=plan_context),
             output_snapshot=lambda output: {"reply": output},
         )
-        return reply, raw_response, agent_run, evidence_refs, definition
+        return reply, raw_response, agent_run, run_context.evidence_refs, run_context.definition
 
     async def _generate_followup_with_run(
         self,
@@ -326,7 +324,8 @@ class InterviewService:
         conversation_summary_id: int | None = None,
         execution=None,
     ):
-        definition = prompt_registry.get("followup")
+        prompt_id = "followup"
+        definition = self.agent_run_executor.definition(prompt_id)
         evidence_packet = self.evidence_builder.build_question_generation_packet(
             task=definition.task,
             session_id=session.id,
@@ -337,32 +336,31 @@ class InterviewService:
             recent_history=recent_history,
             execution_state=execution.state if execution else None,
         )
-        evidence_refs = self.evidence_builder.refs(evidence_packet)
-        input_snapshot = {
-            "role_name": session.role_name,
-            "answer_message_id": answer_message.id,
-            "round_no": answer_message.round_no,
-            "recent_history_count": len(recent_history or []),
-            "has_candidate_profile": bool(candidate_profile),
-            "has_conversation_summary": bool(conversation_summary),
-            "has_plan_context": bool(plan_context),
-            "has_execution_context": bool(execution_context),
-            "evidence_packet": evidence_packet,
-        }
-        context_refs = {
-            "candidate_profile_summary_id": candidate_profile_id,
-            "conversation_summary_id": conversation_summary_id,
-            "interview_plan_id": session.interview_plan_id,
-            "execution_id": execution.id if execution else None,
-            "answer_message_id": answer_message.id,
-        }
-        reply, raw_response, agent_run = await self.agent_run_executor.run(
-            definition=definition,
+        run_context = self.agent_run_executor.context(
+            prompt_id=prompt_id,
             project_id=session.project_id,
             session_id=session.id,
-            input_snapshot=input_snapshot,
-            context_refs=context_refs,
-            evidence_refs=evidence_refs,
+            input_snapshot={
+                "role_name": session.role_name,
+                "answer_message_id": answer_message.id,
+                "round_no": answer_message.round_no,
+                "recent_history_count": len(recent_history or []),
+                "has_candidate_profile": bool(candidate_profile),
+                "has_conversation_summary": bool(conversation_summary),
+                "has_plan_context": bool(plan_context),
+                "has_execution_context": bool(execution_context),
+            },
+            context_refs={
+                "candidate_profile_summary_id": candidate_profile_id,
+                "conversation_summary_id": conversation_summary_id,
+                "interview_plan_id": session.interview_plan_id,
+                "execution_id": execution.id if execution else None,
+                "answer_message_id": answer_message.id,
+            },
+            evidence_packet=evidence_packet,
+        )
+        reply, raw_response, agent_run = await self.agent_run_executor.run_context(
+            context=run_context,
             model_name=self.llm.model,
             call=lambda: self.llm.generate_followup(
                 session.role_name,
@@ -375,7 +373,7 @@ class InterviewService:
             ),
             output_snapshot=lambda output: {"reply": output},
         )
-        return reply, raw_response, agent_run, evidence_refs, definition
+        return reply, raw_response, agent_run, run_context.evidence_refs, run_context.definition
 
     async def _generate_memory_with_run(
         self,
@@ -386,44 +384,43 @@ class InterviewService:
         previous_summary_id: int | None = None,
     ):
         session = self._get_session_by_id(session_id)
-        definition = prompt_registry.get(prompt_id)
+        definition = self.agent_run_executor.definition(prompt_id)
         evidence_packet = self.evidence_builder.build_memory_packet(
             task=definition.task,
             session_id=session_id,
             project_id=session.project_id if session else None,
             messages=profile_messages,
         )
-        evidence_refs = self.evidence_builder.refs(evidence_packet)
-        input_snapshot = {
-            "summary_type": "candidate_profile" if prompt_id == "candidate_profile" else "conversation",
-            "message_count": len(profile_messages or []),
-            "from_round_no": profile_messages[0].round_no if profile_messages else None,
-            "to_round_no": profile_messages[-1].round_no if profile_messages else None,
-            "has_previous_content": bool(previous_content),
-            "evidence_packet": evidence_packet,
-        }
-        context_refs = {
-            "previous_summary_id": previous_summary_id,
-            "message_ids": [message.id for message in profile_messages or []],
-        }
+        run_context = self.agent_run_executor.context(
+            prompt_id=prompt_id,
+            project_id=session.project_id if session else None,
+            session_id=session_id,
+            input_snapshot={
+                "summary_type": "candidate_profile" if prompt_id == "candidate_profile" else "conversation",
+                "message_count": len(profile_messages or []),
+                "from_round_no": profile_messages[0].round_no if profile_messages else None,
+                "to_round_no": profile_messages[-1].round_no if profile_messages else None,
+                "has_previous_content": bool(previous_content),
+            },
+            context_refs={
+                "previous_summary_id": previous_summary_id,
+                "message_ids": [message.id for message in profile_messages or []],
+            },
+            evidence_packet=evidence_packet,
+        )
 
         async def generate_memory():
             if prompt_id == "candidate_profile":
                 return await self.llm.generate_candidate_profile(previous_content, profile_messages)
             return await self.llm.generate_conversation_summary(previous_content, profile_messages)
 
-        content, raw_response, agent_run = await self.agent_run_executor.run(
-            definition=definition,
-            project_id=session.project_id if session else None,
-            session_id=session_id,
-            input_snapshot=input_snapshot,
-            context_refs=context_refs,
-            evidence_refs=evidence_refs,
+        content, raw_response, agent_run = await self.agent_run_executor.run_context(
+            context=run_context,
             model_name=self.llm.model,
             call=generate_memory,
             output_snapshot=lambda output: {"content": output},
         )
-        return content, raw_response, agent_run, evidence_refs, definition
+        return content, raw_response, agent_run, run_context.evidence_refs, run_context.definition
 
     async def _refresh_memory_if_needed(self, session_id: int, latest_completed_round_no: int) -> None:
         if latest_completed_round_no < 10:
@@ -538,31 +535,29 @@ class InterviewService:
                 current_section=current_section,
                 execution_state=execution.state or {},
             )
-            definition = prompt_registry.get("topic_completion_judge")
-            evidence_refs = self.evidence_builder.refs(evidence_packet)
-            input_snapshot = {
-                "round_no": round_no,
-                "answer_message_id": answer_message.id,
-                "current_section_key": current_section.get("section_key"),
-                "current_section_completed_rounds": current_section.get("completed_rounds"),
-                "current_section_target_rounds": current_section.get("target_rounds"),
-                "recent_history_count": len(recent_history or []),
-                "evidence_packet": evidence_packet,
-            }
-            context_refs = {
-                "interview_plan_id": session.interview_plan_id,
-                "execution_id": execution.id,
-                "answer_message_id": answer_message.id,
-                "current_section_key": current_section.get("section_key"),
-            }
+            run_context = self.agent_run_executor.context(
+                prompt_id="topic_completion_judge",
+                project_id=session.project_id,
+                session_id=session.id,
+                input_snapshot={
+                    "round_no": round_no,
+                    "answer_message_id": answer_message.id,
+                    "current_section_key": current_section.get("section_key"),
+                    "current_section_completed_rounds": current_section.get("completed_rounds"),
+                    "current_section_target_rounds": current_section.get("target_rounds"),
+                    "recent_history_count": len(recent_history or []),
+                },
+                context_refs={
+                    "interview_plan_id": session.interview_plan_id,
+                    "execution_id": execution.id,
+                    "answer_message_id": answer_message.id,
+                    "current_section_key": current_section.get("section_key"),
+                },
+                evidence_packet=evidence_packet,
+            )
             try:
-                judge_result, _raw_response, agent_run = await self.agent_run_executor.run(
-                    definition=definition,
-                    project_id=session.project_id,
-                    session_id=session.id,
-                    input_snapshot=input_snapshot,
-                    context_refs=context_refs,
-                    evidence_refs=evidence_refs,
+                judge_result, _raw_response, agent_run = await self.agent_run_executor.run_context(
+                    context=run_context,
                     model_name=self.llm.model,
                     call=lambda: self.llm.judge_topic_completion(
                         current_section=current_section,
@@ -577,8 +572,8 @@ class InterviewService:
                 judge_result = {
                     **(judge_result or {}),
                     "agent_run_id": agent_run.id,
-                    "schema_version": definition.output_schema,
-                    "evidence_refs": evidence_refs,
+                    "schema_version": run_context.definition.output_schema,
+                    "evidence_refs": run_context.evidence_refs,
                 }
         return self.execution_service.advance_after_answer(execution, answer, round_no, judge_result)
 
