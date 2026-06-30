@@ -205,6 +205,7 @@ class LLMService:
         execution_state: dict | None = None,
         evaluation: dict | None = None,
         transcript_messages: list[InterviewMessage] | None = None,
+        evidence_packet: dict | None = None,
     ) -> tuple[dict, dict | None]:
         prompt = load_prompt(
             "project_candidate_profile.txt",
@@ -215,6 +216,7 @@ class LLMService:
             execution_state=json.dumps(execution_state or {}, ensure_ascii=False),
             evaluation=json.dumps(evaluation or {}, ensure_ascii=False),
             transcript=self._format_transcript(transcript_messages or []),
+            evidence_packet=json.dumps(evidence_packet or {}, ensure_ascii=False),
         )
         if not self.api_key:
             return self._mock_project_candidate_profile(

@@ -33,6 +33,18 @@ class PromptRegistry:
                     required_evidence=("interview_answer", "execution_probe"),
                 ),
                 PromptDefinition(
+                    prompt_id="project_candidate_profile",
+                    prompt_file="project_candidate_profile.txt",
+                    version="3.0.0",
+                    owner_agent="ProjectCandidateProfileAgent",
+                    task="project_candidate_profile_generation",
+                    input_schema="ProjectCandidateProfileInput.v1",
+                    output_schema="ProjectCandidateProfile.v1",
+                    required_context=(),
+                    optional_context=("JDAnalysis", "ResumeProfile", "GapAnalysis", "Evaluation"),
+                    required_evidence=("resume_claim", "interview_answer", "execution_probe"),
+                ),
+                PromptDefinition(
                     prompt_id="resume_authenticity",
                     prompt_file="resume_authenticity.txt",
                     version="3.0.0",

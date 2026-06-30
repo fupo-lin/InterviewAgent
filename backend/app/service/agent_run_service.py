@@ -41,3 +41,37 @@ class AgentRunRecorder:
         self.db.add(item)
         self.db.flush()
         return item
+
+    def record_failure(
+        self,
+        definition: PromptDefinition,
+        project_id: int | None,
+        session_id: int | None,
+        input_snapshot: dict[str, Any],
+        error: Exception,
+        model_name: str,
+        evidence_refs: list[str] | None = None,
+        context_refs: dict[str, Any] | None = None,
+    ) -> AgentRun:
+        item = AgentRun(
+            agent_name=definition.owner_agent,
+            agent_version="1.0.0",
+            task_name=definition.task,
+            project_id=project_id,
+            session_id=session_id,
+            input_schema_version=definition.input_schema,
+            output_schema_version=definition.output_schema,
+            prompt_id=definition.prompt_id,
+            prompt_version=definition.version,
+            model_name=model_name,
+            input_snapshot=input_snapshot,
+            context_refs=context_refs or {},
+            evidence_refs=evidence_refs or [],
+            output_snapshot={},
+            raw_response=None,
+            status="failed",
+            error_message=str(error),
+        )
+        self.db.add(item)
+        self.db.flush()
+        return item

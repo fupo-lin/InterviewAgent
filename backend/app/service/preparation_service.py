@@ -335,16 +335,6 @@ class PreparationService:
         jd_analysis = self.jd_analysis_repo.get_latest_by_project_id(project_id)
         resume_profile = self.resume_profile_repo.get_latest_by_project_id(project_id)
         gap_analysis = self.gap_repo.get_latest_by_project_id(project_id)
-
-        content, raw_response = await self.llm.generate_project_candidate_profile(
-            target_role=target_role,
-            jd_analysis=jd_analysis.content if jd_analysis else None,
-            resume_profile=resume_profile.content if resume_profile else None,
-            gap_analysis=gap_analysis.content if gap_analysis else None,
-            execution_state=execution_state,
-            evaluation=evaluation,
-            transcript_messages=transcript_messages or [],
-        )
         evidence_packet = self.evidence_builder.build_resume_packet(
             task="project_candidate_profile",
             project_id=project_id,
@@ -352,11 +342,64 @@ class PreparationService:
             execution_state=execution_state,
             transcript_messages=transcript_messages or [],
         )
+        definition = prompt_registry.get("project_candidate_profile")
+        input_snapshot = {
+            "target_role": target_role,
+            "has_jd_analysis": bool(jd_analysis),
+            "has_resume_profile": bool(resume_profile),
+            "has_gap_analysis": bool(gap_analysis),
+            "has_evaluation": bool(evaluation),
+            "transcript_message_count": len(transcript_messages or []),
+            "evidence_packet": evidence_packet,
+        }
+        context_refs = {
+            "jd_analysis_id": jd_analysis.id if jd_analysis else None,
+            "resume_profile_id": resume_profile.id if resume_profile else None,
+            "gap_analysis_id": gap_analysis.id if gap_analysis else None,
+            "source_session_id": source_session_id,
+        }
+        try:
+            content, raw_response = await self.llm.generate_project_candidate_profile(
+                target_role=target_role,
+                jd_analysis=jd_analysis.content if jd_analysis else None,
+                resume_profile=resume_profile.content if resume_profile else None,
+                gap_analysis=gap_analysis.content if gap_analysis else None,
+                execution_state=execution_state,
+                evaluation=evaluation,
+                transcript_messages=transcript_messages or [],
+                evidence_packet=evidence_packet,
+            )
+        except Exception as exc:
+            self.agent_run_recorder.record_failure(
+                definition=definition,
+                project_id=project_id,
+                session_id=source_session_id,
+                input_snapshot=input_snapshot,
+                context_refs=context_refs,
+                evidence_refs=self.evidence_builder.refs(evidence_packet),
+                error=exc,
+                model_name=self.llm.model,
+            )
+            raise
+
+        agent_run = self.agent_run_recorder.record_success(
+            definition=definition,
+            project_id=project_id,
+            session_id=source_session_id,
+            input_snapshot=input_snapshot,
+            context_refs=context_refs,
+            evidence_refs=self.evidence_builder.refs(evidence_packet),
+            output_snapshot=content,
+            raw_response=raw_response,
+            model_name=self.llm.model,
+        )
         return self.candidate_profile_repo.create(
             project_id=project_id,
             source_session_id=source_session_id,
             content=content,
             raw_response=raw_response,
+            agent_run_id=agent_run.id,
+            schema_version=definition.output_schema,
             evidence_refs=self.evidence_builder.refs(evidence_packet),
         )
 
