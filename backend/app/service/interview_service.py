@@ -14,6 +14,7 @@ from app.repository.interview_repository import (
 from app.repository.preparation_repository import InterviewPlanRepository, PreparationProjectRepository
 from app.service.agent_run_service import AgentRunExecutor, AgentRunRecorder
 from app.service.evidence_service import EvidencePacketBuilder
+from app.service.interview_agent_spec_builder import InterviewAgentSpecBuilder
 from app.service.interview_execution_service import InterviewExecutionService
 from app.service.preparation_service import PreparationService
 from app.schemas.interview import DeleteResponse, EvaluationResponse, HistoryResponse, MessageResponse
@@ -38,6 +39,10 @@ class InterviewService:
         self.evidence_builder = EvidencePacketBuilder()
         self.agent_run_recorder = AgentRunRecorder(db)
         self.agent_run_executor = AgentRunExecutor(db, self.agent_run_recorder)
+        self.interview_agent_spec_builder = InterviewAgentSpecBuilder(
+            agent_run_executor=self.agent_run_executor,
+            evidence_builder=self.evidence_builder,
+        )
 
     async def start(self, role_name: str) -> tuple[str, str]:
         session_uid = uuid4().hex
@@ -167,39 +172,25 @@ class InterviewService:
         history = self._evaluation_context(session.id)
         full_history = self.message_repo.list_by_session_id(session.id)
         execution = self.execution_repo.get_latest_by_session_id(session.id)
-        evidence_packet = self.evidence_builder.build_evaluation_packet(
-            session_id=session.id,
-            project_id=session.project_id,
-            execution_state=execution.state if execution else None,
-            transcript_messages=full_history,
-        )
         candidate_profile = self.summary_repo.get_latest_by_session_id(session.id, "candidate_profile")
         conversation_summary = self.summary_repo.get_latest_by_session_id(session.id, "conversation")
-        run_result = await self.agent_run_executor.execute(
-            prompt_id="evaluation",
-            project_id=session.project_id,
-            session_id=session.id,
-            input_snapshot={
-                "history_message_count": len(history),
-                "full_history_message_count": len(full_history),
-                "has_candidate_profile": bool(candidate_profile),
-                "has_conversation_summary": bool(conversation_summary),
-                "has_interview_plan": bool(session.interview_plan_id),
-            },
-            context_refs={
-                "candidate_profile_summary_id": candidate_profile.id if candidate_profile else None,
-                "conversation_summary_id": conversation_summary.id if conversation_summary else None,
-                "interview_plan_id": session.interview_plan_id,
-                "execution_id": execution.id if execution else None,
-            },
-            evidence_packet=evidence_packet,
+        spec = self.interview_agent_spec_builder.evaluation(
+            session=session,
+            history=history,
+            full_history=full_history,
+            execution=execution,
+            candidate_profile=candidate_profile,
+            conversation_summary=conversation_summary,
+        )
+        run_result = await self.agent_run_executor.execute_spec(
+            spec=spec,
             model_name=self.llm.model,
             call=lambda: self.llm.generate_evaluation(
                 history,
                 candidate_profile=candidate_profile.content if candidate_profile else None,
                 conversation_summary=conversation_summary.content if conversation_summary else None,
                 plan_context=self._session_plan_context(session),
-                evidence_packet=evidence_packet,
+                evidence_packet=spec.evidence_packet,
             ),
         )
         saved = self.evaluation_repo.create(
@@ -281,28 +272,16 @@ class InterviewService:
         plan_context: str | None = None,
         plan=None,
     ):
-        prompt_id = "interviewer"
-        definition = self.agent_run_executor.definition(prompt_id)
-        evidence_packet = self.evidence_builder.build_question_generation_packet(
-            task=definition.task,
-            session_id=session.id,
-            project_id=session.project_id,
+        spec = self.interview_agent_spec_builder.first_question(
+            session=session,
+            role_name=role_name,
+            plan_context=plan_context,
+            plan=plan,
         )
-        run_result = await self.agent_run_executor.execute(
-            prompt_id=prompt_id,
-            project_id=session.project_id,
-            session_id=session.id,
-            input_snapshot={
-                "role_name": role_name,
-                "has_plan_context": bool(plan_context),
-            },
-            context_refs={
-                "interview_plan_id": plan.id if plan else session.interview_plan_id,
-            },
-            evidence_packet=evidence_packet,
+        run_result = await self.agent_run_executor.execute_spec(
+            spec=spec,
             model_name=self.llm.model,
             call=lambda: self.llm.generate_first_question(role_name, plan_context=plan_context),
-            output_snapshot=lambda output: {"reply": output},
         )
         return run_result.message_fields()
 
@@ -319,40 +298,20 @@ class InterviewService:
         conversation_summary_id: int | None = None,
         execution=None,
     ):
-        prompt_id = "followup"
-        definition = self.agent_run_executor.definition(prompt_id)
-        evidence_packet = self.evidence_builder.build_question_generation_packet(
-            task=definition.task,
-            session_id=session.id,
-            project_id=session.project_id,
-            user_answer_message_id=answer_message.id,
-            user_answer=answer_message.content,
-            round_no=answer_message.round_no,
+        spec = self.interview_agent_spec_builder.followup(
+            session=session,
+            answer_message=answer_message,
             recent_history=recent_history,
-            execution_state=execution.state if execution else None,
+            candidate_profile=candidate_profile,
+            conversation_summary=conversation_summary,
+            plan_context=plan_context,
+            execution_context=execution_context,
+            candidate_profile_id=candidate_profile_id,
+            conversation_summary_id=conversation_summary_id,
+            execution=execution,
         )
-        run_result = await self.agent_run_executor.execute(
-            prompt_id=prompt_id,
-            project_id=session.project_id,
-            session_id=session.id,
-            input_snapshot={
-                "role_name": session.role_name,
-                "answer_message_id": answer_message.id,
-                "round_no": answer_message.round_no,
-                "recent_history_count": len(recent_history or []),
-                "has_candidate_profile": bool(candidate_profile),
-                "has_conversation_summary": bool(conversation_summary),
-                "has_plan_context": bool(plan_context),
-                "has_execution_context": bool(execution_context),
-            },
-            context_refs={
-                "candidate_profile_summary_id": candidate_profile_id,
-                "conversation_summary_id": conversation_summary_id,
-                "interview_plan_id": session.interview_plan_id,
-                "execution_id": execution.id if execution else None,
-                "answer_message_id": answer_message.id,
-            },
-            evidence_packet=evidence_packet,
+        run_result = await self.agent_run_executor.execute_spec(
+            spec=spec,
             model_name=self.llm.model,
             call=lambda: self.llm.generate_followup(
                 session.role_name,
@@ -363,7 +322,6 @@ class InterviewService:
                 plan_context=plan_context,
                 execution_context=execution_context,
             ),
-            output_snapshot=lambda output: {"reply": output},
         )
         return run_result.message_fields()
 
@@ -376,12 +334,13 @@ class InterviewService:
         previous_summary_id: int | None = None,
     ):
         session = self._get_session_by_id(session_id)
-        definition = self.agent_run_executor.definition(prompt_id)
-        evidence_packet = self.evidence_builder.build_memory_packet(
-            task=definition.task,
+        spec = self.interview_agent_spec_builder.memory(
+            prompt_id=prompt_id,
+            session=session,
             session_id=session_id,
-            project_id=session.project_id if session else None,
-            messages=profile_messages,
+            previous_content=previous_content,
+            profile_messages=profile_messages,
+            previous_summary_id=previous_summary_id,
         )
 
         async def generate_memory():
@@ -389,25 +348,10 @@ class InterviewService:
                 return await self.llm.generate_candidate_profile(previous_content, profile_messages)
             return await self.llm.generate_conversation_summary(previous_content, profile_messages)
 
-        run_result = await self.agent_run_executor.execute(
-            prompt_id=prompt_id,
-            project_id=session.project_id if session else None,
-            session_id=session_id,
-            input_snapshot={
-                "summary_type": "candidate_profile" if prompt_id == "candidate_profile" else "conversation",
-                "message_count": len(profile_messages or []),
-                "from_round_no": profile_messages[0].round_no if profile_messages else None,
-                "to_round_no": profile_messages[-1].round_no if profile_messages else None,
-                "has_previous_content": bool(previous_content),
-            },
-            context_refs={
-                "previous_summary_id": previous_summary_id,
-                "message_ids": [message.id for message in profile_messages or []],
-            },
-            evidence_packet=evidence_packet,
+        run_result = await self.agent_run_executor.execute_spec(
+            spec=spec,
             model_name=self.llm.model,
             call=generate_memory,
-            output_snapshot=lambda output: {"content": output},
         )
 
         return run_result.message_fields()
@@ -508,35 +452,16 @@ class InterviewService:
         answer = answer_message.content
         round_no = answer_message.round_no
         if current_section:
-            evidence_packet = self.evidence_builder.build_topic_judge_packet(
-                session_id=session.id,
-                project_id=session.project_id,
-                answer_message_id=answer_message.id,
-                round_no=round_no,
-                user_answer=answer,
+            spec = self.interview_agent_spec_builder.topic_judge(
+                session=session,
+                execution=execution,
                 current_section=current_section,
-                execution_state=execution.state or {},
+                answer_message=answer_message,
+                recent_history=recent_history,
             )
             try:
-                run_result = await self.agent_run_executor.execute(
-                    prompt_id="topic_completion_judge",
-                    project_id=session.project_id,
-                    session_id=session.id,
-                    input_snapshot={
-                        "round_no": round_no,
-                        "answer_message_id": answer_message.id,
-                        "current_section_key": current_section.get("section_key"),
-                        "current_section_completed_rounds": current_section.get("completed_rounds"),
-                        "current_section_target_rounds": current_section.get("target_rounds"),
-                        "recent_history_count": len(recent_history or []),
-                    },
-                    context_refs={
-                        "interview_plan_id": session.interview_plan_id,
-                        "execution_id": execution.id,
-                        "answer_message_id": answer_message.id,
-                        "current_section_key": current_section.get("section_key"),
-                    },
-                    evidence_packet=evidence_packet,
+                run_result = await self.agent_run_executor.execute_spec(
+                    spec=spec,
                     model_name=self.llm.model,
                     call=lambda: self.llm.judge_topic_completion(
                         current_section=current_section,
