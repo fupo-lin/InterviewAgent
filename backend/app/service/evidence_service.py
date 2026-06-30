@@ -77,6 +77,58 @@ class EvidencePacketBuilder:
             "missing_evidence": self._missing_evidence(items, resume_profile, authenticity_report),
         }
 
+    def build_jd_analysis_packet(
+        self,
+        project_id: int,
+        jd_id: int,
+        jd_content: str,
+    ) -> dict[str, Any]:
+        items = [
+            EvidenceItem(
+                evidence_id=f"jd_requirement_{jd_id}",
+                evidence_type="jd_requirement",
+                source_type="job_description",
+                source_id=jd_id,
+                project_id=project_id,
+                content_excerpt=self._excerpt(jd_content),
+                tags=("jd", "requirement"),
+                confidence="source_document",
+            )
+        ]
+        return {
+            "packet_id": f"jd_analysis_{project_id}_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}",
+            "task": "jd_analysis",
+            "project_id": project_id,
+            "evidence_items": [item.to_dict() for item in items],
+            "missing_evidence": [] if jd_content.strip() else ["job_description_source_text"],
+        }
+
+    def build_resume_analysis_packet(
+        self,
+        project_id: int,
+        resume_id: int,
+        resume_content: str,
+    ) -> dict[str, Any]:
+        items = [
+            EvidenceItem(
+                evidence_id=f"resume_claim_{resume_id}",
+                evidence_type="resume_claim",
+                source_type="resume_document",
+                source_id=resume_id,
+                project_id=project_id,
+                content_excerpt=self._excerpt(resume_content),
+                tags=("resume", "claim"),
+                confidence="source_document",
+            )
+        ]
+        return {
+            "packet_id": f"resume_analysis_{project_id}_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}",
+            "task": "resume_analysis",
+            "project_id": project_id,
+            "evidence_items": [item.to_dict() for item in items],
+            "missing_evidence": [] if resume_content.strip() else ["resume_source_text"],
+        }
+
     def refs(self, packet: dict[str, Any] | None) -> list[str]:
         if not packet:
             return []

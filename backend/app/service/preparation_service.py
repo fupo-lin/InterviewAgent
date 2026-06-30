@@ -101,12 +101,60 @@ class PreparationService:
         if not jd:
             raise HTTPException(status_code=400, detail="Job description is required before analysis")
 
-        content, raw_response = await self.llm.generate_jd_analysis(jd.raw_content)
+        evidence_packet = self.evidence_builder.build_jd_analysis_packet(
+            project_id=project.id,
+            jd_id=jd.id,
+            jd_content=jd.raw_content,
+        )
+        definition = prompt_registry.get("jd_analysis")
+        input_snapshot = {
+            "jd_id": jd.id,
+            "content_length": len(jd.raw_content or ""),
+            "has_title": bool(jd.title),
+            "has_company_name": bool(jd.company_name),
+            "has_source_url": bool(jd.source_url),
+            "evidence_packet": evidence_packet,
+        }
+        context_refs = {
+            "jd_id": jd.id,
+            "project_id": project.id,
+        }
+        evidence_refs = self.evidence_builder.refs(evidence_packet)
+        try:
+            content, raw_response = await self.llm.generate_jd_analysis(jd.raw_content)
+        except Exception as exc:
+            self.agent_run_recorder.record_failure(
+                definition=definition,
+                project_id=project.id,
+                session_id=None,
+                input_snapshot=input_snapshot,
+                context_refs=context_refs,
+                evidence_refs=evidence_refs,
+                error=exc,
+                model_name=self.llm.model,
+            )
+            self.db.commit()
+            raise
+
+        agent_run = self.agent_run_recorder.record_success(
+            definition=definition,
+            project_id=project.id,
+            session_id=None,
+            input_snapshot=input_snapshot,
+            context_refs=context_refs,
+            evidence_refs=evidence_refs,
+            output_snapshot=content,
+            raw_response=raw_response,
+            model_name=self.llm.model,
+        )
         saved = self.jd_analysis_repo.create(
             project_id=project.id,
             jd_id=jd.id,
             content=content,
             raw_response=raw_response,
+            agent_run_id=agent_run.id,
+            schema_version=definition.output_schema,
+            evidence_refs=evidence_refs,
         )
         self.db.commit()
         return AnalysisResponse(analysisId=saved.id, analysis=saved.content)
@@ -139,12 +187,59 @@ class PreparationService:
         if not resume:
             raise HTTPException(status_code=400, detail="Resume is required before analysis")
 
-        content, raw_response = await self.llm.generate_resume_profile(resume.raw_content)
+        evidence_packet = self.evidence_builder.build_resume_analysis_packet(
+            project_id=project.id,
+            resume_id=resume.id,
+            resume_content=resume.raw_content,
+        )
+        definition = prompt_registry.get("resume_analysis")
+        input_snapshot = {
+            "resume_id": resume.id,
+            "content_length": len(resume.raw_content or ""),
+            "file_name": resume.file_name,
+            "file_type": resume.file_type,
+            "evidence_packet": evidence_packet,
+        }
+        context_refs = {
+            "resume_id": resume.id,
+            "project_id": project.id,
+        }
+        evidence_refs = self.evidence_builder.refs(evidence_packet)
+        try:
+            content, raw_response = await self.llm.generate_resume_profile(resume.raw_content)
+        except Exception as exc:
+            self.agent_run_recorder.record_failure(
+                definition=definition,
+                project_id=project.id,
+                session_id=None,
+                input_snapshot=input_snapshot,
+                context_refs=context_refs,
+                evidence_refs=evidence_refs,
+                error=exc,
+                model_name=self.llm.model,
+            )
+            self.db.commit()
+            raise
+
+        agent_run = self.agent_run_recorder.record_success(
+            definition=definition,
+            project_id=project.id,
+            session_id=None,
+            input_snapshot=input_snapshot,
+            context_refs=context_refs,
+            evidence_refs=evidence_refs,
+            output_snapshot=content,
+            raw_response=raw_response,
+            model_name=self.llm.model,
+        )
         saved = self.resume_profile_repo.create(
             project_id=project.id,
             resume_id=resume.id,
             content=content,
             raw_response=raw_response,
+            agent_run_id=agent_run.id,
+            schema_version=definition.output_schema,
+            evidence_refs=evidence_refs,
         )
         self.db.commit()
         return ResumeProfileResponse(profileId=saved.id, profile=saved.content)

@@ -118,10 +118,16 @@ class JDAnalysisRepository(BaseProjectRepository):
         jd_id: int,
         content: dict,
         raw_response: dict | None = None,
+        agent_run_id: int | None = None,
+        schema_version: str = "JDAnalysis.v1",
+        evidence_refs: list[str] | None = None,
     ) -> JDAnalysis:
         item = JDAnalysis(
             project_id=project_id,
             jd_id=jd_id,
+            agent_run_id=agent_run_id,
+            schema_version=schema_version,
+            evidence_refs=evidence_refs or [],
             content=content,
             raw_response=raw_response,
         )
@@ -160,10 +166,16 @@ class ResumeProfileRepository(BaseProjectRepository):
         resume_id: int,
         content: dict,
         raw_response: dict | None = None,
+        agent_run_id: int | None = None,
+        schema_version: str = "ResumeProfile.v1",
+        evidence_refs: list[str] | None = None,
     ) -> ResumeProfile:
         item = ResumeProfile(
             project_id=project_id,
             resume_id=resume_id,
+            agent_run_id=agent_run_id,
+            schema_version=schema_version,
+            evidence_refs=evidence_refs or [],
             content=content,
             raw_response=raw_response,
         )
