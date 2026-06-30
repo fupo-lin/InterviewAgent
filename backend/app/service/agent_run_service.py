@@ -1,12 +1,14 @@
 from typing import Any
 
 from app.models.agent import AgentRun
+from app.service.prompt_contract import PromptContractValidator
 from app.service.prompt_registry import PromptDefinition
 
 
 class AgentRunRecorder:
     def __init__(self, db):
         self.db = db
+        self.contract_validator = PromptContractValidator()
 
     def record_success(
         self,
@@ -20,6 +22,12 @@ class AgentRunRecorder:
         evidence_refs: list[str] | None = None,
         context_refs: dict[str, Any] | None = None,
     ) -> AgentRun:
+        input_snapshot = self._with_contract_validation(
+            definition=definition,
+            input_snapshot=input_snapshot,
+            context_refs=context_refs,
+            evidence_refs=evidence_refs,
+        )
         return self._create(
             definition=definition,
             project_id=project_id,
@@ -44,6 +52,12 @@ class AgentRunRecorder:
         evidence_refs: list[str] | None = None,
         context_refs: dict[str, Any] | None = None,
     ) -> AgentRun:
+        input_snapshot = self._with_contract_validation(
+            definition=definition,
+            input_snapshot=input_snapshot,
+            context_refs=context_refs,
+            evidence_refs=evidence_refs,
+        )
         return self._create(
             definition=definition,
             project_id=project_id,
@@ -95,3 +109,21 @@ class AgentRunRecorder:
         self.db.add(item)
         self.db.flush()
         return item
+
+    def _with_contract_validation(
+        self,
+        definition: PromptDefinition,
+        input_snapshot: dict[str, Any],
+        context_refs: dict[str, Any] | None,
+        evidence_refs: list[str] | None,
+    ) -> dict[str, Any]:
+        validation = self.contract_validator.validate(
+            definition=definition,
+            input_snapshot=input_snapshot,
+            context_refs=context_refs,
+            evidence_refs=evidence_refs,
+        )
+        return {
+            **(input_snapshot or {}),
+            "prompt_contract_validation": validation,
+        }
