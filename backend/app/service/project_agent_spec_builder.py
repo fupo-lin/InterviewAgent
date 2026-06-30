@@ -21,6 +21,139 @@ class ProjectAgentSpecBuilder:
         self.agent_run_executor = agent_run_executor
         self.evidence_builder = evidence_builder
 
+    def jd_analysis(
+        self,
+        project_id: int,
+        jd,
+    ) -> AgentSpec:
+        evidence_packet = self.evidence_builder.build_jd_analysis_packet(
+            project_id=project_id,
+            jd_id=jd.id,
+            jd_content=jd.raw_content,
+        )
+        return self.agent_run_executor.spec(
+            prompt_id="jd_analysis",
+            project_id=project_id,
+            session_id=None,
+            input_snapshot={
+                "jd_id": jd.id,
+                "content_length": len(jd.raw_content or ""),
+                "has_title": bool(jd.title),
+                "has_company_name": bool(jd.company_name),
+                "has_source_url": bool(jd.source_url),
+            },
+            context_refs={
+                "jd_id": jd.id,
+                "project_id": project_id,
+            },
+            evidence_packet=evidence_packet,
+        )
+
+    def resume_analysis(
+        self,
+        project_id: int,
+        resume,
+    ) -> AgentSpec:
+        evidence_packet = self.evidence_builder.build_resume_analysis_packet(
+            project_id=project_id,
+            resume_id=resume.id,
+            resume_content=resume.raw_content,
+        )
+        return self.agent_run_executor.spec(
+            prompt_id="resume_analysis",
+            project_id=project_id,
+            session_id=None,
+            input_snapshot={
+                "resume_id": resume.id,
+                "content_length": len(resume.raw_content or ""),
+                "file_name": resume.file_name,
+                "file_type": resume.file_type,
+            },
+            context_refs={
+                "resume_id": resume.id,
+                "project_id": project_id,
+            },
+            evidence_packet=evidence_packet,
+        )
+
+    def gap_analysis(
+        self,
+        project_id: int,
+        jd_analysis,
+        resume_profile,
+    ) -> AgentSpec:
+        evidence_packet = self.evidence_builder.build_gap_analysis_packet(
+            project_id=project_id,
+            jd_analysis_id=jd_analysis.id,
+            resume_profile_id=resume_profile.id,
+            jd_analysis=jd_analysis.content,
+            resume_profile=resume_profile.content,
+        )
+        return self.agent_run_executor.spec(
+            prompt_id="gap_analysis",
+            project_id=project_id,
+            session_id=None,
+            input_snapshot={
+                "jd_analysis_id": jd_analysis.id,
+                "resume_profile_id": resume_profile.id,
+                "jd_analysis_schema_version": getattr(jd_analysis, "schema_version", None),
+                "resume_profile_schema_version": getattr(resume_profile, "schema_version", None),
+            },
+            context_refs={
+                "jd_analysis_id": jd_analysis.id,
+                "resume_profile_id": resume_profile.id,
+                "jd_analysis_agent_run_id": getattr(jd_analysis, "agent_run_id", None),
+                "resume_profile_agent_run_id": getattr(resume_profile, "agent_run_id", None),
+                "jd_analysis_evidence_refs": getattr(jd_analysis, "evidence_refs", None) or [],
+                "resume_profile_evidence_refs": getattr(resume_profile, "evidence_refs", None) or [],
+            },
+            evidence_packet=evidence_packet,
+        )
+
+    def interview_plan(
+        self,
+        project_id: int,
+        target_role: str | None,
+        plan_mode: str,
+        jd_analysis=None,
+        resume_profile=None,
+        gap_analysis=None,
+    ) -> AgentSpec:
+        evidence_packet = self.evidence_builder.build_interview_plan_packet(
+            project_id=project_id,
+            plan_mode=plan_mode,
+            jd_analysis_id=jd_analysis.id if jd_analysis else None,
+            resume_profile_id=resume_profile.id if resume_profile else None,
+            gap_analysis_id=gap_analysis.id if gap_analysis else None,
+            jd_analysis=jd_analysis.content if jd_analysis else None,
+            resume_profile=resume_profile.content if resume_profile else None,
+            gap_analysis=gap_analysis.content if gap_analysis else None,
+        )
+        return self.agent_run_executor.spec(
+            prompt_id="interview_plan",
+            project_id=project_id,
+            session_id=None,
+            input_snapshot={
+                "plan_mode": plan_mode,
+                "target_role": target_role,
+                "has_jd_analysis": bool(jd_analysis),
+                "has_resume_profile": bool(resume_profile),
+                "has_gap_analysis": bool(gap_analysis),
+            },
+            context_refs={
+                "jd_analysis_id": jd_analysis.id if jd_analysis else None,
+                "resume_profile_id": resume_profile.id if resume_profile else None,
+                "gap_analysis_id": gap_analysis.id if gap_analysis else None,
+                "jd_analysis_agent_run_id": getattr(jd_analysis, "agent_run_id", None) if jd_analysis else None,
+                "resume_profile_agent_run_id": getattr(resume_profile, "agent_run_id", None) if resume_profile else None,
+                "gap_analysis_agent_run_id": getattr(gap_analysis, "agent_run_id", None) if gap_analysis else None,
+                "jd_analysis_evidence_refs": getattr(jd_analysis, "evidence_refs", None) or [],
+                "resume_profile_evidence_refs": getattr(resume_profile, "evidence_refs", None) or [],
+                "gap_analysis_evidence_refs": getattr(gap_analysis, "evidence_refs", None) or [],
+            },
+            evidence_packet=evidence_packet,
+        )
+
     def project_candidate_profile(
         self,
         project_id: int,
