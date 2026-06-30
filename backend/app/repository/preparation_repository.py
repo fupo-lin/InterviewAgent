@@ -231,10 +231,21 @@ class ProjectCandidateProfileRepository(BaseProjectRepository):
         content: dict,
         source_session_id: int | None = None,
         raw_response: dict | None = None,
+        agent_run_id: int | None = None,
+        schema_version: str = "ProjectCandidateProfile.v1",
+        profile_version_no: int | None = None,
+        evidence_refs: list[str] | None = None,
     ) -> ProjectCandidateProfile:
+        if profile_version_no is None:
+            latest = self.get_latest_by_project_id(project_id)
+            profile_version_no = (latest.profile_version_no if latest else 0) + 1
         item = ProjectCandidateProfile(
             project_id=project_id,
             source_session_id=source_session_id,
+            agent_run_id=agent_run_id,
+            schema_version=schema_version,
+            profile_version_no=profile_version_no,
+            evidence_refs=evidence_refs or [],
             content=content,
             raw_response=raw_response,
         )
@@ -253,11 +264,17 @@ class ResumeAuthenticityReportRepository(BaseProjectRepository):
         content: dict,
         session_id: int | None = None,
         raw_response: dict | None = None,
+        agent_run_id: int | None = None,
+        schema_version: str = "ResumeAuthenticityReport.v1",
+        evidence_refs: list[str] | None = None,
     ) -> ResumeAuthenticityReport:
         item = ResumeAuthenticityReport(
             project_id=project_id,
             resume_id=resume_id,
             session_id=session_id,
+            agent_run_id=agent_run_id,
+            schema_version=schema_version,
+            evidence_refs=evidence_refs or [],
             content=content,
             raw_response=raw_response,
         )
@@ -277,12 +294,18 @@ class ResumeRewriteResultRepository(BaseProjectRepository):
         content: dict,
         authenticity_report_id: int | None = None,
         raw_response: dict | None = None,
+        agent_run_id: int | None = None,
+        schema_version: str = "ResumeRewriteResult.v1",
+        evidence_refs: list[str] | None = None,
     ) -> ResumeRewriteResult:
         item = ResumeRewriteResult(
             project_id=project_id,
             resume_id=resume_id,
             authenticity_report_id=authenticity_report_id,
             rewrite_mode=rewrite_mode,
+            agent_run_id=agent_run_id,
+            schema_version=schema_version,
+            evidence_refs=evidence_refs or [],
             content=content,
             raw_response=raw_response,
         )

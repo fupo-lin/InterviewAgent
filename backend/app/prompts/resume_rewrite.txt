@@ -7,6 +7,8 @@
 4. 可以把模糊表达改写得更清晰、更有结构。
 5. 可以提示用户需要补充哪些量化指标或证据。
 6. 如果没有 JD，则做通用求职表达优化；如果有 JD，则优先贴合 JD。
+7. EvidencePacket 是本次重写可依赖的证据集合；没有 EvidencePacket 支撑的内容，只能放入 missing_info_to_collect 或 risk_warnings，不能写成强事实。
+8. rewritten_sections[].evidence_basis 必须尽量引用 EvidencePacket 中的 evidence_id 或明确证据摘要。
 
 请严格返回 JSON 对象，不要返回 Markdown、解释或额外文字。
 
@@ -55,3 +57,6 @@ Gap 分析：
 
 面试执行证据：
 {execution_state}
+
+结构化证据包 EvidencePacket：
+{evidence_packet}

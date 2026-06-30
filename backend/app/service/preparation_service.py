@@ -34,7 +34,10 @@ from app.schemas.preparation import (
     ResumeProfileResponse,
     ResumeRewriteResponse,
 )
+from app.service.agent_run_service import AgentRunRecorder
+from app.service.evidence_service import EvidencePacketBuilder
 from app.service.llm_service import LLMService
+from app.service.prompt_registry import prompt_registry
 
 
 class PreparationService:
@@ -55,6 +58,8 @@ class PreparationService:
         self.interview_evaluation_repo = InterviewEvaluationRepository(db)
         self.interview_execution_repo = InterviewPlanExecutionRepository(db)
         self.llm = LLMService()
+        self.evidence_builder = EvidencePacketBuilder()
+        self.agent_run_recorder = AgentRunRecorder(db)
 
     def create_project(self, title: str, target_role: str | None = None) -> ProjectResponse:
         project = self.project_repo.create(
@@ -309,6 +314,7 @@ class PreparationService:
             resume_authenticity=authenticity_report.content if authenticity_report else None,
             execution_state=execution.state if execution else None,
             evaluation=self._evaluation_dict(evaluation) if evaluation else None,
+            transcript_messages=messages,
         )
         self.db.commit()
         return ResumeRewriteResponse(
@@ -339,11 +345,19 @@ class PreparationService:
             evaluation=evaluation,
             transcript_messages=transcript_messages or [],
         )
+        evidence_packet = self.evidence_builder.build_resume_packet(
+            task="project_candidate_profile",
+            project_id=project_id,
+            resume_profile=resume_profile.content if resume_profile else None,
+            execution_state=execution_state,
+            transcript_messages=transcript_messages or [],
+        )
         return self.candidate_profile_repo.create(
             project_id=project_id,
             source_session_id=source_session_id,
             content=content,
             raw_response=raw_response,
+            evidence_refs=self.evidence_builder.refs(evidence_packet),
         )
 
     async def generate_resume_authenticity_for_project(
@@ -360,6 +374,13 @@ class PreparationService:
         resume_profile = self.resume_profile_repo.get_latest_by_project_id(project_id)
         gap_analysis = self.gap_repo.get_latest_by_project_id(project_id)
         candidate_profile = self.candidate_profile_repo.get_latest_by_project_id(project_id)
+        evidence_packet = self.evidence_builder.build_resume_packet(
+            task="resume_authenticity_check",
+            project_id=project_id,
+            resume_profile=resume_profile.content if resume_profile else None,
+            execution_state=execution_state,
+            transcript_messages=transcript_messages or [],
+        )
 
         content, raw_response = await self.llm.generate_resume_authenticity_report(
             resume_content=resume_content,
@@ -370,6 +391,31 @@ class PreparationService:
             execution_state=execution_state,
             evaluation=evaluation,
             transcript_messages=transcript_messages or [],
+            evidence_packet=evidence_packet,
+        )
+        definition = prompt_registry.get("resume_authenticity")
+        agent_run = self.agent_run_recorder.record_success(
+            definition=definition,
+            project_id=project_id,
+            session_id=session_id,
+            input_snapshot={
+                "resume_id": resume_id,
+                "has_resume_profile": bool(resume_profile),
+                "has_jd_analysis": bool(jd_analysis),
+                "has_gap_analysis": bool(gap_analysis),
+                "has_project_candidate_profile": bool(candidate_profile),
+                "evidence_packet": evidence_packet,
+            },
+            context_refs={
+                "resume_profile_id": resume_profile.id if resume_profile else None,
+                "jd_analysis_id": jd_analysis.id if jd_analysis else None,
+                "gap_analysis_id": gap_analysis.id if gap_analysis else None,
+                "project_candidate_profile_id": candidate_profile.id if candidate_profile else None,
+            },
+            evidence_refs=self.evidence_builder.refs(evidence_packet),
+            output_snapshot=content,
+            raw_response=raw_response,
+            model_name=self.llm.model,
         )
         return self.authenticity_repo.create(
             project_id=project_id,
@@ -377,6 +423,9 @@ class PreparationService:
             session_id=session_id,
             content=content,
             raw_response=raw_response,
+            agent_run_id=agent_run.id,
+            schema_version=definition.output_schema,
+            evidence_refs=self.evidence_builder.refs(evidence_packet),
         )
 
     async def generate_resume_authenticity_for_latest_resume(
@@ -410,11 +459,20 @@ class PreparationService:
         resume_authenticity: dict | None = None,
         execution_state: dict | None = None,
         evaluation: dict | None = None,
+        transcript_messages: list | None = None,
     ):
         jd_analysis = self.jd_analysis_repo.get_latest_by_project_id(project_id)
         resume_profile = self.resume_profile_repo.get_latest_by_project_id(project_id)
         gap_analysis = self.gap_repo.get_latest_by_project_id(project_id)
         candidate_profile = self.candidate_profile_repo.get_latest_by_project_id(project_id)
+        evidence_packet = self.evidence_builder.build_resume_packet(
+            task="resume_rewrite",
+            project_id=project_id,
+            resume_profile=resume_profile.content if resume_profile else None,
+            execution_state=execution_state,
+            transcript_messages=transcript_messages or [],
+            authenticity_report=resume_authenticity,
+        )
 
         content, raw_response = await self.llm.generate_resume_rewrite(
             rewrite_mode=rewrite_mode,
@@ -426,6 +484,34 @@ class PreparationService:
             resume_authenticity=resume_authenticity,
             evaluation=evaluation,
             execution_state=execution_state,
+            evidence_packet=evidence_packet,
+        )
+        definition = prompt_registry.get("resume_rewrite")
+        agent_run = self.agent_run_recorder.record_success(
+            definition=definition,
+            project_id=project_id,
+            session_id=None,
+            input_snapshot={
+                "resume_id": resume_id,
+                "rewrite_mode": rewrite_mode,
+                "authenticity_report_id": authenticity_report_id,
+                "has_resume_profile": bool(resume_profile),
+                "has_jd_analysis": bool(jd_analysis),
+                "has_gap_analysis": bool(gap_analysis),
+                "has_project_candidate_profile": bool(candidate_profile),
+                "evidence_packet": evidence_packet,
+            },
+            context_refs={
+                "resume_profile_id": resume_profile.id if resume_profile else None,
+                "jd_analysis_id": jd_analysis.id if jd_analysis else None,
+                "gap_analysis_id": gap_analysis.id if gap_analysis else None,
+                "project_candidate_profile_id": candidate_profile.id if candidate_profile else None,
+                "authenticity_report_id": authenticity_report_id,
+            },
+            evidence_refs=self.evidence_builder.refs(evidence_packet),
+            output_snapshot=content,
+            raw_response=raw_response,
+            model_name=self.llm.model,
         )
         return self.rewrite_repo.create(
             project_id=project_id,
@@ -434,6 +520,9 @@ class PreparationService:
             authenticity_report_id=authenticity_report_id,
             content=content,
             raw_response=raw_response,
+            agent_run_id=agent_run.id,
+            schema_version=definition.output_schema,
+            evidence_refs=self.evidence_builder.refs(evidence_packet),
         )
 
     def get_latest_interview_plan(self, project_uid: str):

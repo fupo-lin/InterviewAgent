@@ -239,6 +239,7 @@ class LLMService:
         execution_state: dict | None = None,
         evaluation: dict | None = None,
         transcript_messages: list[InterviewMessage] | None = None,
+        evidence_packet: dict | None = None,
     ) -> tuple[dict, dict | None]:
         prompt = load_prompt(
             "resume_authenticity.txt",
@@ -250,6 +251,7 @@ class LLMService:
             execution_state=json.dumps(execution_state or {}, ensure_ascii=False),
             evaluation=json.dumps(evaluation or {}, ensure_ascii=False),
             transcript=self._format_transcript(transcript_messages or []),
+            evidence_packet=json.dumps(evidence_packet or {}, ensure_ascii=False),
         )
         if not self.api_key:
             return self._mock_resume_authenticity_report(
@@ -283,6 +285,7 @@ class LLMService:
         resume_authenticity: dict | None = None,
         evaluation: dict | None = None,
         execution_state: dict | None = None,
+        evidence_packet: dict | None = None,
     ) -> tuple[dict, dict | None]:
         prompt = load_prompt(
             "resume_rewrite.txt",
@@ -295,6 +298,7 @@ class LLMService:
             resume_authenticity=json.dumps(resume_authenticity or {}, ensure_ascii=False),
             evaluation=json.dumps(evaluation or {}, ensure_ascii=False),
             execution_state=json.dumps(execution_state or {}, ensure_ascii=False),
+            evidence_packet=json.dumps(evidence_packet or {}, ensure_ascii=False),
         )
         if not self.api_key:
             return self._mock_resume_rewrite(
