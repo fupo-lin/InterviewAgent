@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.interview import router as interview_router
 from app.api.preparation import router as preparation_router
+from app.api.agent_run import router as agent_run_router
 from app.config.settings import settings
 
 # 项目入口，创建FastAPI应用，挂载路由
@@ -22,6 +23,7 @@ def create_app() -> FastAPI:
 #所有的的路由都挂载在/api/interview下
     app.include_router(interview_router, prefix=settings.api_prefix)
     app.include_router(preparation_router, prefix=settings.api_prefix)
+    app.include_router(agent_run_router, prefix=settings.api_prefix)
 
     @app.get("/health")
     def health_check() -> dict[str, str]:
