@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from app.models.interview import InterviewMessage
+from app.service.evidence_contract import EvidencePacketValidator, EvidenceSourceType, EvidenceType
 
 
 @dataclass(frozen=True)
@@ -86,8 +87,8 @@ class EvidencePacketBuilder:
         items = [
             EvidenceItem(
                 evidence_id=f"jd_requirement_{jd_id}",
-                evidence_type="jd_requirement",
-                source_type="job_description",
+                evidence_type=EvidenceType.JD_REQUIREMENT,
+                source_type=EvidenceSourceType.JOB_DESCRIPTION,
                 source_id=jd_id,
                 project_id=project_id,
                 content_excerpt=self._excerpt(jd_content),
@@ -112,8 +113,8 @@ class EvidencePacketBuilder:
         items = [
             EvidenceItem(
                 evidence_id=f"resume_claim_{resume_id}",
-                evidence_type="resume_claim",
-                source_type="resume_document",
+                evidence_type=EvidenceType.RESUME_CLAIM,
+                source_type=EvidenceSourceType.RESUME_DOCUMENT,
                 source_id=resume_id,
                 project_id=project_id,
                 content_excerpt=self._excerpt(resume_content),
@@ -188,8 +189,8 @@ class EvidencePacketBuilder:
         items = [
             EvidenceItem(
                 evidence_id=f"interview_answer_{answer_message_id or round_no}",
-                evidence_type="interview_answer",
-                source_type="interview_message",
+                evidence_type=EvidenceType.INTERVIEW_ANSWER,
+                source_type=EvidenceSourceType.INTERVIEW_MESSAGE,
                 source_id=answer_message_id,
                 project_id=project_id,
                 session_id=session_id,
@@ -208,8 +209,8 @@ class EvidencePacketBuilder:
             items.append(
                 EvidenceItem(
                     evidence_id=f"topic_probe_{current_section.get('section_key') or 'section'}_{round_no}",
-                    evidence_type="execution_probe",
-                    source_type="interview_plan_execution",
+                    evidence_type=EvidenceType.EXECUTION_PROBE,
+                    source_type=EvidenceSourceType.INTERVIEW_PLAN_EXECUTION,
                     source_id=None,
                     project_id=project_id,
                     session_id=session_id,
@@ -249,8 +250,8 @@ class EvidencePacketBuilder:
             items.append(
                 EvidenceItem(
                     evidence_id=f"interview_answer_{user_answer_message_id or round_no or 'latest'}",
-                    evidence_type="interview_answer",
-                    source_type="interview_message",
+                    evidence_type=EvidenceType.INTERVIEW_ANSWER,
+                    source_type=EvidenceSourceType.INTERVIEW_MESSAGE,
                     source_id=user_answer_message_id,
                     project_id=project_id,
                     session_id=session_id,
@@ -299,6 +300,9 @@ class EvidencePacketBuilder:
                 refs.append(evidence_id)
         return refs
 
+    def validate_packet(self, packet: dict[str, Any] | None):
+        return EvidencePacketValidator().validate(packet)
+
     def _jd_requirements(self, project_id: int, jd_analysis_id: int, jd_analysis: dict) -> list[EvidenceItem]:
         items: list[EvidenceItem] = []
         requirement_sources = (
@@ -312,8 +316,8 @@ class EvidencePacketBuilder:
                 items.append(
                     EvidenceItem(
                         evidence_id=f"jd_analysis_{jd_analysis_id}_{field_name}_{index}",
-                        evidence_type="jd_requirement",
-                        source_type="jd_analysis",
+                        evidence_type=EvidenceType.JD_REQUIREMENT,
+                        source_type=EvidenceSourceType.JD_ANALYSIS,
                         source_id=jd_analysis_id,
                         project_id=project_id,
                         content_excerpt=self._excerpt(str(value)),
@@ -334,7 +338,7 @@ class EvidencePacketBuilder:
             EvidenceItem(
                 evidence_id=f"resume_profile_{resume_profile_id}_{item.evidence_id}",
                 evidence_type=item.evidence_type,
-                source_type="resume_profile",
+                source_type=EvidenceSourceType.RESUME_PROFILE,
                 source_id=resume_profile_id,
                 project_id=item.project_id,
                 session_id=item.session_id,
@@ -358,8 +362,8 @@ class EvidencePacketBuilder:
             items.append(
                 EvidenceItem(
                     evidence_id=f"gap_analysis_{gap_analysis_id}_gap_point_{index}",
-                    evidence_type="gap_point",
-                    source_type="gap_analysis",
+                    evidence_type=EvidenceType.GAP_POINT,
+                    source_type=EvidenceSourceType.GAP_ANALYSIS,
                     source_id=gap_analysis_id,
                     project_id=project_id,
                     content_excerpt=self._excerpt(excerpt),
@@ -376,8 +380,8 @@ class EvidencePacketBuilder:
             items.append(
                 EvidenceItem(
                     evidence_id=f"gap_analysis_{gap_analysis_id}_matched_point_{index}",
-                    evidence_type="matched_point",
-                    source_type="gap_analysis",
+                    evidence_type=EvidenceType.MATCHED_POINT,
+                    source_type=EvidenceSourceType.GAP_ANALYSIS,
                     source_id=gap_analysis_id,
                     project_id=project_id,
                     content_excerpt=self._excerpt(excerpt),
@@ -403,8 +407,8 @@ class EvidencePacketBuilder:
             items.append(
                 EvidenceItem(
                     evidence_id=f"resume_claim_project_{index}",
-                    evidence_type="resume_claim",
-                    source_type="resume_profile",
+                    evidence_type=EvidenceType.RESUME_CLAIM,
+                    source_type=EvidenceSourceType.RESUME_PROFILE,
                     source_id=None,
                     project_id=project_id,
                     content_excerpt=self._excerpt(summary),
@@ -417,8 +421,8 @@ class EvidencePacketBuilder:
                 items.append(
                     EvidenceItem(
                         evidence_id=f"resume_claim_project_{index}_highlight_{highlight_index}",
-                        evidence_type="resume_claim",
-                        source_type="resume_profile",
+                        evidence_type=EvidenceType.RESUME_CLAIM,
+                        source_type=EvidenceSourceType.RESUME_PROFILE,
                         source_id=None,
                         project_id=project_id,
                         content_excerpt=self._excerpt(str(highlight)),
@@ -437,8 +441,8 @@ class EvidencePacketBuilder:
             items.append(
                 EvidenceItem(
                     evidence_id=f"resume_claim_skill_{index}",
-                    evidence_type="resume_claim",
-                    source_type="resume_profile",
+                    evidence_type=EvidenceType.RESUME_CLAIM,
+                    source_type=EvidenceSourceType.RESUME_PROFILE,
                     source_id=None,
                     project_id=project_id,
                     content_excerpt=self._excerpt(excerpt),
@@ -452,8 +456,8 @@ class EvidencePacketBuilder:
         return [
             EvidenceItem(
                 evidence_id=f"interview_answer_{message.id}",
-                evidence_type="interview_answer",
-                source_type="interview_message",
+                evidence_type=EvidenceType.INTERVIEW_ANSWER,
+                source_type=EvidenceSourceType.INTERVIEW_MESSAGE,
                 source_id=message.id,
                 project_id=project_id,
                 session_id=message.session_id,
@@ -475,8 +479,8 @@ class EvidencePacketBuilder:
                 items.append(
                     EvidenceItem(
                         evidence_id=f"execution_probe_{section_key}_{evidence_index}",
-                        evidence_type="execution_probe",
-                        source_type="interview_plan_execution",
+                        evidence_type=EvidenceType.EXECUTION_PROBE,
+                        source_type=EvidenceSourceType.INTERVIEW_PLAN_EXECUTION,
                         source_id=None,
                         project_id=project_id,
                         round_no=evidence.get("round_no"),
@@ -500,8 +504,8 @@ class EvidencePacketBuilder:
             items.append(
                 EvidenceItem(
                     evidence_id=f"authenticity_check_{index}",
-                    evidence_type="authenticity_check",
-                    source_type="resume_authenticity_report",
+                    evidence_type=EvidenceType.AUTHENTICITY_CHECK,
+                    source_type=EvidenceSourceType.RESUME_AUTHENTICITY_REPORT,
                     source_id=None,
                     project_id=project_id,
                     content_excerpt=self._excerpt(excerpt),
@@ -522,7 +526,7 @@ class EvidencePacketBuilder:
         authenticity_report: dict | None,
     ) -> list[str]:
         missing = list((authenticity_report or {}).get("missing_evidence_to_collect") or [])
-        if resume_profile and not any(item.evidence_type == "interview_answer" for item in items):
+        if resume_profile and not any(item.evidence_type == EvidenceType.INTERVIEW_ANSWER for item in items):
             missing.append("面试回答证据")
         if not any("指标" in item.content_excerpt or "QPS" in item.content_excerpt for item in items):
             missing.append("量化指标")
@@ -530,41 +534,47 @@ class EvidencePacketBuilder:
 
     def _missing_gap_evidence(self, items: list[EvidenceItem]) -> list[str]:
         missing = []
-        if not any(item.evidence_type == "jd_requirement" for item in items):
+        if not any(item.evidence_type == EvidenceType.JD_REQUIREMENT for item in items):
             missing.append("jd_requirement")
-        if not any(item.evidence_type == "resume_claim" for item in items):
+        if not any(item.evidence_type == EvidenceType.RESUME_CLAIM for item in items):
             missing.append("resume_claim")
         return missing
 
     def _missing_interview_plan_evidence(self, items: list[EvidenceItem], plan_mode: str) -> list[str]:
         missing = []
-        if plan_mode in {"jd_only", "jd_resume"} and not any(item.evidence_type == "jd_requirement" for item in items):
+        if plan_mode in {"jd_only", "jd_resume"} and not any(
+            item.evidence_type == EvidenceType.JD_REQUIREMENT for item in items
+        ):
             missing.append("jd_requirement")
-        if plan_mode in {"resume_only", "jd_resume"} and not any(item.evidence_type == "resume_claim" for item in items):
+        if plan_mode in {"resume_only", "jd_resume"} and not any(
+            item.evidence_type == EvidenceType.RESUME_CLAIM for item in items
+        ):
             missing.append("resume_claim")
-        if plan_mode == "jd_resume" and not any(item.evidence_type == "gap_point" for item in items):
+        if plan_mode == "jd_resume" and not any(item.evidence_type == EvidenceType.GAP_POINT for item in items):
             missing.append("gap_point")
         return missing
 
     def _missing_topic_judge_evidence(self, items: list[EvidenceItem]) -> list[str]:
         missing = []
-        if not any(item.evidence_type == "interview_answer" for item in items):
+        if not any(item.evidence_type == EvidenceType.INTERVIEW_ANSWER for item in items):
             missing.append("interview_answer")
-        if not any(item.evidence_type == "execution_probe" for item in items):
+        if not any(item.evidence_type == EvidenceType.EXECUTION_PROBE for item in items):
             missing.append("execution_probe")
         return missing
 
     def _missing_question_generation_evidence(self, items: list[EvidenceItem], task: str) -> list[str]:
         missing = []
-        if task == "followup_generation" and not any(item.evidence_type == "interview_answer" for item in items):
+        if task == "followup_generation" and not any(
+            item.evidence_type == EvidenceType.INTERVIEW_ANSWER for item in items
+        ):
             missing.append("interview_answer")
         return missing
 
     def _missing_evaluation_evidence(self, items: list[EvidenceItem]) -> list[str]:
         missing = []
-        if not any(item.evidence_type == "interview_answer" for item in items):
+        if not any(item.evidence_type == EvidenceType.INTERVIEW_ANSWER for item in items):
             missing.append("面试回答证据")
-        if not any(item.evidence_type == "execution_probe" for item in items):
+        if not any(item.evidence_type == EvidenceType.EXECUTION_PROBE for item in items):
             missing.append("面试计划执行证据")
         return missing
 

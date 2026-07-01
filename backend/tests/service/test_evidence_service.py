@@ -7,6 +7,7 @@ from service.support import configure_backend_imports
 configure_backend_imports()
 
 from app.service.evidence_service import EvidenceItem, EvidencePacketBuilder
+from app.service.evidence_contract import EvidenceType
 
 
 def message(
@@ -162,6 +163,19 @@ class EvidencePacketBuilderTest(unittest.TestCase):
         )
 
         self.assertEqual(refs, ["a", "b"])
+
+    def test_validate_packet_delegates_to_evidence_contract_validator(self):
+        packet = self.builder.build_resume_analysis_packet(
+            project_id=1,
+            resume_id=8,
+            resume_content="Built backend service.",
+        )
+
+        result = self.builder.validate_packet(packet)
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.metadata["task"], "resume_analysis")
+        self.assertEqual(result.metadata["evidence_types"], [EvidenceType.RESUME_CLAIM])
 
 
 if __name__ == "__main__":

@@ -3,23 +3,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from app.service.evidence_contract import ALLOWED_EVIDENCE_TYPES
 from app.service.prompt_contract import PromptContractValidator
 from app.service.prompt_registry import PROMPT_DIR, PromptDefinition
-
-
-ALLOWED_EVIDENCE_TYPES = frozenset(
-    {
-        "resume_claim",
-        "jd_requirement",
-        "interview_answer",
-        "execution_probe",
-        "topic_judge",
-        "evaluation_finding",
-        "authenticity_check",
-        "gap_point",
-        "matched_point",
-    }
-)
 
 
 @dataclass(frozen=True)

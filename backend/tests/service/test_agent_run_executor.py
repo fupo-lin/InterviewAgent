@@ -38,11 +38,29 @@ class AgentRunExecutorTest(unittest.IsolatedAsyncioTestCase):
 
     def test_context_injects_evidence_packet_and_deduplicates_refs(self):
         evidence_packet = {
+            "packet_id": "resume_rewrite_1_20260701000000",
+            "task": "resume_rewrite",
             "evidence_items": [
-                {"evidence_id": "resume_claim_1", "evidence_type": "resume_claim"},
-                {"evidence_id": "resume_claim_1", "evidence_type": "resume_claim"},
-                {"evidence_id": "authenticity_check_1", "evidence_type": "authenticity_check"},
-            ]
+                {
+                    "evidence_id": "resume_claim_1",
+                    "evidence_type": "resume_claim",
+                    "source_type": "resume_profile",
+                    "content_excerpt": "Built backend service.",
+                },
+                {
+                    "evidence_id": "resume_claim_1",
+                    "evidence_type": "resume_claim",
+                    "source_type": "resume_profile",
+                    "content_excerpt": "Built backend service.",
+                },
+                {
+                    "evidence_id": "authenticity_check_1",
+                    "evidence_type": "authenticity_check",
+                    "source_type": "resume_authenticity_report",
+                    "content_excerpt": "Claim supported.",
+                },
+            ],
+            "missing_evidence": [],
         }
 
         context = self.executor.context(
@@ -57,6 +75,15 @@ class AgentRunExecutorTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(context.definition.prompt_id, "resume_rewrite")
         self.assertEqual(context.input_snapshot["resume_id"], 7)
         self.assertIs(context.input_snapshot["evidence_packet"], evidence_packet)
+        self.assertFalse(context.input_snapshot["evidence_packet_validation"]["ok"])
+        self.assertIn(
+            "Duplicate evidence_id: resume_claim_1",
+            context.input_snapshot["evidence_packet_validation"]["errors"],
+        )
+        self.assertEqual(
+            context.input_snapshot["evidence_packet_validation"]["metadata"]["evidence_types"],
+            ["authenticity_check", "resume_claim"],
+        )
         self.assertEqual(context.context_refs, {"resume_profile_id": 8})
         self.assertEqual(context.evidence_refs, ["resume_claim_1", "authenticity_check_1"])
 

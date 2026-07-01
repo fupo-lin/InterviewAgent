@@ -3,6 +3,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.models.agent import AgentRun
+from app.service.evidence_contract import EvidencePacketValidator
 from app.service.prompt_contract import PromptContractValidator
 from app.service.prompt_registry import PromptDefinition, prompt_registry
 
@@ -241,6 +242,10 @@ class AgentRunExecutor:
         resolved_input_snapshot = dict(input_snapshot or {})
         if evidence_packet is not None and "evidence_packet" not in resolved_input_snapshot:
             resolved_input_snapshot["evidence_packet"] = evidence_packet
+        if evidence_packet is not None and "evidence_packet_validation" not in resolved_input_snapshot:
+            resolved_input_snapshot["evidence_packet_validation"] = (
+                EvidencePacketValidator().validate(evidence_packet).to_dict()
+            )
         return AgentRunContext(
             definition=definition,
             project_id=project_id,

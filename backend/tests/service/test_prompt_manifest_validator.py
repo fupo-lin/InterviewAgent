@@ -7,6 +7,7 @@ configure_backend_imports()
 
 from app.service.prompt_manifest_validator import GovernanceCheckResult, PromptManifestValidator
 from app.service.prompt_registry import PromptDefinition, PromptRegistry
+from app.service.evidence_contract import ALLOWED_EVIDENCE_TYPES
 
 
 def prompt_definition(**overrides) -> PromptDefinition:
@@ -47,6 +48,7 @@ class PromptManifestValidatorTest(unittest.TestCase):
         self.assertIn("resume_rewrite", result.metadata["prompt_ids"])
         self.assertIn("ResumeRewriteAgent", result.metadata["owner_agents"])
         self.assertIn("interview_answer", result.metadata["allowed_evidence_types"])
+        self.assertEqual(result.metadata["allowed_evidence_types"], sorted(ALLOWED_EVIDENCE_TYPES))
 
     def test_registry_validate_uses_manifest_validator(self):
         result = PromptRegistry().validate()
