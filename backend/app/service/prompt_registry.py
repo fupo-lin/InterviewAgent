@@ -41,6 +41,11 @@ class PromptRegistry:
     def all(self) -> tuple[PromptDefinition, ...]:
         return tuple(self._definitions.values())
 
+    def validate(self):
+        from app.service.prompt_manifest_validator import PromptManifestValidator
+
+        return PromptManifestValidator().validate(self)
+
     def _load_manifest(self, manifest_path: Path) -> list[PromptDefinition]:
         if not manifest_path.exists():
             raise FileNotFoundError(f"Prompt manifest not found: {manifest_path}")

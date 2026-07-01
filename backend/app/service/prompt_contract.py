@@ -21,6 +21,8 @@ class PromptContractValidator:
         "ProjectCandidateProfile": ("project_candidate_profile_id", "has_project_candidate_profile"),
         "ConversationSummary": ("conversation_summary_id", "conversation_summary_summary_id"),
         "CandidateProfile": ("candidate_profile_summary_id",),
+        "PreviousCandidateMemory": ("previous_summary_id", "has_previous_content"),
+        "PreviousConversationSummary": ("previous_summary_id", "has_previous_content"),
     }
 
     def validate(

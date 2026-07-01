@@ -91,6 +91,23 @@ class PromptContractValidatorTest(unittest.TestCase):
         self.assertIn("resume_id", validation["present_context_keys"])
         self.assertNotIn("has_resume_profile", validation["present_context_keys"])
 
+    def test_validate_supports_previous_memory_context_aliases(self):
+        validation = self.validator.validate(
+            definition=definition(
+                required_context=("PreviousCandidateMemory", "PreviousConversationSummary"),
+                required_evidence=(),
+            ),
+            input_snapshot={
+                "previous_summary_id": 12,
+                "has_previous_content": True,
+            },
+            context_refs={},
+            evidence_refs=[],
+        )
+
+        self.assertTrue(validation["ok"])
+        self.assertEqual(validation["missing_context"], [])
+
 
 if __name__ == "__main__":
     unittest.main()
