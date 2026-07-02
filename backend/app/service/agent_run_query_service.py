@@ -150,9 +150,26 @@ class AgentRunQueryService:
             workflowContextWarnings=workflow_validation.get("warnings") or [],
             promptMissingContext=prompt_validation.get("missing_context") or [],
             promptMissingEvidence=prompt_validation.get("missing_evidence") or [],
+            promptContextBoundaries=self._prompt_context_boundaries(prompt_validation),
             evidenceErrors=evidence_validation.get("errors") or [],
             evidenceWarnings=evidence_validation.get("warnings") or [],
         )
+
+    def _prompt_context_boundaries(self, prompt_validation: dict) -> list[dict[str, str]]:
+        boundaries = []
+        seen = set()
+        for key in ("required_context_boundaries", "optional_context_boundaries"):
+            for boundary in prompt_validation.get(key) or []:
+                identity = (
+                    boundary.get("context_name"),
+                    boundary.get("artifact_kind"),
+                    boundary.get("scope"),
+                )
+                if identity in seen:
+                    continue
+                seen.add(identity)
+                boundaries.append(boundary)
+        return boundaries
 
     def _has_issue(self, item: AgentRunListItem) -> bool:
         validation = item.validation

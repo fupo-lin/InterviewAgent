@@ -15,6 +15,7 @@ class AgentRunValidationSummary(BaseModel):
     workflow_context_warnings: list[str] = Field(default_factory=list, alias="workflowContextWarnings")
     prompt_missing_context: list[str] = Field(default_factory=list, alias="promptMissingContext")
     prompt_missing_evidence: list[str] = Field(default_factory=list, alias="promptMissingEvidence")
+    prompt_context_boundaries: list[dict[str, str]] = Field(default_factory=list, alias="promptContextBoundaries")
     evidence_errors: list[str] = Field(default_factory=list, alias="evidenceErrors")
     evidence_warnings: list[str] = Field(default_factory=list, alias="evidenceWarnings")
 

@@ -61,12 +61,31 @@ class PromptContractValidator:
             "ok": not missing_context and not missing_evidence,
             "required_context": list(definition.required_context),
             "missing_context": missing_context,
+            "required_context_boundaries": self._context_boundaries(definition.required_context),
+            "optional_context_boundaries": self._context_boundaries(definition.optional_context),
             "required_evidence": list(definition.required_evidence),
             "missing_evidence": missing_evidence,
             "present_context_keys": present_context_keys,
             "present_evidence_types": evidence_types,
             "evidence_refs": evidence_refs or [],
         }
+
+    def _context_boundaries(self, context_names: tuple[str, ...]) -> list[dict[str, str]]:
+        from app.service.artifact_boundary import artifact_boundary_registry
+
+        boundaries = []
+        for context_name in context_names:
+            boundary = artifact_boundary_registry.context(context_name)
+            if not boundary:
+                continue
+            boundaries.append(
+                {
+                    "context_name": boundary.context_name,
+                    "artifact_kind": boundary.artifact_kind,
+                    "scope": boundary.scope,
+                }
+            )
+        return boundaries
 
     def _context_satisfied(
         self,

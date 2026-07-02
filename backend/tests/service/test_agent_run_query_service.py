@@ -101,6 +101,20 @@ class AgentRunQueryServiceTest(unittest.TestCase):
                         "ok": True,
                         "missing_context": [],
                         "missing_evidence": [],
+                        "required_context_boundaries": [
+                            {
+                                "context_name": "CandidateProfile",
+                                "artifact_kind": "memory",
+                                "scope": "session",
+                            }
+                        ],
+                        "optional_context_boundaries": [
+                            {
+                                "context_name": "Evaluation",
+                                "artifact_kind": "evaluation",
+                                "scope": "session",
+                            }
+                        ],
                     },
                     "evidence_packet_validation": {
                         "ok": True,
@@ -136,6 +150,21 @@ class AgentRunQueryServiceTest(unittest.TestCase):
         self.assertTrue(item.validation.evidence_packet_ok)
         self.assertEqual(item.validation.agent_definition_errors, [])
         self.assertEqual(item.validation.workflow_context_errors, [])
+        self.assertEqual(
+            item.validation.prompt_context_boundaries,
+            [
+                {
+                    "context_name": "CandidateProfile",
+                    "artifact_kind": "memory",
+                    "scope": "session",
+                },
+                {
+                    "context_name": "Evaluation",
+                    "artifact_kind": "evaluation",
+                    "scope": "session",
+                },
+            ],
+        )
         self.assertEqual(item.workflow.workflow_id, "resume_optimization")
         self.assertEqual(item.workflow.workflow_run_id, "project_1_resume_optimization")
         self.assertEqual(item.workflow.step_id, "resume_rewrite")

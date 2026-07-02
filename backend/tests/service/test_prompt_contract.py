@@ -107,6 +107,71 @@ class PromptContractValidatorTest(unittest.TestCase):
 
         self.assertTrue(validation["ok"])
         self.assertEqual(validation["missing_context"], [])
+        self.assertEqual(
+            validation["required_context_boundaries"],
+            [
+                {
+                    "context_name": "PreviousCandidateMemory",
+                    "artifact_kind": "memory",
+                    "scope": "session",
+                },
+                {
+                    "context_name": "PreviousConversationSummary",
+                    "artifact_kind": "memory",
+                    "scope": "session",
+                },
+            ],
+        )
+
+    def test_validate_reports_artifact_boundaries_for_contexts(self):
+        validation = self.validator.validate(
+            definition=PromptDefinition(
+                prompt_id="boundary_prompt",
+                prompt_file="boundary_prompt.txt",
+                version="3.0.0",
+                owner_agent="BoundaryAgent",
+                task="boundary_task",
+                input_schema="BoundaryInput.v1",
+                output_schema="BoundaryOutput.v1",
+                required_context=("CandidateProfile", "ProjectCandidateProfile"),
+                optional_context=("Evaluation",),
+                required_evidence=(),
+            ),
+            input_snapshot={
+                "candidate_profile_summary_id": 1,
+                "project_candidate_profile_id": 2,
+                "evaluation_id": 3,
+            },
+            context_refs={},
+            evidence_refs=[],
+        )
+
+        self.assertTrue(validation["ok"])
+        self.assertEqual(
+            validation["required_context_boundaries"],
+            [
+                {
+                    "context_name": "CandidateProfile",
+                    "artifact_kind": "memory",
+                    "scope": "session",
+                },
+                {
+                    "context_name": "ProjectCandidateProfile",
+                    "artifact_kind": "profile",
+                    "scope": "project",
+                },
+            ],
+        )
+        self.assertEqual(
+            validation["optional_context_boundaries"],
+            [
+                {
+                    "context_name": "Evaluation",
+                    "artifact_kind": "evaluation",
+                    "scope": "session",
+                },
+            ],
+        )
 
 
 if __name__ == "__main__":
