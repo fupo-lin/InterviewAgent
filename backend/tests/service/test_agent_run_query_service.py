@@ -92,6 +92,11 @@ class AgentRunQueryServiceTest(unittest.TestCase):
                         "errors": [],
                         "warnings": [],
                     },
+                    "workflow_context_validation": {
+                        "ok": True,
+                        "errors": [],
+                        "warnings": [],
+                    },
                     "prompt_contract_validation": {
                         "ok": True,
                         "missing_context": [],
@@ -126,9 +131,11 @@ class AgentRunQueryServiceTest(unittest.TestCase):
         self.assertEqual(item.id, 1)
         self.assertEqual(item.agent_name, "ResumeRewriteAgent")
         self.assertTrue(item.validation.agent_definition_ok)
+        self.assertTrue(item.validation.workflow_context_ok)
         self.assertTrue(item.validation.prompt_contract_ok)
         self.assertTrue(item.validation.evidence_packet_ok)
         self.assertEqual(item.validation.agent_definition_errors, [])
+        self.assertEqual(item.validation.workflow_context_errors, [])
         self.assertEqual(item.workflow.workflow_id, "resume_optimization")
         self.assertEqual(item.workflow.workflow_run_id, "project_1_resume_optimization")
         self.assertEqual(item.workflow.step_id, "resume_rewrite")
@@ -174,6 +181,7 @@ class AgentRunQueryServiceTest(unittest.TestCase):
                 1,
                 input_snapshot={
                     "agent_definition_validation": {"ok": True},
+                    "workflow_context_validation": {"ok": True},
                     "prompt_contract_validation": {"ok": True},
                     "evidence_packet_validation": {"ok": True},
                 },
@@ -185,6 +193,7 @@ class AgentRunQueryServiceTest(unittest.TestCase):
                         "ok": False,
                         "errors": ["Agent 'ResumeRewriteAgent' does not bind prompt: wrong_prompt"],
                     },
+                    "workflow_context_validation": {"ok": True},
                     "prompt_contract_validation": {"ok": True},
                     "evidence_packet_validation": {"ok": True},
                 },
@@ -193,6 +202,19 @@ class AgentRunQueryServiceTest(unittest.TestCase):
                 3,
                 input_snapshot={
                     "agent_definition_validation": {"ok": True},
+                    "workflow_context_validation": {
+                        "ok": False,
+                        "errors": ["Workflow 'resume_optimization' does not contain step: wrong_step"],
+                    },
+                    "prompt_contract_validation": {"ok": True},
+                    "evidence_packet_validation": {"ok": True},
+                },
+            ),
+            run(
+                4,
+                input_snapshot={
+                    "agent_definition_validation": {"ok": True},
+                    "workflow_context_validation": {"ok": True},
                     "prompt_contract_validation": {
                         "ok": False,
                         "missing_evidence": ["authenticity_check"],
@@ -201,11 +223,12 @@ class AgentRunQueryServiceTest(unittest.TestCase):
                 },
             ),
             run(
-                4,
+                5,
                 status="failed",
                 error_message="model unavailable",
                 input_snapshot={
                     "agent_definition_validation": {"ok": True},
+                    "workflow_context_validation": {"ok": True},
                     "prompt_contract_validation": {"ok": True},
                     "evidence_packet_validation": {"ok": True},
                 },
@@ -214,13 +237,17 @@ class AgentRunQueryServiceTest(unittest.TestCase):
 
         response = self.service.list_runs(only_issues=True)
 
-        self.assertEqual([item.id for item in response.items], [2, 3, 4])
-        self.assertEqual(response.total, 3)
+        self.assertEqual([item.id for item in response.items], [2, 3, 4, 5])
+        self.assertEqual(response.total, 4)
         self.assertEqual(
             response.items[0].validation.agent_definition_errors,
             ["Agent 'ResumeRewriteAgent' does not bind prompt: wrong_prompt"],
         )
-        self.assertEqual(response.items[1].validation.prompt_missing_evidence, ["authenticity_check"])
+        self.assertEqual(
+            response.items[1].validation.workflow_context_errors,
+            ["Workflow 'resume_optimization' does not contain step: wrong_step"],
+        )
+        self.assertEqual(response.items[2].validation.prompt_missing_evidence, ["authenticity_check"])
 
     def test_failed_runs_delegates_to_repository(self):
         self.repo.runs = [
@@ -240,6 +267,7 @@ class AgentRunQueryServiceTest(unittest.TestCase):
             4,
             input_snapshot={
                 "agent_definition_validation": {"ok": True},
+                "workflow_context_validation": {"ok": True},
                 "prompt_contract_validation": {"ok": True},
                 "evidence_packet_validation": {"ok": True},
             },

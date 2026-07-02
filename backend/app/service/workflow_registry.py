@@ -243,3 +243,127 @@ class WorkflowRegistry:
 
 
 workflow_registry = WorkflowRegistry()
+
+
+class WorkflowContextValidator:
+    def __init__(self, registry: WorkflowRegistry = workflow_registry) -> None:
+        self.registry = registry
+
+    def validate(
+        self,
+        workflow_context: dict | None,
+        prompt_definition,
+    ) -> GovernanceCheckResult:
+        errors: list[str] = []
+        warnings: list[str] = []
+        context = workflow_context or {}
+
+        workflow_id = context.get("workflow_id")
+        workflow_run_id = context.get("workflow_run_id")
+        step_id = context.get("step_id")
+
+        metadata = {
+            "workflow_id": workflow_id,
+            "workflow_run_id": workflow_run_id,
+            "step_id": step_id,
+            "agent_name": prompt_definition.owner_agent,
+            "prompt_id": prompt_definition.prompt_id,
+            "task_name": prompt_definition.task,
+        }
+
+        if not context:
+            warnings.append("Workflow context is not provided")
+            return GovernanceCheckResult(
+                ok=True,
+                errors=(),
+                warnings=tuple(warnings),
+                metadata=metadata,
+            )
+
+        self._require_value("workflow_context", "workflow_id", workflow_id, errors)
+        self._require_value("workflow_context", "workflow_run_id", workflow_run_id, errors)
+        self._require_value("workflow_context", "step_id", step_id, errors)
+        if errors:
+            return GovernanceCheckResult(
+                ok=False,
+                errors=tuple(errors),
+                warnings=tuple(warnings),
+                metadata=metadata,
+            )
+
+        try:
+            workflow = self.registry.get(workflow_id)
+        except KeyError:
+            errors.append(f"Workflow definition not found: {workflow_id}")
+            return GovernanceCheckResult(
+                ok=False,
+                errors=tuple(errors),
+                warnings=tuple(warnings),
+                metadata=metadata,
+            )
+
+        step = self._step(workflow, step_id)
+        if not step:
+            errors.append(f"Workflow '{workflow_id}' does not contain step: {step_id}")
+            return GovernanceCheckResult(
+                ok=False,
+                errors=tuple(errors),
+                warnings=tuple(warnings),
+                metadata=metadata,
+            )
+
+        self._validate_step_binding(
+            step=step,
+            prompt_definition=prompt_definition,
+            workflow_id=workflow_id,
+            errors=errors,
+        )
+        return GovernanceCheckResult(
+            ok=not errors,
+            errors=tuple(errors),
+            warnings=tuple(warnings),
+            metadata=metadata,
+        )
+
+    def _step(
+        self,
+        workflow: WorkflowDefinition,
+        step_id: str,
+    ) -> WorkflowStepDefinition | None:
+        for step in workflow.steps:
+            if step.step_id == step_id:
+                return step
+        return None
+
+    def _validate_step_binding(
+        self,
+        step: WorkflowStepDefinition,
+        prompt_definition,
+        workflow_id: str,
+        errors: list[str],
+    ) -> None:
+        prefix = f"Workflow '{workflow_id}' step '{step.step_id}'"
+        if step.agent_name != prompt_definition.owner_agent:
+            errors.append(
+                f"{prefix} agent mismatch: "
+                f"workflow={step.agent_name}, run={prompt_definition.owner_agent}"
+            )
+        if step.prompt_id != prompt_definition.prompt_id:
+            errors.append(
+                f"{prefix} prompt mismatch: "
+                f"workflow={step.prompt_id}, run={prompt_definition.prompt_id}"
+            )
+        if step.task != prompt_definition.task:
+            errors.append(
+                f"{prefix} task mismatch: workflow={step.task}, run={prompt_definition.task}"
+            )
+
+    def _require_value(
+        self,
+        prefix: str,
+        field_name: str,
+        value: str | None,
+        errors: list[str],
+    ) -> None:
+        if not value:
+            errors.append(f"{prefix} missing {field_name}")

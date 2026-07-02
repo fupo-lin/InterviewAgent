@@ -13,7 +13,7 @@ from app.service.prompt_registry import (
     WorkflowMetadata,
     WorkflowStepMetadata,
 )
-from app.service.workflow_registry import WorkflowRegistry
+from app.service.workflow_registry import WorkflowContextValidator, WorkflowRegistry
 
 
 def prompt_definition(**overrides) -> PromptDefinition:
@@ -254,6 +254,81 @@ class WorkflowRegistryTest(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertIn(
             "Workflow 'test_workflow' has cyclic dependency: a -> b -> a",
+            result.errors,
+        )
+
+    def test_context_validator_accepts_matching_context(self):
+        prompts = prompt_registry_with()
+        validator = WorkflowContextValidator(WorkflowRegistry(prompts, AgentRegistry(prompts)))
+
+        result = validator.validate(
+            workflow_context={
+                "workflow_id": "test_workflow",
+                "workflow_run_id": "test_run_1",
+                "step_id": "test_step",
+            },
+            prompt_definition=prompt_definition(),
+        )
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.errors, ())
+        self.assertEqual(result.metadata["workflow_id"], "test_workflow")
+        self.assertEqual(result.metadata["workflow_run_id"], "test_run_1")
+        self.assertEqual(result.metadata["step_id"], "test_step")
+
+    def test_context_validator_warns_when_context_missing(self):
+        prompts = prompt_registry_with()
+        validator = WorkflowContextValidator(WorkflowRegistry(prompts, AgentRegistry(prompts)))
+
+        result = validator.validate(
+            workflow_context=None,
+            prompt_definition=prompt_definition(),
+        )
+
+        self.assertTrue(result.ok)
+        self.assertIn("Workflow context is not provided", result.warnings)
+
+    def test_context_validator_rejects_unknown_step(self):
+        prompts = prompt_registry_with()
+        validator = WorkflowContextValidator(WorkflowRegistry(prompts, AgentRegistry(prompts)))
+
+        result = validator.validate(
+            workflow_context={
+                "workflow_id": "test_workflow",
+                "workflow_run_id": "test_run_1",
+                "step_id": "missing_step",
+            },
+            prompt_definition=prompt_definition(),
+        )
+
+        self.assertFalse(result.ok)
+        self.assertIn(
+            "Workflow 'test_workflow' does not contain step: missing_step",
+            result.errors,
+        )
+
+    def test_context_validator_rejects_binding_mismatch(self):
+        prompts = prompt_registry_with()
+        validator = WorkflowContextValidator(WorkflowRegistry(prompts, AgentRegistry(prompts)))
+
+        result = validator.validate(
+            workflow_context={
+                "workflow_id": "test_workflow",
+                "workflow_run_id": "test_run_1",
+                "step_id": "test_step",
+            },
+            prompt_definition=prompt_definition(prompt_id="wrong_prompt", task="wrong_task"),
+        )
+
+        self.assertFalse(result.ok)
+        self.assertIn(
+            "Workflow 'test_workflow' step 'test_step' prompt mismatch: "
+            "workflow=test_prompt, run=wrong_prompt",
+            result.errors,
+        )
+        self.assertIn(
+            "Workflow 'test_workflow' step 'test_step' task mismatch: "
+            "workflow=test_task, run=wrong_task",
             result.errors,
         )
 

@@ -246,6 +246,11 @@ class AgentRunRecorderTest(unittest.TestCase):
             input_snapshot={
                 "resume_id": 7,
                 "resume_profile": {"name": "Lynn"},
+                "workflow_context": {
+                    "workflow_id": "resume_optimization",
+                    "workflow_run_id": "project_1_resume_optimization",
+                    "step_id": "resume_rewrite",
+                },
             },
             context_refs={"resume_id": 7, "resume_profile_id": 8},
             evidence_refs=["resume_claim_1", "authenticity_check_1"],
@@ -255,8 +260,12 @@ class AgentRunRecorderTest(unittest.TestCase):
         )
 
         validation = item.input_snapshot["agent_definition_validation"]
+        workflow_validation = item.input_snapshot["workflow_context_validation"]
         self.assertTrue(validation["ok"])
+        self.assertTrue(workflow_validation["ok"])
         self.assertEqual(validation["errors"], [])
+        self.assertEqual(workflow_validation["errors"], [])
+        self.assertEqual(workflow_validation["metadata"]["workflow_id"], "resume_optimization")
         self.assertEqual(validation["metadata"]["agent_name"], "ResumeRewriteAgent")
         self.assertEqual(validation["metadata"]["prompt_id"], "resume_rewrite")
         self.assertEqual(validation["metadata"]["task_name"], "resume_rewrite")
@@ -279,6 +288,11 @@ class AgentRunRecorderTest(unittest.TestCase):
 
         self.assertFalse(item.input_snapshot["prompt_contract_validation"]["ok"])
         self.assertTrue(item.input_snapshot["agent_definition_validation"]["ok"])
+        self.assertTrue(item.input_snapshot["workflow_context_validation"]["ok"])
+        self.assertIn(
+            "Workflow context is not provided",
+            item.input_snapshot["workflow_context_validation"]["warnings"],
+        )
         self.assertEqual(item.status, "failed")
         self.assertEqual(item.error_message, "model unavailable")
 

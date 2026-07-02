@@ -7,6 +7,7 @@ from app.service.agent_registry import AgentDefinitionValidator
 from app.service.evidence_contract import EvidencePacketValidator
 from app.service.prompt_contract import PromptContractValidator
 from app.service.prompt_registry import PromptDefinition, prompt_registry
+from app.service.workflow_registry import WorkflowContextValidator
 
 
 @dataclass(frozen=True)
@@ -76,6 +77,7 @@ class AgentRunRecorder:
         self.db = db
         self.contract_validator = PromptContractValidator()
         self.agent_definition_validator = AgentDefinitionValidator()
+        self.workflow_context_validator = WorkflowContextValidator()
 
     def record_success(
         self,
@@ -193,10 +195,15 @@ class AgentRunRecorder:
         agent_definition_validation = self.agent_definition_validator.validate_prompt_definition(
             definition=definition,
         )
+        workflow_context_validation = self.workflow_context_validator.validate(
+            workflow_context=(input_snapshot or {}).get("workflow_context"),
+            prompt_definition=definition,
+        )
         return {
             **(input_snapshot or {}),
             "prompt_contract_validation": prompt_validation,
             "agent_definition_validation": agent_definition_validation.to_dict(),
+            "workflow_context_validation": workflow_context_validation.to_dict(),
         }
 
 
