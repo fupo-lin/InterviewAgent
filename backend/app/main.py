@@ -6,6 +6,7 @@ from app.api.interview import router as interview_router
 from app.api.preparation import router as preparation_router
 from app.api.agent_run import router as agent_run_router
 from app.api.workflow import router as workflow_router
+from app.api.workflow_run import router as workflow_run_router
 from app.config.settings import settings
 
 # 项目入口，创建FastAPI应用，挂载路由
@@ -28,6 +29,7 @@ def create_app() -> FastAPI:
     app.include_router(agent_run_router, prefix=settings.api_prefix)
     app.include_router(agent_router, prefix=settings.api_prefix)
     app.include_router(workflow_router, prefix=settings.api_prefix)
+    app.include_router(workflow_run_router, prefix=settings.api_prefix)
 
     @app.get("/health")
     def health_check() -> dict[str, str]:
