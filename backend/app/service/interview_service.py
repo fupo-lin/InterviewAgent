@@ -13,10 +13,21 @@ from app.repository.interview_repository import (
 )
 from app.repository.preparation_repository import InterviewPlanRepository, PreparationProjectRepository
 from app.service.agent_run_service import AgentRunExecutor, AgentRunRecorder
+from app.service.agent_runtime import AgentRuntimeConfig
+from app.service.assessment_agents import EvaluationAgent, EvaluationAgentInput
 from app.service.evidence_service import EvidencePacketBuilder
 from app.service.interview_agent_spec_builder import InterviewAgentSpecBuilder
 from app.service.interview_execution_service import InterviewExecutionService
 from app.service.preparation_service import PreparationService
+from app.service.runtime_agents import (
+    FirstQuestionAgentInput,
+    FollowupAgentInput,
+    InterviewExecutorAgent,
+    SessionMemoryAgent,
+    SessionMemoryAgentInput,
+    TopicJudgeAgent,
+    TopicJudgeAgentInput,
+)
 from app.schemas.interview import DeleteResponse, EvaluationResponse, HistoryResponse, MessageResponse
 from app.service.llm_service import LLMService
 
@@ -42,6 +53,30 @@ class InterviewService:
         self.interview_agent_spec_builder = InterviewAgentSpecBuilder(
             agent_run_executor=self.agent_run_executor,
             evidence_builder=self.evidence_builder,
+        )
+        self.evaluation_agent = EvaluationAgent(
+            agent_run_executor=self.agent_run_executor,
+            evidence_builder=self.evidence_builder,
+            llm=self.llm,
+            config=AgentRuntimeConfig(model_name=self.llm.model),
+        )
+        self.session_memory_agent = SessionMemoryAgent(
+            agent_run_executor=self.agent_run_executor,
+            evidence_builder=self.evidence_builder,
+            llm=self.llm,
+            config=AgentRuntimeConfig(model_name=self.llm.model),
+        )
+        self.topic_judge_agent = TopicJudgeAgent(
+            agent_run_executor=self.agent_run_executor,
+            evidence_builder=self.evidence_builder,
+            llm=self.llm,
+            config=AgentRuntimeConfig(model_name=self.llm.model),
+        )
+        self.interview_executor_agent = InterviewExecutorAgent(
+            agent_run_executor=self.agent_run_executor,
+            evidence_builder=self.evidence_builder,
+            llm=self.llm,
+            config=AgentRuntimeConfig(model_name=self.llm.model),
         )
 
     async def start(self, role_name: str) -> tuple[str, str]:
@@ -174,24 +209,16 @@ class InterviewService:
         execution = self.execution_repo.get_latest_by_session_id(session.id)
         candidate_profile = self.summary_repo.get_latest_by_session_id(session.id, "candidate_profile")
         conversation_summary = self.summary_repo.get_latest_by_session_id(session.id, "conversation")
-        spec = self.interview_agent_spec_builder.evaluation(
-            session=session,
-            history=history,
-            full_history=full_history,
-            execution=execution,
-            candidate_profile=candidate_profile,
-            conversation_summary=conversation_summary,
-        )
-        run_result = await self.agent_run_executor.execute_spec(
-            spec=spec,
-            model_name=self.llm.model,
-            call=lambda: self.llm.generate_evaluation(
-                history,
-                candidate_profile=candidate_profile.content if candidate_profile else None,
-                conversation_summary=conversation_summary.content if conversation_summary else None,
+        run_result = await self.evaluation_agent.run(
+            EvaluationAgentInput(
+                session=session,
+                history=history,
+                full_history=full_history,
+                execution=execution,
+                candidate_profile=candidate_profile,
+                conversation_summary=conversation_summary,
                 plan_context=self._session_plan_context(session),
-                evidence_packet=spec.evidence_packet,
-            ),
+            )
         )
         saved = self.evaluation_repo.create(
             session_id=session.id,
@@ -272,16 +299,13 @@ class InterviewService:
         plan_context: str | None = None,
         plan=None,
     ):
-        spec = self.interview_agent_spec_builder.first_question(
-            session=session,
-            role_name=role_name,
-            plan_context=plan_context,
-            plan=plan,
-        )
-        run_result = await self.agent_run_executor.execute_spec(
-            spec=spec,
-            model_name=self.llm.model,
-            call=lambda: self.llm.generate_first_question(role_name, plan_context=plan_context),
+        run_result = await self.interview_executor_agent.run(
+            FirstQuestionAgentInput(
+                session=session,
+                role_name=role_name,
+                plan_context=plan_context,
+                plan=plan,
+            )
         )
         return run_result.message_fields()
 
@@ -298,30 +322,19 @@ class InterviewService:
         conversation_summary_id: int | None = None,
         execution=None,
     ):
-        spec = self.interview_agent_spec_builder.followup(
-            session=session,
-            answer_message=answer_message,
-            recent_history=recent_history,
-            candidate_profile=candidate_profile,
-            conversation_summary=conversation_summary,
-            plan_context=plan_context,
-            execution_context=execution_context,
-            candidate_profile_id=candidate_profile_id,
-            conversation_summary_id=conversation_summary_id,
-            execution=execution,
-        )
-        run_result = await self.agent_run_executor.execute_spec(
-            spec=spec,
-            model_name=self.llm.model,
-            call=lambda: self.llm.generate_followup(
-                session.role_name,
-                answer_message.content,
-                recent_history,
+        run_result = await self.interview_executor_agent.run(
+            FollowupAgentInput(
+                session=session,
+                answer_message=answer_message,
+                recent_history=recent_history,
                 candidate_profile=candidate_profile,
                 conversation_summary=conversation_summary,
                 plan_context=plan_context,
                 execution_context=execution_context,
-            ),
+                candidate_profile_id=candidate_profile_id,
+                conversation_summary_id=conversation_summary_id,
+                execution=execution,
+            )
         )
         return run_result.message_fields()
 
@@ -334,24 +347,15 @@ class InterviewService:
         previous_summary_id: int | None = None,
     ):
         session = self._get_session_by_id(session_id)
-        spec = self.interview_agent_spec_builder.memory(
-            prompt_id=prompt_id,
-            session=session,
-            session_id=session_id,
-            previous_content=previous_content,
-            profile_messages=profile_messages,
-            previous_summary_id=previous_summary_id,
-        )
-
-        async def generate_memory():
-            if prompt_id == "candidate_profile":
-                return await self.llm.generate_candidate_profile(previous_content, profile_messages)
-            return await self.llm.generate_conversation_summary(previous_content, profile_messages)
-
-        run_result = await self.agent_run_executor.execute_spec(
-            spec=spec,
-            model_name=self.llm.model,
-            call=generate_memory,
+        run_result = await self.session_memory_agent.run(
+            SessionMemoryAgentInput(
+                prompt_id=prompt_id,
+                session=session,
+                session_id=session_id,
+                previous_content=previous_content,
+                profile_messages=profile_messages,
+                previous_summary_id=previous_summary_id,
+            )
         )
 
         return run_result.message_fields()
@@ -452,23 +456,15 @@ class InterviewService:
         answer = answer_message.content
         round_no = answer_message.round_no
         if current_section:
-            spec = self.interview_agent_spec_builder.topic_judge(
-                session=session,
-                execution=execution,
-                current_section=current_section,
-                answer_message=answer_message,
-                recent_history=recent_history,
-            )
             try:
-                run_result = await self.agent_run_executor.execute_spec(
-                    spec=spec,
-                    model_name=self.llm.model,
-                    call=lambda: self.llm.judge_topic_completion(
+                run_result = await self.topic_judge_agent.run(
+                    TopicJudgeAgentInput(
+                        session=session,
+                        execution=execution,
                         current_section=current_section,
-                        execution_state=execution.state or {},
-                        user_answer=answer,
+                        answer_message=answer_message,
                         recent_history=recent_history,
-                    ),
+                    )
                 )
             except Exception:
                 logger.warning("Failed to judge topic completion", exc_info=True)

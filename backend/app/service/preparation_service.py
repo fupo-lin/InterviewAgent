@@ -35,9 +35,30 @@ from app.schemas.preparation import (
     ResumeRewriteResponse,
 )
 from app.service.agent_run_service import AgentRunExecutor, AgentRunRecorder
+from app.service.agent_runtime import AgentRuntimeConfig
+from app.service.assessment_agents import (
+    ProjectCandidateProfileAgent,
+    ProjectCandidateProfileAgentInput,
+)
 from app.service.evidence_service import EvidencePacketBuilder
 from app.service.llm_service import LLMService
+from app.service.preparation_agents import (
+    GapAnalysisAgent,
+    GapAnalysisAgentInput,
+    InterviewPlanAgent,
+    InterviewPlanAgentInput,
+    JDAnalysisAgent,
+    JDAnalysisAgentInput,
+    ResumeAnalysisAgent,
+    ResumeAnalysisAgentInput,
+)
 from app.service.project_agent_spec_builder import ProjectAgentContext, ProjectAgentSpecBuilder
+from app.service.resume_agents import (
+    ResumeAuthenticityAgent,
+    ResumeAuthenticityAgentInput,
+    ResumeRewriteAgent,
+    ResumeRewriteAgentInput,
+)
 
 
 class PreparationService:
@@ -64,6 +85,49 @@ class PreparationService:
         self.project_agent_spec_builder = ProjectAgentSpecBuilder(
             agent_run_executor=self.agent_run_executor,
             evidence_builder=self.evidence_builder,
+        )
+        agent_config = AgentRuntimeConfig(model_name=self.llm.model)
+        self.resume_authenticity_agent = ResumeAuthenticityAgent(
+            agent_run_executor=self.agent_run_executor,
+            evidence_builder=self.evidence_builder,
+            llm=self.llm,
+            config=agent_config,
+        )
+        self.resume_rewrite_agent = ResumeRewriteAgent(
+            agent_run_executor=self.agent_run_executor,
+            evidence_builder=self.evidence_builder,
+            llm=self.llm,
+            config=agent_config,
+        )
+        self.project_candidate_profile_agent = ProjectCandidateProfileAgent(
+            agent_run_executor=self.agent_run_executor,
+            evidence_builder=self.evidence_builder,
+            llm=self.llm,
+            config=agent_config,
+        )
+        self.jd_analysis_agent = JDAnalysisAgent(
+            agent_run_executor=self.agent_run_executor,
+            evidence_builder=self.evidence_builder,
+            llm=self.llm,
+            config=agent_config,
+        )
+        self.resume_analysis_agent = ResumeAnalysisAgent(
+            agent_run_executor=self.agent_run_executor,
+            evidence_builder=self.evidence_builder,
+            llm=self.llm,
+            config=agent_config,
+        )
+        self.gap_analysis_agent = GapAnalysisAgent(
+            agent_run_executor=self.agent_run_executor,
+            evidence_builder=self.evidence_builder,
+            llm=self.llm,
+            config=agent_config,
+        )
+        self.interview_plan_agent = InterviewPlanAgent(
+            agent_run_executor=self.agent_run_executor,
+            evidence_builder=self.evidence_builder,
+            llm=self.llm,
+            config=agent_config,
         )
 
     def create_project(self, title: str, target_role: str | None = None) -> ProjectResponse:
@@ -106,14 +170,8 @@ class PreparationService:
         if not jd:
             raise HTTPException(status_code=400, detail="Job description is required before analysis")
 
-        spec = self.project_agent_spec_builder.jd_analysis(
-            project_id=project.id,
-            jd=jd,
-        )
-        run_result = await self.agent_run_executor.execute_spec(
-            spec=spec,
-            model_name=self.llm.model,
-            call=lambda: self.llm.generate_jd_analysis(jd.raw_content),
+        run_result = await self.jd_analysis_agent.run(
+            JDAnalysisAgentInput(project_id=project.id, jd=jd)
         )
         saved = self.jd_analysis_repo.create(
             project_id=project.id,
@@ -151,14 +209,8 @@ class PreparationService:
         if not resume:
             raise HTTPException(status_code=400, detail="Resume is required before analysis")
 
-        spec = self.project_agent_spec_builder.resume_analysis(
-            project_id=project.id,
-            resume=resume,
-        )
-        run_result = await self.agent_run_executor.execute_spec(
-            spec=spec,
-            model_name=self.llm.model,
-            call=lambda: self.llm.generate_resume_profile(resume.raw_content),
+        run_result = await self.resume_analysis_agent.run(
+            ResumeAnalysisAgentInput(project_id=project.id, resume=resume)
         )
         saved = self.resume_profile_repo.create(
             project_id=project.id,
@@ -208,24 +260,15 @@ class PreparationService:
                 )
 
         plan_mode = self._plan_mode(jd_analysis, resume_profile)
-        spec = self.project_agent_spec_builder.interview_plan(
-            project_id=project.id,
-            target_role=project.target_role,
-            plan_mode=plan_mode,
-            jd_analysis=jd_analysis,
-            resume_profile=resume_profile,
-            gap_analysis=gap_analysis,
-        )
-        run_result = await self.agent_run_executor.execute_spec(
-            spec=spec,
-            model_name=self.llm.model,
-            call=lambda: self.llm.generate_interview_plan(
-                plan_mode=plan_mode,
-                jd_analysis=jd_analysis.content if jd_analysis else None,
-                resume_profile=resume_profile.content if resume_profile else None,
-                gap_analysis=gap_analysis.content if gap_analysis else None,
+        run_result = await self.interview_plan_agent.run(
+            InterviewPlanAgentInput(
+                project_id=project.id,
                 target_role=project.target_role,
-            ),
+                plan_mode=plan_mode,
+                jd_analysis=jd_analysis,
+                resume_profile=resume_profile,
+                gap_analysis=gap_analysis,
+            )
         )
         saved = self.plan_repo.create(
             project_id=project.id,
@@ -256,18 +299,12 @@ class PreparationService:
                 detail="Gap analysis requires both JD analysis and resume profile",
             )
 
-        spec = self.project_agent_spec_builder.gap_analysis(
-            project_id=project_id,
-            jd_analysis=jd_analysis,
-            resume_profile=resume_profile,
-        )
-        run_result = await self.agent_run_executor.execute_spec(
-            spec=spec,
-            model_name=self.llm.model,
-            call=lambda: self.llm.generate_gap_analysis(
-                jd_analysis.content,
-                resume_profile.content,
-            ),
+        run_result = await self.gap_analysis_agent.run(
+            GapAnalysisAgentInput(
+                project_id=project_id,
+                jd_analysis=jd_analysis,
+                resume_profile=resume_profile,
+            )
         )
         return self.gap_repo.create(
             project_id=project_id,
@@ -385,28 +422,16 @@ class PreparationService:
         transcript_messages: list | None = None,
     ):
         context = self._project_agent_context(project_id)
-        spec = self.project_agent_spec_builder.project_candidate_profile(
-            project_id=project_id,
-            target_role=target_role,
-            source_session_id=source_session_id,
-            execution_state=execution_state,
-            evaluation=evaluation,
-            transcript_messages=transcript_messages,
-            context=context,
-        )
-        run_result = await self.agent_run_executor.execute_spec(
-            spec=spec,
-            model_name=self.llm.model,
-            call=lambda: self.llm.generate_project_candidate_profile(
+        run_result = await self.project_candidate_profile_agent.run(
+            ProjectCandidateProfileAgentInput(
+                project_id=project_id,
                 target_role=target_role,
-                jd_analysis=context.jd_analysis.content if context.jd_analysis else None,
-                resume_profile=context.resume_profile.content if context.resume_profile else None,
-                gap_analysis=context.gap_analysis.content if context.gap_analysis else None,
+                source_session_id=source_session_id,
                 execution_state=execution_state,
                 evaluation=evaluation,
-                transcript_messages=transcript_messages or [],
-                evidence_packet=spec.evidence_packet,
-            ),
+                transcript_messages=transcript_messages,
+                context=context,
+            )
         )
         return self.candidate_profile_repo.create(
             project_id=project_id,
@@ -425,28 +450,17 @@ class PreparationService:
         transcript_messages: list | None = None,
     ):
         context = self._project_agent_context(project_id, include_candidate_profile=True)
-        spec = self.project_agent_spec_builder.resume_authenticity(
-            project_id=project_id,
-            resume_id=resume_id,
-            session_id=session_id,
-            execution_state=execution_state,
-            transcript_messages=transcript_messages,
-            context=context,
-        )
-        run_result = await self.agent_run_executor.execute_spec(
-            spec=spec,
-            model_name=self.llm.model,
-            call=lambda: self.llm.generate_resume_authenticity_report(
+        run_result = await self.resume_authenticity_agent.run(
+            ResumeAuthenticityAgentInput(
+                project_id=project_id,
+                resume_id=resume_id,
                 resume_content=resume_content,
-                resume_profile=context.resume_profile.content if context.resume_profile else None,
-                jd_analysis=context.jd_analysis.content if context.jd_analysis else None,
-                gap_analysis=context.gap_analysis.content if context.gap_analysis else None,
-                project_candidate_profile=context.candidate_profile.content if context.candidate_profile else None,
+                session_id=session_id,
                 execution_state=execution_state,
                 evaluation=evaluation,
-                transcript_messages=transcript_messages or [],
-                evidence_packet=spec.evidence_packet,
-            ),
+                transcript_messages=transcript_messages,
+                context=context,
+            )
         )
         return self.authenticity_repo.create(
             project_id=project_id,
@@ -489,31 +503,19 @@ class PreparationService:
         transcript_messages: list | None = None,
     ):
         context = self._project_agent_context(project_id, include_candidate_profile=True)
-        spec = self.project_agent_spec_builder.resume_rewrite(
-            project_id=project_id,
-            resume_id=resume_id,
-            rewrite_mode=rewrite_mode,
-            authenticity_report_id=authenticity_report_id,
-            resume_authenticity=resume_authenticity,
-            execution_state=execution_state,
-            transcript_messages=transcript_messages,
-            context=context,
-        )
-        run_result = await self.agent_run_executor.execute_spec(
-            spec=spec,
-            model_name=self.llm.model,
-            call=lambda: self.llm.generate_resume_rewrite(
-                rewrite_mode=rewrite_mode,
+        run_result = await self.resume_rewrite_agent.run(
+            ResumeRewriteAgentInput(
+                project_id=project_id,
+                resume_id=resume_id,
                 resume_content=resume_content,
-                resume_profile=context.resume_profile.content if context.resume_profile else None,
-                jd_analysis=context.jd_analysis.content if context.jd_analysis else None,
-                gap_analysis=context.gap_analysis.content if context.gap_analysis else None,
-                project_candidate_profile=context.candidate_profile.content if context.candidate_profile else None,
+                rewrite_mode=rewrite_mode,
+                authenticity_report_id=authenticity_report_id,
                 resume_authenticity=resume_authenticity,
-                evaluation=evaluation,
                 execution_state=execution_state,
-                evidence_packet=spec.evidence_packet,
-            ),
+                evaluation=evaluation,
+                transcript_messages=transcript_messages,
+                context=context,
+            )
         )
         return self.rewrite_repo.create(
             project_id=project_id,
