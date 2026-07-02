@@ -67,6 +67,9 @@ class PromptManifestValidatorTest(unittest.TestCase):
         self.assertIn("interview_answer", result.metadata["allowed_evidence_types"])
         self.assertIn("artifact_generation", result.metadata["agent_categories"])
         self.assertIn("analysis", result.metadata["allowed_agent_categories"])
+        self.assertIn("memory", result.metadata["artifact_boundary_kinds"])
+        self.assertIn("profile", result.metadata["artifact_boundary_kinds"])
+        self.assertIn("evaluation", result.metadata["artifact_boundary_kinds"])
         self.assertEqual(result.metadata["allowed_evidence_types"], sorted(ALLOWED_EVIDENCE_TYPES))
 
     def test_registry_validate_uses_manifest_validator(self):

@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.agent import router as agent_router
+from app.api.artifact_boundary import router as artifact_boundary_router
 from app.api.interview import router as interview_router
 from app.api.preparation import router as preparation_router
 from app.api.agent_run import router as agent_run_router
@@ -30,6 +31,7 @@ def create_app() -> FastAPI:
     app.include_router(agent_router, prefix=settings.api_prefix)
     app.include_router(workflow_router, prefix=settings.api_prefix)
     app.include_router(workflow_run_router, prefix=settings.api_prefix)
+    app.include_router(artifact_boundary_router, prefix=settings.api_prefix)
 
     @app.get("/health")
     def health_check() -> dict[str, str]:

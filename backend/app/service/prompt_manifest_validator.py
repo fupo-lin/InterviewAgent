@@ -66,6 +66,7 @@ class PromptManifestValidator:
         agent_metadata = self._agent_metadata(registry)
         self._validate_agent_metadata(definitions, agent_metadata, errors, warnings)
         self._validate_workflows(registry, errors)
+        self._validate_artifact_boundaries(registry, errors, warnings)
 
         metadata = {
             "manifest_path": str(getattr(registry, "manifest_path", "")),
@@ -79,6 +80,7 @@ class PromptManifestValidator:
                 workflow.workflow_id
                 for workflow in self._workflow_metadata(registry)
             ],
+            "artifact_boundary_kinds": self._artifact_boundary_kinds(),
         }
         return GovernanceCheckResult(
             ok=not errors,
@@ -233,6 +235,32 @@ class PromptManifestValidator:
         if not hasattr(registry, "all_workflow_metadata"):
             return ()
         return registry.all_workflow_metadata()
+
+    def _validate_artifact_boundaries(
+        self,
+        registry,
+        errors: list[str],
+        warnings: list[str],
+    ) -> None:
+        if not all(hasattr(registry, attr) for attr in ("all_agent_metadata", "all_workflow_metadata")):
+            return
+        from app.service.agent_registry import AgentRegistry
+        from app.service.artifact_boundary import ArtifactBoundaryValidator
+        from app.service.workflow_registry import WorkflowRegistry
+
+        agent_registry = AgentRegistry(registry)
+        workflow_registry = WorkflowRegistry(registry, agent_registry)
+        result = ArtifactBoundaryValidator(
+            agents=agent_registry,
+            workflows=workflow_registry,
+        ).validate()
+        errors.extend(result.errors)
+        warnings.extend(result.warnings)
+
+    def _artifact_boundary_kinds(self) -> list[str]:
+        from app.service.artifact_boundary import artifact_boundary_registry
+
+        return [definition.artifact_kind for definition in artifact_boundary_registry.all()]
 
     def _duplicates(self, values: tuple[str, ...]) -> tuple[str, ...]:
         seen = set()
