@@ -17,6 +17,24 @@ class AgentMetadata:
 
 
 @dataclass(frozen=True)
+class WorkflowStepMetadata:
+    step_id: str
+    agent_name: str
+    prompt_id: str
+    task: str
+    required: bool = True
+    depends_on: tuple[str, ...] = field(default_factory=tuple)
+
+
+@dataclass(frozen=True)
+class WorkflowMetadata:
+    workflow_id: str
+    name: str
+    description: str
+    steps: tuple[WorkflowStepMetadata, ...] = field(default_factory=tuple)
+
+
+@dataclass(frozen=True)
 class PromptDefinition:
     prompt_id: str
     prompt_file: str
@@ -42,6 +60,10 @@ class PromptRegistry:
             item.agent_name: item
             for item in manifest["agents"]
         }
+        self._workflow_metadata = {
+            item.workflow_id: item
+            for item in manifest["workflows"]
+        }
 
     def get(self, prompt_id: str) -> PromptDefinition:
         definition = self._definitions.get(prompt_id)
@@ -60,6 +82,12 @@ class PromptRegistry:
 
     def all_agent_metadata(self) -> tuple[AgentMetadata, ...]:
         return tuple(self._agent_metadata.values())
+
+    def workflow_metadata(self, workflow_id: str) -> WorkflowMetadata | None:
+        return self._workflow_metadata.get(workflow_id)
+
+    def all_workflow_metadata(self) -> tuple[WorkflowMetadata, ...]:
+        return tuple(self._workflow_metadata.values())
 
     def validate(self):
         from app.service.prompt_manifest_validator import PromptManifestValidator
@@ -88,9 +116,18 @@ class PromptRegistry:
         if len(agent_names) != len(set(agent_names)):
             raise ValueError("Prompt manifest contains duplicate agent_name values")
 
+        workflow_items = data.get("workflows", [])
+        if not isinstance(workflow_items, list):
+            raise ValueError("Prompt manifest 'workflows' must be a list when provided")
+        workflow_metadata = [self._workflow_metadata_from_item(item) for item in workflow_items]
+        workflow_ids = [item.workflow_id for item in workflow_metadata]
+        if len(workflow_ids) != len(set(workflow_ids)):
+            raise ValueError("Prompt manifest contains duplicate workflow_id values")
+
         return {
             "prompts": prompt_definitions,
             "agents": agent_metadata,
+            "workflows": workflow_metadata,
         }
 
     def _definition_from_item(self, item: dict) -> PromptDefinition:
@@ -140,6 +177,48 @@ class PromptRegistry:
             responsibility=item["responsibility"],
             owns=tuple(item.get("owns") or ()),
             not_responsible_for=tuple(item.get("not_responsible_for") or ()),
+        )
+
+    def _workflow_metadata_from_item(self, item: dict) -> WorkflowMetadata:
+        required_fields = (
+            "workflow_id",
+            "name",
+            "description",
+            "steps",
+        )
+        missing_fields = [field_name for field_name in required_fields if not item.get(field_name)]
+        if missing_fields:
+            raise ValueError(f"Workflow metadata missing required fields: {missing_fields}")
+
+        steps = item["steps"]
+        if not isinstance(steps, list):
+            raise ValueError("Workflow metadata 'steps' must be a list")
+
+        return WorkflowMetadata(
+            workflow_id=item["workflow_id"],
+            name=item["name"],
+            description=item["description"],
+            steps=tuple(self._workflow_step_from_item(step) for step in steps),
+        )
+
+    def _workflow_step_from_item(self, item: dict) -> WorkflowStepMetadata:
+        required_fields = (
+            "step_id",
+            "agent_name",
+            "prompt_id",
+            "task",
+        )
+        missing_fields = [field_name for field_name in required_fields if not item.get(field_name)]
+        if missing_fields:
+            raise ValueError(f"Workflow step metadata missing required fields: {missing_fields}")
+
+        return WorkflowStepMetadata(
+            step_id=item["step_id"],
+            agent_name=item["agent_name"],
+            prompt_id=item["prompt_id"],
+            task=item["task"],
+            required=bool(item.get("required", True)),
+            depends_on=tuple(item.get("depends_on") or ()),
         )
 
 

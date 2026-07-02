@@ -35,6 +35,24 @@ def valid_agent_item() -> dict:
     }
 
 
+def valid_workflow_item() -> dict:
+    return {
+        "workflow_id": "test_workflow",
+        "name": "Test Workflow",
+        "description": "Workflow used by prompt registry tests.",
+        "steps": [
+            {
+                "step_id": "test_step",
+                "agent_name": "TestAgent",
+                "prompt_id": "test_prompt",
+                "task": "test_task",
+                "required": True,
+                "depends_on": [],
+            }
+        ],
+    }
+
+
 def write_manifest(temp_dir: tempfile.TemporaryDirectory, content: dict) -> Path:
     manifest_path = Path(temp_dir.name) / "manifest.json"
     manifest_path.write_text(json.dumps(content), encoding="utf-8")
@@ -59,6 +77,7 @@ class PromptRegistryTest(unittest.TestCase):
 
         resume_rewrite = registry.get("resume_rewrite")
         metadata = registry.agent_metadata("ResumeRewriteAgent")
+        workflow = registry.workflow_metadata("resume_optimization")
 
         self.assertEqual(resume_rewrite.prompt_file, "resume_rewrite.txt")
         self.assertEqual(resume_rewrite.version, "3.0.0")
@@ -71,6 +90,9 @@ class PromptRegistryTest(unittest.TestCase):
         self.assertIsNotNone(metadata)
         self.assertEqual(metadata.category, "artifact_generation")
         self.assertEqual(metadata.owns, ("resume_rewrite",))
+        self.assertIsNotNone(workflow)
+        self.assertEqual(workflow.workflow_id, "resume_optimization")
+        self.assertEqual(workflow.steps[-1].prompt_id, "resume_rewrite")
         self.assertEqual(registry.prompt_file("followup"), "followup.txt")
 
     def test_current_manifest_prompt_files_exist(self):
@@ -98,6 +120,16 @@ class PromptRegistryTest(unittest.TestCase):
 
         self.assertTrue(owner_agents)
         self.assertEqual(owner_agents, metadata_agents)
+
+    def test_current_manifest_workflow_metadata_exists(self):
+        registry = PromptRegistry()
+
+        workflow_ids = {workflow.workflow_id for workflow in registry.all_workflow_metadata()}
+
+        self.assertIn("preparation", workflow_ids)
+        self.assertIn("interview_runtime", workflow_ids)
+        self.assertIn("post_interview_assessment", workflow_ids)
+        self.assertIn("resume_optimization", workflow_ids)
 
     def test_manifest_must_contain_prompt_list(self):
         manifest_path = self.write_manifest({"prompts": {}})
@@ -152,6 +184,61 @@ class PromptRegistryTest(unittest.TestCase):
         )
 
         with self.assertRaisesRegex(ValueError, "Agent metadata missing required fields"):
+            PromptRegistry(manifest_path=manifest_path)
+
+    def test_manifest_rejects_duplicate_workflow_ids(self):
+        item = valid_prompt_item()
+        workflow = valid_workflow_item()
+        manifest_path = self.write_manifest(
+            {
+                "agents": [valid_agent_item()],
+                "workflows": [workflow, dict(workflow)],
+                "prompts": [item],
+            }
+        )
+
+        with self.assertRaisesRegex(ValueError, "duplicate workflow_id"):
+            PromptRegistry(manifest_path=manifest_path)
+
+    def test_manifest_rejects_invalid_workflows_section_shape(self):
+        item = valid_prompt_item()
+        manifest_path = self.write_manifest(
+            {
+                "agents": [valid_agent_item()],
+                "workflows": {},
+                "prompts": [item],
+            }
+        )
+
+        with self.assertRaisesRegex(ValueError, "workflows"):
+            PromptRegistry(manifest_path=manifest_path)
+
+    def test_manifest_rejects_missing_workflow_required_fields(self):
+        item = valid_prompt_item()
+        manifest_path = self.write_manifest(
+            {
+                "agents": [valid_agent_item()],
+                "workflows": [{"workflow_id": "test_workflow"}],
+                "prompts": [item],
+            }
+        )
+
+        with self.assertRaisesRegex(ValueError, "Workflow metadata missing required fields"):
+            PromptRegistry(manifest_path=manifest_path)
+
+    def test_manifest_rejects_missing_workflow_step_required_fields(self):
+        item = valid_prompt_item()
+        workflow = valid_workflow_item()
+        workflow["steps"] = [{"step_id": "test_step"}]
+        manifest_path = self.write_manifest(
+            {
+                "agents": [valid_agent_item()],
+                "workflows": [workflow],
+                "prompts": [item],
+            }
+        )
+
+        with self.assertRaisesRegex(ValueError, "Workflow step metadata missing required fields"):
             PromptRegistry(manifest_path=manifest_path)
 
     def test_manifest_rejects_missing_prompt_file(self):

@@ -65,6 +65,7 @@ class PromptManifestValidator:
 
         agent_metadata = self._agent_metadata(registry)
         self._validate_agent_metadata(definitions, agent_metadata, errors, warnings)
+        self._validate_workflows(registry, errors)
 
         metadata = {
             "manifest_path": str(getattr(registry, "manifest_path", "")),
@@ -74,6 +75,10 @@ class PromptManifestValidator:
             "allowed_evidence_types": sorted(self.allowed_evidence_types),
             "agent_categories": sorted({item.category for item in agent_metadata if item.category}),
             "allowed_agent_categories": sorted(ALLOWED_AGENT_CATEGORIES),
+            "workflow_ids": [
+                workflow.workflow_id
+                for workflow in self._workflow_metadata(registry)
+            ],
         }
         return GovernanceCheckResult(
             ok=not errors,
@@ -215,6 +220,19 @@ class PromptManifestValidator:
         if not hasattr(registry, "all_agent_metadata"):
             return ()
         return registry.all_agent_metadata()
+
+    def _validate_workflows(self, registry, errors: list[str]) -> None:
+        if not hasattr(registry, "all_workflow_metadata"):
+            return
+        from app.service.workflow_registry import WorkflowRegistry
+
+        workflow_result = WorkflowRegistry(registry).validate()
+        errors.extend(workflow_result.errors)
+
+    def _workflow_metadata(self, registry):
+        if not hasattr(registry, "all_workflow_metadata"):
+            return ()
+        return registry.all_workflow_metadata()
 
     def _duplicates(self, values: tuple[str, ...]) -> tuple[str, ...]:
         seen = set()

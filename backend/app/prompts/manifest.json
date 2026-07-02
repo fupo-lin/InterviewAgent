@@ -78,6 +78,148 @@
       "not_responsible_for": ["authenticity judgement", "interview evaluation", "candidate memory persistence"]
     }
   ],
+  "workflows": [
+    {
+      "workflow_id": "preparation",
+      "name": "Preparation Workflow",
+      "description": "Analyze job description and resume inputs, then prepare a structured interview plan.",
+      "steps": [
+        {
+          "step_id": "jd_analysis",
+          "agent_name": "JDAnalysisAgent",
+          "prompt_id": "jd_analysis",
+          "task": "jd_analysis",
+          "required": false,
+          "depends_on": []
+        },
+        {
+          "step_id": "resume_analysis",
+          "agent_name": "ResumeAnalysisAgent",
+          "prompt_id": "resume_analysis",
+          "task": "resume_analysis",
+          "required": false,
+          "depends_on": []
+        },
+        {
+          "step_id": "gap_analysis",
+          "agent_name": "GapAnalysisAgent",
+          "prompt_id": "gap_analysis",
+          "task": "gap_analysis",
+          "required": false,
+          "depends_on": ["jd_analysis", "resume_analysis"]
+        },
+        {
+          "step_id": "interview_plan",
+          "agent_name": "InterviewPlanAgent",
+          "prompt_id": "interview_plan",
+          "task": "interview_plan_generation",
+          "required": true,
+          "depends_on": []
+        }
+      ]
+    },
+    {
+      "workflow_id": "interview_runtime",
+      "name": "Interview Runtime Workflow",
+      "description": "Generate questions, judge topic coverage, and maintain session memory during the interview.",
+      "steps": [
+        {
+          "step_id": "first_question",
+          "agent_name": "InterviewExecutorAgent",
+          "prompt_id": "interviewer",
+          "task": "interviewer_system_instruction",
+          "required": true,
+          "depends_on": []
+        },
+        {
+          "step_id": "topic_completion_judge",
+          "agent_name": "TopicJudgeAgent",
+          "prompt_id": "topic_completion_judge",
+          "task": "topic_completion_judge",
+          "required": false,
+          "depends_on": ["first_question"]
+        },
+        {
+          "step_id": "followup",
+          "agent_name": "InterviewExecutorAgent",
+          "prompt_id": "followup",
+          "task": "followup_generation",
+          "required": false,
+          "depends_on": ["topic_completion_judge"]
+        },
+        {
+          "step_id": "session_candidate_memory",
+          "agent_name": "SessionMemoryAgent",
+          "prompt_id": "candidate_profile",
+          "task": "session_candidate_memory_generation",
+          "required": false,
+          "depends_on": ["followup"]
+        },
+        {
+          "step_id": "conversation_summary",
+          "agent_name": "SessionMemoryAgent",
+          "prompt_id": "conversation_summary",
+          "task": "conversation_summary_generation",
+          "required": false,
+          "depends_on": ["followup"]
+        }
+      ]
+    },
+    {
+      "workflow_id": "post_interview_assessment",
+      "name": "Post Interview Assessment Workflow",
+      "description": "Evaluate interview results and derive project-level candidate artifacts after interview execution.",
+      "steps": [
+        {
+          "step_id": "evaluation",
+          "agent_name": "EvaluationAgent",
+          "prompt_id": "evaluation",
+          "task": "evaluation_generation",
+          "required": true,
+          "depends_on": []
+        },
+        {
+          "step_id": "project_candidate_profile",
+          "agent_name": "ProjectCandidateProfileAgent",
+          "prompt_id": "project_candidate_profile",
+          "task": "project_candidate_profile_generation",
+          "required": false,
+          "depends_on": ["evaluation"]
+        },
+        {
+          "step_id": "resume_authenticity",
+          "agent_name": "ResumeAuthenticityAgent",
+          "prompt_id": "resume_authenticity",
+          "task": "resume_authenticity_check",
+          "required": false,
+          "depends_on": ["project_candidate_profile"]
+        }
+      ]
+    },
+    {
+      "workflow_id": "resume_optimization",
+      "name": "Resume Optimization Workflow",
+      "description": "Check resume authenticity and generate a rewritten resume artifact.",
+      "steps": [
+        {
+          "step_id": "resume_authenticity",
+          "agent_name": "ResumeAuthenticityAgent",
+          "prompt_id": "resume_authenticity",
+          "task": "resume_authenticity_check",
+          "required": false,
+          "depends_on": []
+        },
+        {
+          "step_id": "resume_rewrite",
+          "agent_name": "ResumeRewriteAgent",
+          "prompt_id": "resume_rewrite",
+          "task": "resume_rewrite",
+          "required": true,
+          "depends_on": ["resume_authenticity"]
+        }
+      ]
+    }
+  ],
   "prompts": [
     {
       "prompt_id": "interviewer",
