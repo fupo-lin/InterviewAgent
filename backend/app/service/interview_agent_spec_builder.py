@@ -44,6 +44,11 @@ class InterviewAgentSpecBuilder:
                 "execution_id": execution.id if execution else None,
             },
             evidence_packet=evidence_packet,
+            workflow_context=self._workflow_context(
+                workflow_id="post_interview_assessment",
+                step_id="evaluation",
+                session_id=session.id,
+            ),
         )
 
     def first_question(
@@ -72,6 +77,11 @@ class InterviewAgentSpecBuilder:
                 "interview_plan_id": plan.id if plan else session.interview_plan_id,
             },
             evidence_packet=evidence_packet,
+            workflow_context=self._workflow_context(
+                workflow_id="interview_runtime",
+                step_id="first_question",
+                session_id=session.id,
+            ),
             output_snapshot=lambda output: {"reply": output},
         )
 
@@ -122,6 +132,11 @@ class InterviewAgentSpecBuilder:
                 "answer_message_id": answer_message.id,
             },
             evidence_packet=evidence_packet,
+            workflow_context=self._workflow_context(
+                workflow_id="interview_runtime",
+                step_id="followup",
+                session_id=session.id,
+            ),
             output_snapshot=lambda output: {"reply": output},
         )
 
@@ -157,6 +172,13 @@ class InterviewAgentSpecBuilder:
                 "message_ids": [message.id for message in profile_messages or []],
             },
             evidence_packet=evidence_packet,
+            workflow_context=self._workflow_context(
+                workflow_id="interview_runtime",
+                step_id="session_candidate_memory"
+                if prompt_id == "candidate_profile"
+                else "conversation_summary",
+                session_id=session_id,
+            ),
             output_snapshot=lambda output: {"content": output},
         )
 
@@ -196,4 +218,33 @@ class InterviewAgentSpecBuilder:
                 "current_section_key": current_section.get("section_key"),
             },
             evidence_packet=evidence_packet,
+            workflow_context=self._workflow_context(
+                workflow_id="interview_runtime",
+                step_id="topic_completion_judge",
+                session_id=session.id,
+            ),
         )
+
+    def _workflow_context(
+        self,
+        workflow_id: str,
+        step_id: str,
+        session_id: int | None = None,
+    ) -> dict:
+        return {
+            "workflow_id": workflow_id,
+            "workflow_run_id": self._workflow_run_id(
+                workflow_id=workflow_id,
+                session_id=session_id,
+            ),
+            "step_id": step_id,
+        }
+
+    def _workflow_run_id(
+        self,
+        workflow_id: str,
+        session_id: int | None = None,
+    ) -> str:
+        if session_id is not None:
+            return f"session_{session_id}_{workflow_id}"
+        return workflow_id

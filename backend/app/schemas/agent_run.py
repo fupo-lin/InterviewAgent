@@ -19,6 +19,15 @@ class AgentRunValidationSummary(BaseModel):
         populate_by_name = True
 
 
+class AgentRunWorkflowSummary(BaseModel):
+    workflow_id: str | None = Field(default=None, alias="workflowId")
+    workflow_run_id: str | None = Field(default=None, alias="workflowRunId")
+    step_id: str | None = Field(default=None, alias="stepId")
+
+    class Config:
+        populate_by_name = True
+
+
 class AgentRunListItem(BaseModel):
     id: int
     agent_name: str = Field(alias="agentName")
@@ -30,6 +39,7 @@ class AgentRunListItem(BaseModel):
     session_id: int | None = Field(default=None, alias="sessionId")
     status: str
     evidence_refs: list[str] = Field(default_factory=list, alias="evidenceRefs")
+    workflow: AgentRunWorkflowSummary = Field(default_factory=AgentRunWorkflowSummary)
     validation: AgentRunValidationSummary
     error_message: str | None = Field(default=None, alias="errorMessage")
     create_time: datetime = Field(alias="createTime")

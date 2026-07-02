@@ -111,6 +111,23 @@ class AgentRunExecutorTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(context.evidence_refs, ["manual_ref"])
 
+    def test_context_injects_workflow_context(self):
+        workflow_context = {
+            "workflow_id": "interview_runtime",
+            "workflow_run_id": "session_10_interview_runtime",
+            "step_id": "followup",
+        }
+
+        context = self.executor.context(
+            prompt_id="followup",
+            project_id=1,
+            session_id=10,
+            input_snapshot={"answer_message_id": 100},
+            workflow_context=workflow_context,
+        )
+
+        self.assertEqual(context.input_snapshot["workflow_context"], workflow_context)
+
     async def test_execute_spec_records_success_and_wraps_result(self):
         spec = self.executor.spec(
             prompt_id="followup",
@@ -118,6 +135,11 @@ class AgentRunExecutorTest(unittest.IsolatedAsyncioTestCase):
             session_id=10,
             input_snapshot={"answer_message_id": 100},
             context_refs={"answer_message_id": 100},
+            workflow_context={
+                "workflow_id": "interview_runtime",
+                "workflow_run_id": "session_10_interview_runtime",
+                "step_id": "followup",
+            },
             evidence_packet={
                 "evidence_items": [
                     {"evidence_id": "interview_answer_100", "evidence_type": "interview_answer"},
@@ -153,6 +175,10 @@ class AgentRunExecutorTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.recorder.success_calls), 1)
         success_call = self.recorder.success_calls[0]
         self.assertEqual(success_call["definition"].prompt_id, "followup")
+        self.assertEqual(
+            success_call["input_snapshot"]["workflow_context"]["workflow_id"],
+            "interview_runtime",
+        )
         self.assertEqual(success_call["model_name"], "test-model")
         self.assertEqual(success_call["output_snapshot"], {"reply": "next question"})
         self.assertEqual(success_call["raw_response"], {"raw": True})

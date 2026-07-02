@@ -102,6 +102,11 @@ class AgentRunQueryServiceTest(unittest.TestCase):
                         "errors": [],
                         "warnings": ["Evidence item #1 content_excerpt is empty"],
                     },
+                    "workflow_context": {
+                        "workflow_id": "resume_optimization",
+                        "workflow_run_id": "project_1_resume_optimization",
+                        "step_id": "resume_rewrite",
+                    },
                 },
             )
         ]
@@ -124,7 +129,44 @@ class AgentRunQueryServiceTest(unittest.TestCase):
         self.assertTrue(item.validation.prompt_contract_ok)
         self.assertTrue(item.validation.evidence_packet_ok)
         self.assertEqual(item.validation.agent_definition_errors, [])
+        self.assertEqual(item.workflow.workflow_id, "resume_optimization")
+        self.assertEqual(item.workflow.workflow_run_id, "project_1_resume_optimization")
+        self.assertEqual(item.workflow.step_id, "resume_rewrite")
         self.assertEqual(item.validation.evidence_warnings, ["Evidence item #1 content_excerpt is empty"])
+
+    def test_list_runs_filters_by_workflow_context(self):
+        self.repo.runs = [
+            run(
+                1,
+                input_snapshot={
+                    "workflow_context": {
+                        "workflow_id": "resume_optimization",
+                        "workflow_run_id": "project_1_resume_optimization",
+                        "step_id": "resume_rewrite",
+                    },
+                },
+            ),
+            run(
+                2,
+                input_snapshot={
+                    "workflow_context": {
+                        "workflow_id": "preparation",
+                        "workflow_run_id": "project_1_preparation",
+                        "step_id": "interview_plan",
+                    },
+                },
+            ),
+            run(3, input_snapshot={}),
+        ]
+
+        response = self.service.list_runs(
+            workflow_id="resume_optimization",
+            workflow_run_id="project_1_resume_optimization",
+            workflow_step_id="resume_rewrite",
+        )
+
+        self.assertEqual([item.id for item in response.items], [1])
+        self.assertEqual(response.total, 1)
 
     def test_list_runs_only_issues_filters_successful_clean_runs(self):
         self.repo.runs = [

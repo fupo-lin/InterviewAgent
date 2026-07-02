@@ -9,6 +9,7 @@ from app.schemas.agent_run import (
     AgentRunListItem,
     AgentRunListResponse,
     AgentRunValidationSummary,
+    AgentRunWorkflowSummary,
 )
 
 
@@ -23,6 +24,9 @@ class AgentRunQueryService:
         status: str | None = None,
         agent_name: str | None = None,
         prompt_id: str | None = None,
+        workflow_id: str | None = None,
+        workflow_run_id: str | None = None,
+        workflow_step_id: str | None = None,
         only_issues: bool = False,
         limit: int = 50,
     ) -> AgentRunListResponse:
@@ -35,6 +39,12 @@ class AgentRunQueryService:
             limit=self._limit(limit),
         )
         items = [self._list_item(run) for run in runs]
+        items = self._filter_workflow(
+            items=items,
+            workflow_id=workflow_id,
+            workflow_run_id=workflow_run_id,
+            workflow_step_id=workflow_step_id,
+        )
         if only_issues:
             items = [item for item in items if self._has_issue(item)]
         return AgentRunListResponse(items=items, total=len(items))
@@ -81,9 +91,47 @@ class AgentRunQueryService:
             sessionId=run.session_id,
             status=run.status,
             evidenceRefs=run.evidence_refs or [],
+            workflow=self._workflow_summary(run.input_snapshot or {}),
             validation=self._validation_summary(run.input_snapshot or {}),
             errorMessage=run.error_message,
             createTime=run.create_time,
+        )
+
+    def _workflow_summary(self, input_snapshot: dict) -> AgentRunWorkflowSummary:
+        workflow_context = input_snapshot.get("workflow_context") or {}
+        return AgentRunWorkflowSummary(
+            workflowId=workflow_context.get("workflow_id"),
+            workflowRunId=workflow_context.get("workflow_run_id"),
+            stepId=workflow_context.get("step_id"),
+        )
+
+    def _filter_workflow(
+        self,
+        items: list[AgentRunListItem],
+        workflow_id: str | None,
+        workflow_run_id: str | None,
+        workflow_step_id: str | None,
+    ) -> list[AgentRunListItem]:
+        if not any((workflow_id, workflow_run_id, workflow_step_id)):
+            return items
+        return [
+            item
+            for item in items
+            if self._matches_workflow(item, workflow_id, workflow_run_id, workflow_step_id)
+        ]
+
+    def _matches_workflow(
+        self,
+        item: AgentRunListItem,
+        workflow_id: str | None,
+        workflow_run_id: str | None,
+        workflow_step_id: str | None,
+    ) -> bool:
+        workflow = item.workflow
+        return (
+            (workflow_id is None or workflow.workflow_id == workflow_id)
+            and (workflow_run_id is None or workflow.workflow_run_id == workflow_run_id)
+            and (workflow_step_id is None or workflow.step_id == workflow_step_id)
         )
 
     def _validation_summary(self, input_snapshot: dict) -> AgentRunValidationSummary:

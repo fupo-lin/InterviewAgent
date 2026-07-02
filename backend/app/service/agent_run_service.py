@@ -18,6 +18,7 @@ class AgentSpec:
     context_refs: dict[str, Any] = field(default_factory=dict)
     evidence_packet: dict[str, Any] | None = None
     evidence_refs: list[str] | None = None
+    workflow_context: dict[str, Any] | None = None
     output_snapshot: Callable[[Any], dict[str, Any]] | dict[str, Any] | None = None
     commit_on_failure: bool = True
 
@@ -216,6 +217,7 @@ class AgentRunExecutor:
         context_refs: dict[str, Any] | None = None,
         evidence_packet: dict[str, Any] | None = None,
         evidence_refs: list[str] | None = None,
+        workflow_context: dict[str, Any] | None = None,
         output_snapshot: Callable[[Any], dict[str, Any]] | dict[str, Any] | None = None,
         commit_on_failure: bool = True,
     ) -> AgentSpec:
@@ -227,6 +229,7 @@ class AgentRunExecutor:
             context_refs=context_refs or {},
             evidence_packet=evidence_packet,
             evidence_refs=evidence_refs,
+            workflow_context=workflow_context,
             output_snapshot=output_snapshot,
             commit_on_failure=commit_on_failure,
         )
@@ -240,6 +243,7 @@ class AgentRunExecutor:
         context_refs: dict[str, Any] | None = None,
         evidence_packet: dict[str, Any] | None = None,
         evidence_refs: list[str] | None = None,
+        workflow_context: dict[str, Any] | None = None,
     ) -> AgentRunContext:
         definition = self.definition(prompt_id)
         resolved_evidence_refs = evidence_refs
@@ -252,6 +256,8 @@ class AgentRunExecutor:
             resolved_input_snapshot["evidence_packet_validation"] = (
                 EvidencePacketValidator().validate(evidence_packet).to_dict()
             )
+        if workflow_context is not None and "workflow_context" not in resolved_input_snapshot:
+            resolved_input_snapshot["workflow_context"] = workflow_context
         return AgentRunContext(
             definition=definition,
             project_id=project_id,
@@ -270,6 +276,7 @@ class AgentRunExecutor:
             context_refs=spec.context_refs,
             evidence_packet=spec.evidence_packet,
             evidence_refs=spec.evidence_refs,
+            workflow_context=spec.workflow_context,
         )
 
     async def execute(
@@ -283,6 +290,7 @@ class AgentRunExecutor:
         context_refs: dict[str, Any] | None = None,
         evidence_packet: dict[str, Any] | None = None,
         evidence_refs: list[str] | None = None,
+        workflow_context: dict[str, Any] | None = None,
         output_snapshot: Callable[[Any], dict[str, Any]] | dict[str, Any] | None = None,
         commit_on_failure: bool = True,
     ) -> AgentRunResult:
@@ -294,6 +302,7 @@ class AgentRunExecutor:
             context_refs=context_refs,
             evidence_packet=evidence_packet,
             evidence_refs=evidence_refs,
+            workflow_context=workflow_context,
             output_snapshot=output_snapshot,
             commit_on_failure=commit_on_failure,
         )

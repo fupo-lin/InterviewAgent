@@ -80,6 +80,9 @@ class ProjectAgentSpecBuilderTest(unittest.TestCase):
         self.assertEqual(spec.context_refs["resume_profile_agent_run_id"], 502)
         self.assertEqual(spec.context_refs["jd_analysis_evidence_refs"], ["jd_requirement_11"])
         self.assertEqual(spec.context_refs["resume_profile_evidence_refs"], ["resume_claim_22"])
+        self.assertEqual(spec.workflow_context["workflow_id"], "preparation")
+        self.assertEqual(spec.workflow_context["workflow_run_id"], "project_1_preparation")
+        self.assertEqual(spec.workflow_context["step_id"], "gap_analysis")
         self.assertEqual(spec.evidence_packet["task"], "gap_analysis")
         self.assertEqual(
             {item["evidence_type"] for item in spec.evidence_packet["evidence_items"]},
@@ -135,6 +138,9 @@ class ProjectAgentSpecBuilderTest(unittest.TestCase):
         self.assertEqual(spec.context_refs["resume_profile_id"], 31)
         self.assertEqual(spec.context_refs["project_candidate_profile_id"], 41)
         self.assertEqual(spec.context_refs["authenticity_report_id"], 88)
+        self.assertEqual(spec.workflow_context["workflow_id"], "resume_optimization")
+        self.assertEqual(spec.workflow_context["workflow_run_id"], "project_2_resume_optimization")
+        self.assertEqual(spec.workflow_context["step_id"], "resume_rewrite")
         self.assertEqual(spec.evidence_packet["task"], "resume_rewrite")
         self.assertIn("authenticity_check_1", run_context.evidence_refs)
         self.assertIn("resume_claim_project_1", run_context.evidence_refs)

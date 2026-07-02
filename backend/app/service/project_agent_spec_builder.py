@@ -47,6 +47,11 @@ class ProjectAgentSpecBuilder:
                 "project_id": project_id,
             },
             evidence_packet=evidence_packet,
+            workflow_context=self._workflow_context(
+                workflow_id="preparation",
+                step_id="jd_analysis",
+                project_id=project_id,
+            ),
         )
 
     def resume_analysis(
@@ -74,6 +79,11 @@ class ProjectAgentSpecBuilder:
                 "project_id": project_id,
             },
             evidence_packet=evidence_packet,
+            workflow_context=self._workflow_context(
+                workflow_id="preparation",
+                step_id="resume_analysis",
+                project_id=project_id,
+            ),
         )
 
     def gap_analysis(
@@ -108,6 +118,11 @@ class ProjectAgentSpecBuilder:
                 "resume_profile_evidence_refs": getattr(resume_profile, "evidence_refs", None) or [],
             },
             evidence_packet=evidence_packet,
+            workflow_context=self._workflow_context(
+                workflow_id="preparation",
+                step_id="gap_analysis",
+                project_id=project_id,
+            ),
         )
 
     def interview_plan(
@@ -152,6 +167,11 @@ class ProjectAgentSpecBuilder:
                 "gap_analysis_evidence_refs": getattr(gap_analysis, "evidence_refs", None) or [],
             },
             evidence_packet=evidence_packet,
+            workflow_context=self._workflow_context(
+                workflow_id="preparation",
+                step_id="interview_plan",
+                project_id=project_id,
+            ),
         )
 
     def project_candidate_profile(
@@ -190,6 +210,12 @@ class ProjectAgentSpecBuilder:
                 "source_session_id": source_session_id,
             },
             evidence_packet=evidence_packet,
+            workflow_context=self._workflow_context(
+                workflow_id="post_interview_assessment",
+                step_id="project_candidate_profile",
+                project_id=project_id,
+                session_id=source_session_id,
+            ),
         )
 
     def resume_authenticity(
@@ -226,6 +252,12 @@ class ProjectAgentSpecBuilder:
                 "project_candidate_profile_id": context.candidate_profile.id if context.candidate_profile else None,
             },
             evidence_packet=evidence_packet,
+            workflow_context=self._workflow_context(
+                workflow_id="resume_optimization",
+                step_id="resume_authenticity",
+                project_id=project_id,
+                session_id=session_id,
+            ),
         )
 
     def resume_rewrite(
@@ -268,4 +300,38 @@ class ProjectAgentSpecBuilder:
                 "authenticity_report_id": authenticity_report_id,
             },
             evidence_packet=evidence_packet,
+            workflow_context=self._workflow_context(
+                workflow_id="resume_optimization",
+                step_id="resume_rewrite",
+                project_id=project_id,
+            ),
         )
+
+    def _workflow_context(
+        self,
+        workflow_id: str,
+        step_id: str,
+        project_id: int | None = None,
+        session_id: int | None = None,
+    ) -> dict:
+        return {
+            "workflow_id": workflow_id,
+            "workflow_run_id": self._workflow_run_id(
+                workflow_id=workflow_id,
+                project_id=project_id,
+                session_id=session_id,
+            ),
+            "step_id": step_id,
+        }
+
+    def _workflow_run_id(
+        self,
+        workflow_id: str,
+        project_id: int | None = None,
+        session_id: int | None = None,
+    ) -> str:
+        if session_id is not None:
+            return f"session_{session_id}_{workflow_id}"
+        if project_id is not None:
+            return f"project_{project_id}_{workflow_id}"
+        return workflow_id
