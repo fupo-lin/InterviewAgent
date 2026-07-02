@@ -2,7 +2,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from app.models.agent import AgentRun
+from app.models.agent import AgentEvidenceItem, AgentRun
 from app.service.agent_registry import AgentDefinitionValidator
 from app.service.evidence_contract import EvidencePacketValidator
 from app.service.prompt_contract import PromptContractValidator
@@ -177,6 +177,11 @@ class AgentRunRecorder:
         item.output_snapshot = output_snapshot
         self.db.add(item)
         self.db.flush()
+        self._persist_evidence_items(
+            agent_run=item,
+            input_snapshot=input_snapshot,
+            evidence_refs=evidence_refs,
+        )
         return item
 
     def _with_contract_validation(
@@ -205,6 +210,52 @@ class AgentRunRecorder:
             "agent_definition_validation": agent_definition_validation.to_dict(),
             "workflow_context_validation": workflow_context_validation.to_dict(),
         }
+
+    def _persist_evidence_items(
+        self,
+        agent_run: AgentRun,
+        input_snapshot: dict[str, Any],
+        evidence_refs: list[str] | None,
+    ) -> None:
+        evidence_packet = (input_snapshot or {}).get("evidence_packet") or {}
+        evidence_items = evidence_packet.get("evidence_items") or []
+        if not isinstance(evidence_items, list):
+            return
+
+        workflow_context = (input_snapshot or {}).get("workflow_context") or {}
+        allowed_refs = set(evidence_refs or [])
+        seen: set[str] = set()
+        for item in evidence_items:
+            if not isinstance(item, dict):
+                continue
+            evidence_id = str(item.get("evidence_id") or "").strip()
+            if not evidence_id:
+                continue
+            if allowed_refs and evidence_id not in allowed_refs:
+                continue
+            if evidence_id in seen:
+                continue
+            seen.add(evidence_id)
+            self.db.add(
+                AgentEvidenceItem(
+                    evidence_id=evidence_id,
+                    evidence_type=item.get("evidence_type"),
+                    source_type=item.get("source_type"),
+                    source_id=item.get("source_id"),
+                    project_id=item.get("project_id", agent_run.project_id),
+                    session_id=item.get("session_id", agent_run.session_id),
+                    agent_run_id=agent_run.id,
+                    prompt_id=agent_run.prompt_id,
+                    workflow_id=workflow_context.get("workflow_id"),
+                    workflow_run_id=workflow_context.get("workflow_run_id"),
+                    step_id=workflow_context.get("step_id"),
+                    round_no=item.get("round_no"),
+                    content_excerpt=item.get("content_excerpt"),
+                    tags=item.get("tags") or [],
+                    confidence=item.get("confidence"),
+                    item_metadata=item.get("metadata") or {},
+                )
+            )
 
 
 class AgentRunExecutor:

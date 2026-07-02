@@ -6,6 +6,7 @@ from service.support import configure_backend_imports
 configure_backend_imports()
 
 from app.service.agent_run_service import AgentRunExecutor, AgentRunRecorder
+from app.models.agent import AgentEvidenceItem
 
 
 class FakeRecorder:
@@ -273,6 +274,76 @@ class AgentRunRecorderTest(unittest.TestCase):
         self.assertEqual(item.agent_name, "ResumeRewriteAgent")
         self.assertEqual(item.prompt_id, "resume_rewrite")
         self.assertEqual(item.task_name, "resume_rewrite")
+
+    def test_record_success_persists_evidence_items(self):
+        item = self.recorder.record_success(
+            definition=self.definition,
+            project_id=1,
+            session_id=None,
+            input_snapshot={
+                "resume_id": 7,
+                "workflow_context": {
+                    "workflow_id": "resume_optimization",
+                    "workflow_run_id": "project_1_resume_optimization",
+                    "step_id": "resume_rewrite",
+                },
+                "evidence_packet": {
+                    "packet_id": "resume_rewrite_1_20260702000000",
+                    "task": "resume_rewrite",
+                    "evidence_items": [
+                        {
+                            "evidence_id": "resume_claim_1",
+                            "evidence_type": "resume_claim",
+                            "source_type": "resume_profile",
+                            "source_id": 8,
+                            "project_id": 1,
+                            "content_excerpt": "Built backend service.",
+                            "tags": ["project"],
+                            "confidence": "claim_only",
+                            "metadata": {"project_name": "Risk"},
+                        },
+                        {
+                            "evidence_id": "resume_claim_1",
+                            "evidence_type": "resume_claim",
+                            "source_type": "resume_profile",
+                            "content_excerpt": "Duplicate ref.",
+                        },
+                        {
+                            "evidence_id": "unused_ref",
+                            "evidence_type": "resume_claim",
+                            "source_type": "resume_profile",
+                            "content_excerpt": "Not present in evidence_refs.",
+                        },
+                    ],
+                    "missing_evidence": [],
+                },
+            },
+            context_refs={"resume_id": 7, "resume_profile_id": 8},
+            evidence_refs=["resume_claim_1"],
+            output_snapshot={"rewritten_resume": "ok"},
+            raw_response={"raw": True},
+            model_name="test-model",
+        )
+
+        evidence_items = [
+            stored for stored in self.db.items if isinstance(stored, AgentEvidenceItem)
+        ]
+        self.assertEqual(len(evidence_items), 1)
+        stored = evidence_items[0]
+        self.assertEqual(stored.agent_run_id, item.id)
+        self.assertEqual(stored.evidence_id, "resume_claim_1")
+        self.assertEqual(stored.evidence_type, "resume_claim")
+        self.assertEqual(stored.source_type, "resume_profile")
+        self.assertEqual(stored.source_id, 8)
+        self.assertEqual(stored.project_id, 1)
+        self.assertEqual(stored.prompt_id, "resume_rewrite")
+        self.assertEqual(stored.workflow_id, "resume_optimization")
+        self.assertEqual(stored.workflow_run_id, "project_1_resume_optimization")
+        self.assertEqual(stored.step_id, "resume_rewrite")
+        self.assertEqual(stored.content_excerpt, "Built backend service.")
+        self.assertEqual(stored.tags, ["project"])
+        self.assertEqual(stored.confidence, "claim_only")
+        self.assertEqual(stored.item_metadata, {"project_name": "Risk"})
 
     def test_record_failure_also_adds_agent_definition_validation(self):
         item = self.recorder.record_failure(

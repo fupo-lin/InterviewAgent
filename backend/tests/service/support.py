@@ -40,9 +40,16 @@ def _install_model_stubs() -> None:
             for key, value in kwargs.items():
                 setattr(self, key, value)
 
+    class AgentEvidenceItem:
+        def __init__(self, **kwargs):
+            for key, value in kwargs.items():
+                setattr(self, key, value)
+
     agent_module.AgentRun = AgentRun
+    agent_module.AgentEvidenceItem = AgentEvidenceItem
     sys.modules["app.models.agent"] = agent_module
     setattr(sys.modules["app.models"], "AgentRun", AgentRun)
+    setattr(sys.modules["app.models"], "AgentEvidenceItem", AgentEvidenceItem)
 
     interview_module = ModuleType("app.models.interview")
 

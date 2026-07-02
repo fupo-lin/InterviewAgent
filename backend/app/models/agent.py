@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, String, Text, func
+from sqlalchemy import BigInteger, DateTime, ForeignKey, Integer, String, Text, func
 from sqlalchemy.dialects.mysql import JSON
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -10,7 +10,7 @@ from app.config.database import Base
 class AgentRun(Base):
     __tablename__ = "agent_runs"
 
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     agent_name: Mapped[str] = mapped_column(String(80), nullable=False)
     agent_version: Mapped[str | None] = mapped_column(String(30), nullable=True)
     task_name: Mapped[str] = mapped_column(String(80), nullable=False)
@@ -28,4 +28,27 @@ class AgentRun(Base):
     raw_response: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     status: Mapped[str] = mapped_column(String(20), default="success", nullable=False)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    create_time: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
+
+
+class AgentEvidenceItem(Base):
+    __tablename__ = "agent_evidence_items"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    evidence_id: Mapped[str] = mapped_column(String(160), nullable=False)
+    evidence_type: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    source_type: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    source_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    project_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("preparation_projects.id"), nullable=True)
+    session_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("interview_sessions.id"), nullable=True)
+    agent_run_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("agent_runs.id"), nullable=False)
+    prompt_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    workflow_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    workflow_run_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    step_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    round_no: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    content_excerpt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    tags: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    confidence: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    item_metadata: Mapped[dict | None] = mapped_column("metadata", JSON, nullable=True)
     create_time: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
