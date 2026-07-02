@@ -5,8 +5,11 @@ from pydantic import BaseModel, Field
 
 
 class AgentRunValidationSummary(BaseModel):
+    agent_definition_ok: bool | None = Field(default=None, alias="agentDefinitionOk")
     prompt_contract_ok: bool | None = Field(default=None, alias="promptContractOk")
     evidence_packet_ok: bool | None = Field(default=None, alias="evidencePacketOk")
+    agent_definition_errors: list[str] = Field(default_factory=list, alias="agentDefinitionErrors")
+    agent_definition_warnings: list[str] = Field(default_factory=list, alias="agentDefinitionWarnings")
     prompt_missing_context: list[str] = Field(default_factory=list, alias="promptMissingContext")
     prompt_missing_evidence: list[str] = Field(default_factory=list, alias="promptMissingEvidence")
     evidence_errors: list[str] = Field(default_factory=list, alias="evidenceErrors")

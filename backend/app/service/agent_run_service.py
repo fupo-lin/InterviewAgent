@@ -3,6 +3,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.models.agent import AgentRun
+from app.service.agent_registry import AgentDefinitionValidator
 from app.service.evidence_contract import EvidencePacketValidator
 from app.service.prompt_contract import PromptContractValidator
 from app.service.prompt_registry import PromptDefinition, prompt_registry
@@ -73,6 +74,7 @@ class AgentRunRecorder:
     def __init__(self, db):
         self.db = db
         self.contract_validator = PromptContractValidator()
+        self.agent_definition_validator = AgentDefinitionValidator()
 
     def record_success(
         self,
@@ -181,15 +183,19 @@ class AgentRunRecorder:
         context_refs: dict[str, Any] | None,
         evidence_refs: list[str] | None,
     ) -> dict[str, Any]:
-        validation = self.contract_validator.validate(
+        prompt_validation = self.contract_validator.validate(
             definition=definition,
             input_snapshot=input_snapshot,
             context_refs=context_refs,
             evidence_refs=evidence_refs,
         )
+        agent_definition_validation = self.agent_definition_validator.validate_prompt_definition(
+            definition=definition,
+        )
         return {
             **(input_snapshot or {}),
-            "prompt_contract_validation": validation,
+            "prompt_contract_validation": prompt_validation,
+            "agent_definition_validation": agent_definition_validation.to_dict(),
         }
 
 

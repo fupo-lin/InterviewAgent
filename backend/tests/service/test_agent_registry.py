@@ -5,7 +5,7 @@ from service.support import configure_backend_imports
 
 configure_backend_imports()
 
-from app.service.agent_registry import AgentRegistry
+from app.service.agent_registry import AgentDefinitionValidator, AgentRegistry
 from app.service.prompt_registry import PromptDefinition, PromptRegistry
 
 
@@ -126,6 +126,58 @@ class AgentRegistryTest(unittest.TestCase):
         self.assertIn("Agent 'TestAgent' prompt '' missing task", result.errors)
         self.assertIn("Agent 'TestAgent' prompt '' missing input_schema", result.errors)
         self.assertIn("Agent 'TestAgent' prompt '' missing output_schema", result.errors)
+
+    def test_definition_validator_accepts_current_prompt_binding(self):
+        prompt_registry = PromptRegistry()
+        validator = AgentDefinitionValidator(AgentRegistry(prompt_registry))
+
+        result = validator.validate_prompt_definition(prompt_registry.get("resume_rewrite"))
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.errors, ())
+        self.assertEqual(result.metadata["agent_name"], "ResumeRewriteAgent")
+        self.assertEqual(result.metadata["prompt_id"], "resume_rewrite")
+        self.assertEqual(result.metadata["task_name"], "resume_rewrite")
+
+    def test_definition_validator_rejects_missing_agent(self):
+        validator = AgentDefinitionValidator(AgentRegistry(prompt_registry_with()))
+
+        result = validator.validate_prompt_definition(prompt_definition())
+
+        self.assertFalse(result.ok)
+        self.assertIn("Agent definition not found: TestAgent", result.errors)
+
+    def test_definition_validator_rejects_binding_mismatch(self):
+        registry = AgentRegistry(
+            prompt_registry_with(
+                prompt_definition(
+                    prompt_id="test_prompt",
+                    version="3.0.0",
+                    task="registry_task",
+                )
+            )
+        )
+        validator = AgentDefinitionValidator(registry)
+
+        result = validator.validate_prompt_definition(
+            prompt_definition(
+                prompt_id="test_prompt",
+                version="3.1.0",
+                task="runtime_task",
+            )
+        )
+
+        self.assertFalse(result.ok)
+        self.assertIn(
+            "Agent 'TestAgent' prompt 'test_prompt' prompt_version mismatch: "
+            "definition=3.1.0, registry=3.0.0",
+            result.errors,
+        )
+        self.assertIn(
+            "Agent 'TestAgent' prompt 'test_prompt' task mismatch: "
+            "definition=runtime_task, registry=registry_task",
+            result.errors,
+        )
 
 
 if __name__ == "__main__":

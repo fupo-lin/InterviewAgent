@@ -22,6 +22,7 @@ class PromptDefinition:
 
 
 class PromptRegistry:
+    #初始化的时候加载manifest文件，并将其中的prompt以prompt_id为key，PromptDefinition为value存入字典中
     def __init__(self, manifest_path: Path = MANIFEST_PATH) -> None:
         self.manifest_path = manifest_path
         self._definitions = {
@@ -46,6 +47,7 @@ class PromptRegistry:
 
         return PromptManifestValidator().validate(self)
 
+# 检查json文件是否存在，并且确保里面有prompts列表且没有重复的prompt_id
     def _load_manifest(self, manifest_path: Path) -> list[PromptDefinition]:
         if not manifest_path.exists():
             raise FileNotFoundError(f"Prompt manifest not found: {manifest_path}")
@@ -71,6 +73,7 @@ class PromptRegistry:
             "input_schema",
             "output_schema",
         )
+        # 等价于先循环，再判断if not 再missing_fields = []
         missing_fields = [field_name for field_name in required_fields if not item.get(field_name)]
         if missing_fields:
             raise ValueError(f"Prompt definition missing required fields: {missing_fields}")

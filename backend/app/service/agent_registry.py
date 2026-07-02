@@ -189,3 +189,90 @@ class AgentRegistry:
 
 
 agent_registry = AgentRegistry()
+
+
+class AgentDefinitionValidator:
+    def __init__(self, registry: AgentRegistry = agent_registry) -> None:
+        self.registry = registry
+
+    def validate_prompt_definition(
+        self,
+        definition: PromptDefinition,
+    ) -> GovernanceCheckResult:
+        errors: list[str] = []
+        warnings: list[str] = []
+
+        try:
+            agent_definition = self.registry.get(definition.owner_agent)
+        except KeyError:
+            agent_definition = None
+            errors.append(f"Agent definition not found: {definition.owner_agent}")
+
+        binding = None
+        if agent_definition:
+            binding = self._binding_for_prompt(agent_definition, definition.prompt_id)
+            if not binding:
+                errors.append(
+                    f"Agent '{definition.owner_agent}' does not bind prompt: {definition.prompt_id}"
+                )
+
+        if binding:
+            self._validate_binding(definition, binding, errors)
+
+        metadata = {
+            "agent_name": definition.owner_agent,
+            "prompt_id": definition.prompt_id,
+            "task_name": definition.task,
+            "prompt_version": definition.version,
+            "input_schema": definition.input_schema,
+            "output_schema": definition.output_schema,
+        }
+        return GovernanceCheckResult(
+            ok=not errors,
+            errors=tuple(errors),
+            warnings=tuple(warnings),
+            metadata=metadata,
+        )
+
+    def _binding_for_prompt(
+        self,
+        definition: AgentDefinition,
+        prompt_id: str,
+    ) -> AgentPromptBinding | None:
+        for binding in definition.prompts:
+            if binding.prompt_id == prompt_id:
+                return binding
+        return None
+
+    def _validate_binding(
+        self,
+        definition: PromptDefinition,
+        binding: AgentPromptBinding,
+        errors: list[str],
+    ) -> None:
+        prefix = f"Agent '{definition.owner_agent}' prompt '{definition.prompt_id}'"
+        if binding.prompt_version != definition.version:
+            errors.append(
+                f"{prefix} prompt_version mismatch: "
+                f"definition={definition.version}, registry={binding.prompt_version}"
+            )
+        if binding.task != definition.task:
+            errors.append(
+                f"{prefix} task mismatch: definition={definition.task}, registry={binding.task}"
+            )
+        if binding.input_schema != definition.input_schema:
+            errors.append(
+                f"{prefix} input_schema mismatch: "
+                f"definition={definition.input_schema}, registry={binding.input_schema}"
+            )
+        if binding.output_schema != definition.output_schema:
+            errors.append(
+                f"{prefix} output_schema mismatch: "
+                f"definition={definition.output_schema}, registry={binding.output_schema}"
+            )
+        if binding.required_context != definition.required_context:
+            errors.append(f"{prefix} required_context mismatch")
+        if binding.optional_context != definition.optional_context:
+            errors.append(f"{prefix} optional_context mismatch")
+        if binding.required_evidence != definition.required_evidence:
+            errors.append(f"{prefix} required_evidence mismatch")

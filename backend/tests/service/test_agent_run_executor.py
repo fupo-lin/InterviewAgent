@@ -5,7 +5,7 @@ from service.support import configure_backend_imports
 
 configure_backend_imports()
 
-from app.service.agent_run_service import AgentRunExecutor
+from app.service.agent_run_service import AgentRunExecutor, AgentRunRecorder
 
 
 class FakeRecorder:
@@ -25,9 +25,17 @@ class FakeRecorder:
 class FakeDb:
     def __init__(self) -> None:
         self.commit_count = 0
+        self.items = []
 
     def commit(self) -> None:
         self.commit_count += 1
+
+    def add(self, item) -> None:
+        self.items.append(item)
+
+    def flush(self) -> None:
+        if self.items and not getattr(self.items[-1], "id", None):
+            self.items[-1].id = 900 + len(self.items)
 
 
 class AgentRunExecutorTest(unittest.IsolatedAsyncioTestCase):
@@ -196,6 +204,57 @@ class AgentRunExecutorTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(self.db.commit_count, 0)
         self.assertEqual(len(self.recorder.failure_calls), 1)
+
+
+class AgentRunRecorderTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.db = FakeDb()
+        self.recorder = AgentRunRecorder(self.db)
+        self.definition = AgentRunExecutor(self.db).definition("resume_rewrite")
+
+    def test_record_success_adds_agent_definition_validation(self):
+        item = self.recorder.record_success(
+            definition=self.definition,
+            project_id=1,
+            session_id=None,
+            input_snapshot={
+                "resume_id": 7,
+                "resume_profile": {"name": "Lynn"},
+            },
+            context_refs={"resume_id": 7, "resume_profile_id": 8},
+            evidence_refs=["resume_claim_1", "authenticity_check_1"],
+            output_snapshot={"rewritten_resume": "ok"},
+            raw_response={"raw": True},
+            model_name="test-model",
+        )
+
+        validation = item.input_snapshot["agent_definition_validation"]
+        self.assertTrue(validation["ok"])
+        self.assertEqual(validation["errors"], [])
+        self.assertEqual(validation["metadata"]["agent_name"], "ResumeRewriteAgent")
+        self.assertEqual(validation["metadata"]["prompt_id"], "resume_rewrite")
+        self.assertEqual(validation["metadata"]["task_name"], "resume_rewrite")
+        self.assertEqual(validation["metadata"]["prompt_version"], "3.0.0")
+        self.assertEqual(item.agent_name, "ResumeRewriteAgent")
+        self.assertEqual(item.prompt_id, "resume_rewrite")
+        self.assertEqual(item.task_name, "resume_rewrite")
+
+    def test_record_failure_also_adds_agent_definition_validation(self):
+        item = self.recorder.record_failure(
+            definition=self.definition,
+            project_id=1,
+            session_id=None,
+            input_snapshot={"resume_id": 7},
+            context_refs={"resume_id": 7},
+            evidence_refs=[],
+            error=RuntimeError("model unavailable"),
+            model_name="test-model",
+        )
+
+        self.assertFalse(item.input_snapshot["prompt_contract_validation"]["ok"])
+        self.assertTrue(item.input_snapshot["agent_definition_validation"]["ok"])
+        self.assertEqual(item.status, "failed")
+        self.assertEqual(item.error_message, "model unavailable")
 
 
 if __name__ == "__main__":

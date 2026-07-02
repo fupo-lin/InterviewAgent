@@ -87,11 +87,15 @@ class AgentRunQueryService:
         )
 
     def _validation_summary(self, input_snapshot: dict) -> AgentRunValidationSummary:
+        agent_validation = input_snapshot.get("agent_definition_validation") or {}
         prompt_validation = input_snapshot.get("prompt_contract_validation") or {}
         evidence_validation = input_snapshot.get("evidence_packet_validation") or {}
         return AgentRunValidationSummary(
+            agentDefinitionOk=agent_validation.get("ok"),
             promptContractOk=prompt_validation.get("ok"),
             evidencePacketOk=evidence_validation.get("ok"),
+            agentDefinitionErrors=agent_validation.get("errors") or [],
+            agentDefinitionWarnings=agent_validation.get("warnings") or [],
             promptMissingContext=prompt_validation.get("missing_context") or [],
             promptMissingEvidence=prompt_validation.get("missing_evidence") or [],
             evidenceErrors=evidence_validation.get("errors") or [],
@@ -102,8 +106,10 @@ class AgentRunQueryService:
         validation = item.validation
         return (
             item.status != "success"
+            or validation.agent_definition_ok is False
             or validation.prompt_contract_ok is False
             or validation.evidence_packet_ok is False
+            or bool(validation.agent_definition_errors)
             or bool(validation.prompt_missing_context)
             or bool(validation.prompt_missing_evidence)
             or bool(validation.evidence_errors)
