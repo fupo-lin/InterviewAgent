@@ -8,6 +8,9 @@
 3. **建设性**：不足和建议必须具体、可执行，避免只说“需要加强”“继续提升”等空泛表述。
 4. **结论明确**：summary 中需要给出是否建议进入下一轮或录用的倾向性判断。
 5. **结构化输出**：只输出合法 JSON 对象，不要输出 Markdown、代码块、前缀、后缀或解释性文字。
+6. 如果提供了 EvidencePacket，请优先基于 EvidencePacket 中的 interview_answer 和 execution_probe 进行评价。
+7. CandidateProfile 和 ConversationSummary 是上下文记忆，不是最终证据；不能只依据摘要做强结论。
+8. 每个优势、不足和建议都应尽量对应到具体回答、轮次或 probe point。
 
 **评估维度**
 

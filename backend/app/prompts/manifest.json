@@ -1,0 +1,381 @@
+{
+  "agents": [
+    {
+      "agent_name": "InterviewExecutorAgent",
+      "category": "runtime",
+      "responsibility": "Generate interview questions and follow-up questions during an active interview session.",
+      "owns": ["interviewer_system_instruction", "followup_generation"],
+      "not_responsible_for": ["final evaluation", "candidate memory persistence", "resume rewriting"]
+    },
+    {
+      "agent_name": "SessionMemoryAgent",
+      "category": "memory",
+      "responsibility": "Maintain session-scoped conversation summary and candidate memory from interview transcript deltas.",
+      "owns": ["session_candidate_memory_generation", "conversation_summary_generation"],
+      "not_responsible_for": ["project-level candidate profile", "final evaluation", "resume rewriting"]
+    },
+    {
+      "agent_name": "JDAnalysisAgent",
+      "category": "analysis",
+      "responsibility": "Extract structured requirements and evaluation signals from the job description.",
+      "owns": ["jd_analysis"],
+      "not_responsible_for": ["resume analysis", "candidate evaluation", "interview execution"]
+    },
+    {
+      "agent_name": "ResumeAnalysisAgent",
+      "category": "analysis",
+      "responsibility": "Extract structured candidate claims and resume facts from the original resume document.",
+      "owns": ["resume_analysis"],
+      "not_responsible_for": ["authenticity judgement", "resume rewriting", "interview evaluation"]
+    },
+    {
+      "agent_name": "GapAnalysisAgent",
+      "category": "analysis",
+      "responsibility": "Compare JD requirements with resume claims to identify matched points and gaps.",
+      "owns": ["gap_analysis"],
+      "not_responsible_for": ["interview plan execution", "candidate memory persistence", "resume rewriting"]
+    },
+    {
+      "agent_name": "InterviewPlanAgent",
+      "category": "planning",
+      "responsibility": "Create an interview plan from available JD, resume, and gap analysis context.",
+      "owns": ["interview_plan_generation"],
+      "not_responsible_for": ["asking runtime questions", "topic completion judgement", "final evaluation"]
+    },
+    {
+      "agent_name": "TopicJudgeAgent",
+      "category": "runtime_judgement",
+      "responsibility": "Judge whether the current interview topic or probe point has been sufficiently covered.",
+      "owns": ["topic_completion_judge"],
+      "not_responsible_for": ["question generation", "final evaluation", "candidate profile generation"]
+    },
+    {
+      "agent_name": "EvaluationAgent",
+      "category": "evaluation",
+      "responsibility": "Produce final interview evaluation from interview answers and execution evidence.",
+      "owns": ["evaluation_generation"],
+      "not_responsible_for": ["session memory updates", "resume authenticity judgement", "resume rewriting"]
+    },
+    {
+      "agent_name": "ProjectCandidateProfileAgent",
+      "category": "profile",
+      "responsibility": "Generate versioned project-level candidate capability profile from resume, interview, and evaluation evidence.",
+      "owns": ["project_candidate_profile_generation"],
+      "not_responsible_for": ["session memory summary", "final interview score", "resume rewriting"]
+    },
+    {
+      "agent_name": "ResumeAuthenticityAgent",
+      "category": "verification",
+      "responsibility": "Assess whether resume claims are supported by interview answers and execution probes.",
+      "owns": ["resume_authenticity_check"],
+      "not_responsible_for": ["resume rewriting", "project-level capability modeling", "question generation"]
+    },
+    {
+      "agent_name": "ResumeRewriteAgent",
+      "category": "artifact_generation",
+      "responsibility": "Rewrite the resume using verified claims, candidate profile, and target role context.",
+      "owns": ["resume_rewrite"],
+      "not_responsible_for": ["authenticity judgement", "interview evaluation", "candidate memory persistence"]
+    }
+  ],
+  "workflows": [
+    {
+      "workflow_id": "preparation",
+      "name": "Preparation Workflow",
+      "description": "Analyze job description and resume inputs, then prepare a structured interview plan.",
+      "steps": [
+        {
+          "step_id": "jd_analysis",
+          "agent_name": "JDAnalysisAgent",
+          "prompt_id": "jd_analysis",
+          "task": "jd_analysis",
+          "required": false,
+          "depends_on": []
+        },
+        {
+          "step_id": "resume_analysis",
+          "agent_name": "ResumeAnalysisAgent",
+          "prompt_id": "resume_analysis",
+          "task": "resume_analysis",
+          "required": false,
+          "depends_on": []
+        },
+        {
+          "step_id": "gap_analysis",
+          "agent_name": "GapAnalysisAgent",
+          "prompt_id": "gap_analysis",
+          "task": "gap_analysis",
+          "required": false,
+          "depends_on": ["jd_analysis", "resume_analysis"]
+        },
+        {
+          "step_id": "interview_plan",
+          "agent_name": "InterviewPlanAgent",
+          "prompt_id": "interview_plan",
+          "task": "interview_plan_generation",
+          "required": true,
+          "depends_on": []
+        }
+      ]
+    },
+    {
+      "workflow_id": "interview_runtime",
+      "name": "Interview Runtime Workflow",
+      "description": "Generate questions, judge topic coverage, and maintain session memory during the interview.",
+      "steps": [
+        {
+          "step_id": "first_question",
+          "agent_name": "InterviewExecutorAgent",
+          "prompt_id": "interviewer",
+          "task": "interviewer_system_instruction",
+          "required": true,
+          "depends_on": []
+        },
+        {
+          "step_id": "topic_completion_judge",
+          "agent_name": "TopicJudgeAgent",
+          "prompt_id": "topic_completion_judge",
+          "task": "topic_completion_judge",
+          "required": false,
+          "depends_on": ["first_question"]
+        },
+        {
+          "step_id": "followup",
+          "agent_name": "InterviewExecutorAgent",
+          "prompt_id": "followup",
+          "task": "followup_generation",
+          "required": false,
+          "depends_on": ["topic_completion_judge"]
+        },
+        {
+          "step_id": "session_candidate_memory",
+          "agent_name": "SessionMemoryAgent",
+          "prompt_id": "candidate_profile",
+          "task": "session_candidate_memory_generation",
+          "required": false,
+          "depends_on": ["followup"]
+        },
+        {
+          "step_id": "conversation_summary",
+          "agent_name": "SessionMemoryAgent",
+          "prompt_id": "conversation_summary",
+          "task": "conversation_summary_generation",
+          "required": false,
+          "depends_on": ["followup"]
+        }
+      ]
+    },
+    {
+      "workflow_id": "post_interview_assessment",
+      "name": "Post Interview Assessment Workflow",
+      "description": "Evaluate interview results and derive project-level candidate artifacts after interview execution.",
+      "steps": [
+        {
+          "step_id": "evaluation",
+          "agent_name": "EvaluationAgent",
+          "prompt_id": "evaluation",
+          "task": "evaluation_generation",
+          "required": true,
+          "depends_on": []
+        },
+        {
+          "step_id": "project_candidate_profile",
+          "agent_name": "ProjectCandidateProfileAgent",
+          "prompt_id": "project_candidate_profile",
+          "task": "project_candidate_profile_generation",
+          "required": false,
+          "depends_on": ["evaluation"]
+        },
+        {
+          "step_id": "resume_authenticity",
+          "agent_name": "ResumeAuthenticityAgent",
+          "prompt_id": "resume_authenticity",
+          "task": "resume_authenticity_check",
+          "required": false,
+          "depends_on": ["project_candidate_profile"]
+        }
+      ]
+    },
+    {
+      "workflow_id": "resume_optimization",
+      "name": "Resume Optimization Workflow",
+      "description": "Check resume authenticity and generate a rewritten resume artifact.",
+      "steps": [
+        {
+          "step_id": "resume_authenticity",
+          "agent_name": "ResumeAuthenticityAgent",
+          "prompt_id": "resume_authenticity",
+          "task": "resume_authenticity_check",
+          "required": false,
+          "depends_on": []
+        },
+        {
+          "step_id": "resume_rewrite",
+          "agent_name": "ResumeRewriteAgent",
+          "prompt_id": "resume_rewrite",
+          "task": "resume_rewrite",
+          "required": true,
+          "depends_on": ["resume_authenticity"]
+        }
+      ]
+    }
+  ],
+  "prompts": [
+    {
+      "prompt_id": "interviewer",
+      "prompt_file": "interviewer.txt",
+      "version": "3.0.0",
+      "owner_agent": "InterviewExecutorAgent",
+      "task": "interviewer_system_instruction",
+      "input_schema": "InterviewerPromptInput.v1",
+      "output_schema": "InterviewQuestion.v1",
+      "required_context": ["RoleName"],
+      "optional_context": ["InterviewPlan", "InterviewPlanExecution"],
+      "required_evidence": []
+    },
+    {
+      "prompt_id": "followup",
+      "prompt_file": "followup.txt",
+      "version": "3.0.0",
+      "owner_agent": "InterviewExecutorAgent",
+      "task": "followup_generation",
+      "input_schema": "FollowupInput.v1",
+      "output_schema": "InterviewQuestion.v1",
+      "required_context": ["UserAnswer"],
+      "optional_context": ["CandidateProfile", "ConversationSummary", "InterviewPlan", "InterviewPlanExecution"],
+      "required_evidence": ["interview_answer"]
+    },
+    {
+      "prompt_id": "candidate_profile",
+      "prompt_file": "candidate_profile.txt",
+      "version": "3.0.0",
+      "owner_agent": "SessionMemoryAgent",
+      "task": "session_candidate_memory_generation",
+      "input_schema": "SessionCandidateMemoryInput.v1",
+      "output_schema": "SessionCandidateMemory.v1",
+      "required_context": ["InterviewTranscriptDelta"],
+      "optional_context": ["PreviousCandidateMemory"],
+      "required_evidence": ["interview_answer"]
+    },
+    {
+      "prompt_id": "conversation_summary",
+      "prompt_file": "conversation_summary.txt",
+      "version": "3.0.0",
+      "owner_agent": "SessionMemoryAgent",
+      "task": "conversation_summary_generation",
+      "input_schema": "ConversationSummaryInput.v1",
+      "output_schema": "ConversationSummary.v1",
+      "required_context": ["InterviewTranscriptDelta"],
+      "optional_context": ["PreviousConversationSummary"],
+      "required_evidence": ["interview_answer"]
+    },
+    {
+      "prompt_id": "jd_analysis",
+      "prompt_file": "jd_analysis.txt",
+      "version": "3.0.0",
+      "owner_agent": "JDAnalysisAgent",
+      "task": "jd_analysis",
+      "input_schema": "JDAnalysisInput.v1",
+      "output_schema": "JDAnalysis.v1",
+      "required_context": ["JobDescription"],
+      "optional_context": [],
+      "required_evidence": ["jd_requirement"]
+    },
+    {
+      "prompt_id": "resume_analysis",
+      "prompt_file": "resume_analysis.txt",
+      "version": "3.0.0",
+      "owner_agent": "ResumeAnalysisAgent",
+      "task": "resume_analysis",
+      "input_schema": "ResumeAnalysisInput.v1",
+      "output_schema": "ResumeProfile.v1",
+      "required_context": ["ResumeDocument"],
+      "optional_context": [],
+      "required_evidence": ["resume_claim"]
+    },
+    {
+      "prompt_id": "gap_analysis",
+      "prompt_file": "gap_analysis.txt",
+      "version": "3.0.0",
+      "owner_agent": "GapAnalysisAgent",
+      "task": "gap_analysis",
+      "input_schema": "GapAnalysisInput.v1",
+      "output_schema": "GapAnalysis.v1",
+      "required_context": ["JDAnalysis", "ResumeProfile"],
+      "optional_context": [],
+      "required_evidence": ["jd_requirement", "resume_claim"]
+    },
+    {
+      "prompt_id": "interview_plan",
+      "prompt_file": "interview_plan.txt",
+      "version": "3.0.0",
+      "owner_agent": "InterviewPlanAgent",
+      "task": "interview_plan_generation",
+      "input_schema": "InterviewPlanInput.v1",
+      "output_schema": "InterviewPlan.v1",
+      "required_context": [],
+      "optional_context": ["JDAnalysis", "ResumeProfile", "GapAnalysis"],
+      "required_evidence": ["jd_requirement", "resume_claim"]
+    },
+    {
+      "prompt_id": "topic_completion_judge",
+      "prompt_file": "topic_completion_judge.txt",
+      "version": "3.0.0",
+      "owner_agent": "TopicJudgeAgent",
+      "task": "topic_completion_judge",
+      "input_schema": "TopicJudgeInput.v1",
+      "output_schema": "TopicJudgeResult.v1",
+      "required_context": ["InterviewPlanSection", "InterviewPlanExecution", "RecentHistory", "UserAnswer"],
+      "optional_context": [],
+      "required_evidence": ["interview_answer", "execution_probe"]
+    },
+    {
+      "prompt_id": "evaluation",
+      "prompt_file": "evaluation.txt",
+      "version": "3.0.0",
+      "owner_agent": "EvaluationAgent",
+      "task": "evaluation_generation",
+      "input_schema": "EvaluationInput.v1",
+      "output_schema": "InterviewEvaluation.v1",
+      "required_context": [],
+      "optional_context": ["InterviewPlan", "CandidateProfile", "ConversationSummary"],
+      "required_evidence": ["interview_answer", "execution_probe"]
+    },
+    {
+      "prompt_id": "project_candidate_profile",
+      "prompt_file": "project_candidate_profile.txt",
+      "version": "3.0.0",
+      "owner_agent": "ProjectCandidateProfileAgent",
+      "task": "project_candidate_profile_generation",
+      "input_schema": "ProjectCandidateProfileInput.v1",
+      "output_schema": "ProjectCandidateProfile.v1",
+      "required_context": [],
+      "optional_context": ["JDAnalysis", "ResumeProfile", "GapAnalysis", "Evaluation"],
+      "required_evidence": ["resume_claim", "interview_answer", "execution_probe"]
+    },
+    {
+      "prompt_id": "resume_authenticity",
+      "prompt_file": "resume_authenticity.txt",
+      "version": "3.0.0",
+      "owner_agent": "ResumeAuthenticityAgent",
+      "task": "resume_authenticity_check",
+      "input_schema": "ResumeAuthenticityInput.v1",
+      "output_schema": "ResumeAuthenticityReport.v1",
+      "required_context": ["ResumeDocument", "ResumeProfile"],
+      "optional_context": ["JDAnalysis", "GapAnalysis", "ProjectCandidateProfile", "Evaluation"],
+      "required_evidence": ["resume_claim", "interview_answer", "execution_probe"]
+    },
+    {
+      "prompt_id": "resume_rewrite",
+      "prompt_file": "resume_rewrite.txt",
+      "version": "3.0.0",
+      "owner_agent": "ResumeRewriteAgent",
+      "task": "resume_rewrite",
+      "input_schema": "ResumeRewriteInput.v1",
+      "output_schema": "ResumeRewriteResult.v1",
+      "required_context": ["ResumeDocument", "ResumeProfile"],
+      "optional_context": ["JDAnalysis", "GapAnalysis", "ProjectCandidateProfile", "Evaluation"],
+      "required_evidence": ["resume_claim", "authenticity_check"]
+    }
+  ]
+}

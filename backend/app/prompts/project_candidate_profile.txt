@@ -62,6 +62,8 @@
 2. 对面试中已验证的内容，写入 verified_contributions 或 evidence。
 3. 对简历或回答中提到但证据不足的内容，写入 unverified_claims 或 risk_profile。
 4. 如果信息不足，用 unknown 或空数组，不要强行补全。
+5. EvidencePacket 是可引用证据；ResumeProfile 中的内容默认只是简历声明，不代表已经被验证。
+6. 能力等级和 verified_level 必须优先依据 EvidencePacket 中的 interview_answer 和 execution_probe。
 
 项目目标岗位：
 {target_role}
@@ -83,3 +85,6 @@ Gap 分析：
 
 面试对话：
 {transcript}
+
+结构化证据包 EvidencePacket：
+{evidence_packet}

@@ -30,6 +30,8 @@
 3. 简历声称很强但面试完全没有证据支撑的，标记 unsupported。
 4. 信息不足无法判断时标记 unclear，不要强行下结论。
 5. rewrite_constraints 要给后续简历重写 Agent 使用，明确哪些内容不能强化，哪些内容可以保留或弱化。
+6. EvidencePacket 是可引用证据；JD 分析、简历画像、候选人画像和评价主要是上下文，不应替代证据。
+7. claim_checks 中的 evidence 必须优先来自 EvidencePacket 或面试对话，不要只引用 summary 性结论。
 
 简历原文：
 {resume_content}
@@ -54,3 +56,6 @@ Gap 分析：
 
 面试对话：
 {transcript}
+
+结构化证据包 EvidencePacket：
+{evidence_packet}

@@ -12,6 +12,9 @@ from app.repository.interview_repository import (
     InterviewSummaryRepository,
 )
 from app.repository.preparation_repository import InterviewPlanRepository, PreparationProjectRepository
+from app.service.agent_run_service import AgentRunExecutor, AgentRunRecorder
+from app.service.evidence_service import EvidencePacketBuilder
+from app.service.interview_agent_spec_builder import InterviewAgentSpecBuilder
 from app.service.interview_execution_service import InterviewExecutionService
 from app.service.preparation_service import PreparationService
 from app.schemas.interview import DeleteResponse, EvaluationResponse, HistoryResponse, MessageResponse
@@ -33,21 +36,30 @@ class InterviewService:
         self.project_repo = PreparationProjectRepository(db)
         self.plan_repo = InterviewPlanRepository(db)
         self.llm = LLMService()
+        self.evidence_builder = EvidencePacketBuilder()
+        self.agent_run_recorder = AgentRunRecorder(db)
+        self.agent_run_executor = AgentRunExecutor(db, self.agent_run_recorder)
+        self.interview_agent_spec_builder = InterviewAgentSpecBuilder(
+            agent_run_executor=self.agent_run_executor,
+            evidence_builder=self.evidence_builder,
+        )
 
     async def start(self, role_name: str) -> tuple[str, str]:
         session_uid = uuid4().hex
         session = self.session_repo.create(session_uid=session_uid, role_name=role_name)
-        reply, raw_response = await self.llm.generate_first_question(role_name)
+        message_fields = await self._generate_first_question_with_run(
+            session=session,
+            role_name=role_name,
+        )
         self.message_repo.create(
             session_id=session.id,
             role_type="assistant",
             message_type="question",
             round_no=1,
-            content=reply,
-            raw_response=raw_response,
+            **message_fields,
         )
         self.db.commit()
-        return session.session_uid, reply
+        return session.session_uid, message_fields["content"]
 
     async def start_with_project(self, project_uid: str) -> tuple[str, str]:
         project = self.project_repo.get_by_uid(project_uid)
@@ -68,10 +80,19 @@ class InterviewService:
         )
         reply = self._first_question_from_plan(plan.content)
         raw_response = {"source": "interview_plan", "planId": plan.id}
+        message_fields = {
+            "content": reply,
+            "raw_response": raw_response,
+            "agent_run_id": None,
+            "schema_version": None,
+            "evidence_refs": [],
+        }
         if not reply:
-            reply, raw_response = await self.llm.generate_first_question(
-                role_name,
+            message_fields = await self._generate_first_question_with_run(
+                session=session,
+                role_name=role_name,
                 plan_context=self._plan_context(plan),
+                plan=plan,
             )
         execution = self.execution_service.initialize(
             session_id=session.id,
@@ -83,16 +104,18 @@ class InterviewService:
             role_type="assistant",
             message_type="question",
             round_no=1,
-            content=reply,
-            raw_response={**(raw_response or {}), "executionId": execution.id},
+            **{
+                **message_fields,
+                "raw_response": {**(message_fields.get("raw_response") or {}), "executionId": execution.id},
+            },
         )
         self.db.commit()
-        return session.session_uid, reply
+        return session.session_uid, message_fields["content"]
 
     async def chat(self, session_uid: str, message: str) -> tuple[str, int]:
         session = self._get_active_session(session_uid)
         round_no = self.message_repo.latest_assistant_question_round_no(session.id)
-        self.message_repo.create(
+        answer_message = self.message_repo.create(
             session_id=session.id,
             role_type="user",
             message_type="answer",
@@ -102,31 +125,39 @@ class InterviewService:
 
         latest_completed_round_no = self.message_repo.latest_completed_round_no(session.id)
         recent_history = self.message_repo.list_recent_rounds(session.id, rounds=4)
-        execution = await self._advance_execution_if_needed(session, message, round_no, recent_history)
+        execution = await self._advance_execution_if_needed(session, answer_message, recent_history)
         await self._refresh_memory_if_needed(session.id, latest_completed_round_no)
         candidate_profile = self.summary_repo.get_latest_by_session_id(session.id, "candidate_profile")
         conversation_summary = self.summary_repo.get_latest_by_session_id(session.id, "conversation")
         plan_context = self._session_plan_context(session)
         execution_context = self._session_execution_context(session, execution)
-        reply, raw_response = await self.llm.generate_followup(
-            session.role_name,
-            message,
-            recent_history,
+        message_fields = await self._generate_followup_with_run(
+            session=session,
+            answer_message=answer_message,
+            recent_history=recent_history,
             candidate_profile=candidate_profile.content if candidate_profile else None,
             conversation_summary=conversation_summary.content if conversation_summary else None,
             plan_context=plan_context,
             execution_context=execution_context,
+            candidate_profile_id=candidate_profile.id if candidate_profile else None,
+            conversation_summary_id=conversation_summary.id if conversation_summary else None,
+            execution=execution,
         )
         self.message_repo.create(
             session_id=session.id,
             role_type="assistant",
             message_type="followup",
             round_no=round_no + 1,
-            content=reply,
-            raw_response={**(raw_response or {}), "execution": self.execution_service.response(execution) if execution else None},
+            **{
+                **message_fields,
+                "raw_response": {
+                    **(message_fields.get("raw_response") or {}),
+                    "execution": self.execution_service.response(execution) if execution else None,
+                },
+            },
         )
         self.db.commit()
-        return reply, round_no + 1
+        return message_fields["content"], round_no + 1
 
     async def end(self, session_uid: str) -> EvaluationResponse:
         session = self._get_session(session_uid)
@@ -139,24 +170,42 @@ class InterviewService:
             return self._evaluation_to_response(existing)
 
         history = self._evaluation_context(session.id)
+        full_history = self.message_repo.list_by_session_id(session.id)
+        execution = self.execution_repo.get_latest_by_session_id(session.id)
         candidate_profile = self.summary_repo.get_latest_by_session_id(session.id, "candidate_profile")
         conversation_summary = self.summary_repo.get_latest_by_session_id(session.id, "conversation")
-        evaluation, _raw_response = await self.llm.generate_evaluation(
-            history,
-            candidate_profile=candidate_profile.content if candidate_profile else None,
-            conversation_summary=conversation_summary.content if conversation_summary else None,
-            plan_context=self._session_plan_context(session),
+        spec = self.interview_agent_spec_builder.evaluation(
+            session=session,
+            history=history,
+            full_history=full_history,
+            execution=execution,
+            candidate_profile=candidate_profile,
+            conversation_summary=conversation_summary,
+        )
+        run_result = await self.agent_run_executor.execute_spec(
+            spec=spec,
+            model_name=self.llm.model,
+            call=lambda: self.llm.generate_evaluation(
+                history,
+                candidate_profile=candidate_profile.content if candidate_profile else None,
+                conversation_summary=conversation_summary.content if conversation_summary else None,
+                plan_context=self._session_plan_context(session),
+                evidence_packet=spec.evidence_packet,
+            ),
         )
         saved = self.evaluation_repo.create(
             session_id=session.id,
-            strengths=evaluation["strengths"],
-            weaknesses=evaluation["weaknesses"],
-            suggestions=evaluation["suggestions"],
-            summary=evaluation.get("summary"),
-            technical_ability=evaluation.get("technical_ability"),
-            project_experience=evaluation.get("project_experience"),
-            communication=evaluation.get("communication"),
-            improvement_suggestions=evaluation.get("improvement_suggestions"),
+            strengths=run_result.output["strengths"],
+            weaknesses=run_result.output["weaknesses"],
+            suggestions=run_result.output["suggestions"],
+            summary=run_result.output.get("summary"),
+            technical_ability=run_result.output.get("technical_ability"),
+            project_experience=run_result.output.get("project_experience"),
+            communication=run_result.output.get("communication"),
+            improvement_suggestions=run_result.output.get("improvement_suggestions"),
+            agent_run_id=run_result.agent_run.id,
+            schema_version=run_result.output_schema,
+            evidence_refs=run_result.evidence_refs,
         )
         self.session_repo.mark_finished(session)
         self.execution_service.mark_finished(session.id)
@@ -216,6 +265,97 @@ class InterviewService:
         execution = self.execution_service.get_latest(session.id)
         return self.execution_service.response(execution)
 
+    async def _generate_first_question_with_run(
+        self,
+        session,
+        role_name: str,
+        plan_context: str | None = None,
+        plan=None,
+    ):
+        spec = self.interview_agent_spec_builder.first_question(
+            session=session,
+            role_name=role_name,
+            plan_context=plan_context,
+            plan=plan,
+        )
+        run_result = await self.agent_run_executor.execute_spec(
+            spec=spec,
+            model_name=self.llm.model,
+            call=lambda: self.llm.generate_first_question(role_name, plan_context=plan_context),
+        )
+        return run_result.message_fields()
+
+    async def _generate_followup_with_run(
+        self,
+        session,
+        answer_message,
+        recent_history,
+        candidate_profile: str | None = None,
+        conversation_summary: str | None = None,
+        plan_context: str | None = None,
+        execution_context: str | None = None,
+        candidate_profile_id: int | None = None,
+        conversation_summary_id: int | None = None,
+        execution=None,
+    ):
+        spec = self.interview_agent_spec_builder.followup(
+            session=session,
+            answer_message=answer_message,
+            recent_history=recent_history,
+            candidate_profile=candidate_profile,
+            conversation_summary=conversation_summary,
+            plan_context=plan_context,
+            execution_context=execution_context,
+            candidate_profile_id=candidate_profile_id,
+            conversation_summary_id=conversation_summary_id,
+            execution=execution,
+        )
+        run_result = await self.agent_run_executor.execute_spec(
+            spec=spec,
+            model_name=self.llm.model,
+            call=lambda: self.llm.generate_followup(
+                session.role_name,
+                answer_message.content,
+                recent_history,
+                candidate_profile=candidate_profile,
+                conversation_summary=conversation_summary,
+                plan_context=plan_context,
+                execution_context=execution_context,
+            ),
+        )
+        return run_result.message_fields()
+
+    async def _generate_memory_with_run(
+        self,
+        prompt_id: str,
+        session_id: int,
+        previous_content: str | None,
+        profile_messages: list,
+        previous_summary_id: int | None = None,
+    ):
+        session = self._get_session_by_id(session_id)
+        spec = self.interview_agent_spec_builder.memory(
+            prompt_id=prompt_id,
+            session=session,
+            session_id=session_id,
+            previous_content=previous_content,
+            profile_messages=profile_messages,
+            previous_summary_id=previous_summary_id,
+        )
+
+        async def generate_memory():
+            if prompt_id == "candidate_profile":
+                return await self.llm.generate_candidate_profile(previous_content, profile_messages)
+            return await self.llm.generate_conversation_summary(previous_content, profile_messages)
+
+        run_result = await self.agent_run_executor.execute_spec(
+            spec=spec,
+            model_name=self.llm.model,
+            call=generate_memory,
+        )
+
+        return run_result.message_fields()
+
     async def _refresh_memory_if_needed(self, session_id: int, latest_completed_round_no: int) -> None:
         if latest_completed_round_no < 10:
             return
@@ -232,9 +372,12 @@ class InterviewService:
             )
             if profile_messages:
                 try:
-                    profile_content, profile_raw = await self.llm.generate_candidate_profile(
-                        latest_profile.content if latest_profile else None,
-                        profile_messages,
+                    summary_fields = await self._generate_memory_with_run(
+                        prompt_id="candidate_profile",
+                        session_id=session_id,
+                        previous_content=latest_profile.content if latest_profile else None,
+                        profile_messages=profile_messages,
+                        previous_summary_id=latest_profile.id if latest_profile else None,
                     )
                 except Exception:
                     logger.warning("Failed to refresh candidate profile summary", exc_info=True)
@@ -244,8 +387,7 @@ class InterviewService:
                         summary_type="candidate_profile",
                         from_round_no=1,
                         to_round_no=latest_completed_round_no,
-                        content=profile_content,
-                        raw_response=profile_raw,
+                        **summary_fields,
                     )
 
         last_summary_round = latest_conversation.to_round_no if latest_conversation else 0
@@ -262,9 +404,12 @@ class InterviewService:
             return
 
         try:
-            summary_content, summary_raw = await self.llm.generate_conversation_summary(
-                latest_conversation.content if latest_conversation else None,
-                new_messages,
+            summary_fields = await self._generate_memory_with_run(
+                prompt_id="conversation_summary",
+                session_id=session_id,
+                previous_content=latest_conversation.content if latest_conversation else None,
+                profile_messages=new_messages,
+                previous_summary_id=latest_conversation.id if latest_conversation else None,
             )
         except Exception:
             logger.warning("Failed to refresh conversation summary", exc_info=True)
@@ -274,8 +419,7 @@ class InterviewService:
                 summary_type="conversation",
                 from_round_no=1,
                 to_round_no=latest_completed_round_no,
-                content=summary_content,
-                raw_response=summary_raw,
+                **summary_fields,
             )
 
     def _evaluation_context(self, session_id: int):
@@ -297,7 +441,7 @@ class InterviewService:
         execution = execution or self.execution_repo.get_latest_by_session_id(session.id)
         return self.execution_service.context_for_followup(execution, plan.content if plan else None)
 
-    async def _advance_execution_if_needed(self, session, answer: str, round_no: int, recent_history):
+    async def _advance_execution_if_needed(self, session, answer_message, recent_history):
         if not session.interview_plan_id:
             return None
         execution = self.execution_repo.get_active_by_session_id(session.id)
@@ -305,16 +449,36 @@ class InterviewService:
             return None
         current_section = self.execution_service.current_section(execution)
         judge_result = None
+        answer = answer_message.content
+        round_no = answer_message.round_no
         if current_section:
+            spec = self.interview_agent_spec_builder.topic_judge(
+                session=session,
+                execution=execution,
+                current_section=current_section,
+                answer_message=answer_message,
+                recent_history=recent_history,
+            )
             try:
-                judge_result, _raw_response = await self.llm.judge_topic_completion(
-                    current_section=current_section,
-                    execution_state=execution.state or {},
-                    user_answer=answer,
-                    recent_history=recent_history,
+                run_result = await self.agent_run_executor.execute_spec(
+                    spec=spec,
+                    model_name=self.llm.model,
+                    call=lambda: self.llm.judge_topic_completion(
+                        current_section=current_section,
+                        execution_state=execution.state or {},
+                        user_answer=answer,
+                        recent_history=recent_history,
+                    ),
                 )
             except Exception:
                 logger.warning("Failed to judge topic completion", exc_info=True)
+            else:
+                judge_result = {
+                    **(run_result.output or {}),
+                    "agent_run_id": run_result.agent_run.id,
+                    "schema_version": run_result.output_schema,
+                    "evidence_refs": run_result.evidence_refs,
+                }
         return self.execution_service.advance_after_answer(execution, answer, round_no, judge_result)
 
     def _plan_context(self, plan) -> str:
@@ -348,6 +512,9 @@ class InterviewService:
         if not session:
             raise HTTPException(status_code=404, detail="Interview session not found")
         return session
+
+    def _get_session_by_id(self, session_id: int):
+        return self.session_repo.get_by_id(session_id)
 
     def _get_active_session(self, session_uid: str):
         session = self._get_session(session_uid)

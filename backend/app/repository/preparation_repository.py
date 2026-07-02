@@ -118,10 +118,16 @@ class JDAnalysisRepository(BaseProjectRepository):
         jd_id: int,
         content: dict,
         raw_response: dict | None = None,
+        agent_run_id: int | None = None,
+        schema_version: str = "JDAnalysis.v1",
+        evidence_refs: list[str] | None = None,
     ) -> JDAnalysis:
         item = JDAnalysis(
             project_id=project_id,
             jd_id=jd_id,
+            agent_run_id=agent_run_id,
+            schema_version=schema_version,
+            evidence_refs=evidence_refs or [],
             content=content,
             raw_response=raw_response,
         )
@@ -160,10 +166,16 @@ class ResumeProfileRepository(BaseProjectRepository):
         resume_id: int,
         content: dict,
         raw_response: dict | None = None,
+        agent_run_id: int | None = None,
+        schema_version: str = "ResumeProfile.v1",
+        evidence_refs: list[str] | None = None,
     ) -> ResumeProfile:
         item = ResumeProfile(
             project_id=project_id,
             resume_id=resume_id,
+            agent_run_id=agent_run_id,
+            schema_version=schema_version,
+            evidence_refs=evidence_refs or [],
             content=content,
             raw_response=raw_response,
         )
@@ -182,11 +194,17 @@ class GapAnalysisRepository(BaseProjectRepository):
         resume_profile_id: int,
         content: dict,
         raw_response: dict | None = None,
+        agent_run_id: int | None = None,
+        schema_version: str = "GapAnalysis.v1",
+        evidence_refs: list[str] | None = None,
     ) -> GapAnalysis:
         item = GapAnalysis(
             project_id=project_id,
             jd_analysis_id=jd_analysis_id,
             resume_profile_id=resume_profile_id,
+            agent_run_id=agent_run_id,
+            schema_version=schema_version,
+            evidence_refs=evidence_refs or [],
             content=content,
             raw_response=raw_response,
         )
@@ -207,6 +225,9 @@ class InterviewPlanRepository(BaseProjectRepository):
         resume_profile_id: int | None = None,
         gap_analysis_id: int | None = None,
         raw_response: dict | None = None,
+        agent_run_id: int | None = None,
+        schema_version: str = "InterviewPlan.v1",
+        evidence_refs: list[str] | None = None,
     ) -> InterviewPlan:
         item = InterviewPlan(
             project_id=project_id,
@@ -214,6 +235,9 @@ class InterviewPlanRepository(BaseProjectRepository):
             resume_profile_id=resume_profile_id,
             gap_analysis_id=gap_analysis_id,
             plan_mode=plan_mode,
+            agent_run_id=agent_run_id,
+            schema_version=schema_version,
+            evidence_refs=evidence_refs or [],
             content=content,
             raw_response=raw_response,
         )
@@ -231,10 +255,21 @@ class ProjectCandidateProfileRepository(BaseProjectRepository):
         content: dict,
         source_session_id: int | None = None,
         raw_response: dict | None = None,
+        agent_run_id: int | None = None,
+        schema_version: str = "ProjectCandidateProfile.v1",
+        profile_version_no: int | None = None,
+        evidence_refs: list[str] | None = None,
     ) -> ProjectCandidateProfile:
+        if profile_version_no is None:
+            latest = self.get_latest_by_project_id(project_id)
+            profile_version_no = (latest.profile_version_no if latest else 0) + 1
         item = ProjectCandidateProfile(
             project_id=project_id,
             source_session_id=source_session_id,
+            agent_run_id=agent_run_id,
+            schema_version=schema_version,
+            profile_version_no=profile_version_no,
+            evidence_refs=evidence_refs or [],
             content=content,
             raw_response=raw_response,
         )
@@ -253,11 +288,17 @@ class ResumeAuthenticityReportRepository(BaseProjectRepository):
         content: dict,
         session_id: int | None = None,
         raw_response: dict | None = None,
+        agent_run_id: int | None = None,
+        schema_version: str = "ResumeAuthenticityReport.v1",
+        evidence_refs: list[str] | None = None,
     ) -> ResumeAuthenticityReport:
         item = ResumeAuthenticityReport(
             project_id=project_id,
             resume_id=resume_id,
             session_id=session_id,
+            agent_run_id=agent_run_id,
+            schema_version=schema_version,
+            evidence_refs=evidence_refs or [],
             content=content,
             raw_response=raw_response,
         )
@@ -277,12 +318,18 @@ class ResumeRewriteResultRepository(BaseProjectRepository):
         content: dict,
         authenticity_report_id: int | None = None,
         raw_response: dict | None = None,
+        agent_run_id: int | None = None,
+        schema_version: str = "ResumeRewriteResult.v1",
+        evidence_refs: list[str] | None = None,
     ) -> ResumeRewriteResult:
         item = ResumeRewriteResult(
             project_id=project_id,
             resume_id=resume_id,
             authenticity_report_id=authenticity_report_id,
             rewrite_mode=rewrite_mode,
+            agent_run_id=agent_run_id,
+            schema_version=schema_version,
+            evidence_refs=evidence_refs or [],
             content=content,
             raw_response=raw_response,
         )
