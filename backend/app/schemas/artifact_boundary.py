@@ -20,8 +20,23 @@ class ArtifactBoundaryResponse(BaseModel):
         populate_by_name = True
 
 
+class ContextBoundaryResponse(BaseModel):
+    context_name: str = Field(alias="contextName")
+    artifact_kind: str = Field(alias="artifactKind")
+    scope: str
+    description: str
+
+    class Config:
+        populate_by_name = True
+
+
 class ArtifactBoundaryRegistryResponse(BaseModel):
     items: list[ArtifactBoundaryResponse]
+    total: int
+
+
+class ContextBoundaryRegistryResponse(BaseModel):
+    items: list[ContextBoundaryResponse]
     total: int
 
 

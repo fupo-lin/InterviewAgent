@@ -55,12 +55,18 @@ class ArtifactBoundaryTest(unittest.TestCase):
 
         memory = registry.get("memory")
         by_owner = registry.by_owner_agent("SessionMemoryAgent")
+        candidate_profile_context = registry.context("CandidateProfile")
+        project_profile_context = registry.context("ProjectCandidateProfile")
 
         self.assertEqual(memory.owner_agent, "SessionMemoryAgent")
         self.assertEqual(memory.scope, "session")
         self.assertEqual(memory.lifecycle, "rolling")
         self.assertEqual(memory.storage_model, "InterviewSummary")
         self.assertEqual(by_owner.artifact_kind, "memory")
+        self.assertEqual(candidate_profile_context.artifact_kind, "memory")
+        self.assertEqual(candidate_profile_context.scope, "session")
+        self.assertEqual(project_profile_context.artifact_kind, "profile")
+        self.assertEqual(project_profile_context.scope, "project")
 
     def test_missing_boundary_raises_key_error(self):
         registry = ArtifactBoundaryRegistry()
@@ -142,6 +148,37 @@ class ArtifactBoundaryTest(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertIn(
             "Artifact boundary 'memory' owner_agent appears in disallowed workflow: interview_runtime",
+            result.errors,
+        )
+
+    def test_validator_rejects_memory_agent_using_project_profile_context(self):
+        prompt_registry = _prompt_registry(
+            prompts=(
+                prompt_definition(
+                    optional_context=("ProjectCandidateProfile",),
+                ),
+            ),
+            agents=(
+                AgentMetadata(
+                    agent_name="SessionMemoryAgent",
+                    category="memory",
+                    responsibility="Maintain session memory.",
+                    owns=("session_candidate_memory_generation",),
+                    not_responsible_for=("project profile",),
+                ),
+            ),
+            workflows=(),
+        )
+
+        result = ArtifactBoundaryValidator(
+            agents=AgentRegistry(prompt_registry),
+            workflows=WorkflowRegistry(prompt_registry, AgentRegistry(prompt_registry)),
+        ).validate()
+
+        self.assertFalse(result.ok)
+        self.assertIn(
+            "Agent 'SessionMemoryAgent' memory prompt uses non-memory context "
+            "'ProjectCandidateProfile' (profile)",
             result.errors,
         )
 

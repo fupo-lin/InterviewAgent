@@ -20,6 +20,14 @@ class ArtifactBoundaryDefinition:
     description: str
 
 
+@dataclass(frozen=True)
+class ContextBoundaryDefinition:
+    context_name: str
+    artifact_kind: str
+    scope: str
+    description: str
+
+
 BOUNDARY_DEFINITIONS: tuple[ArtifactBoundaryDefinition, ...] = (
     ArtifactBoundaryDefinition(
         artifact_kind="memory",
@@ -95,6 +103,49 @@ BOUNDARY_DEFINITIONS: tuple[ArtifactBoundaryDefinition, ...] = (
 )
 
 
+CONTEXT_BOUNDARY_DEFINITIONS: tuple[ContextBoundaryDefinition, ...] = (
+    ContextBoundaryDefinition(
+        context_name="CandidateProfile",
+        artifact_kind="memory",
+        scope="session",
+        description=(
+            "Legacy prompt context name for session candidate memory. "
+            "It must not be treated as project-level profile."
+        ),
+    ),
+    ContextBoundaryDefinition(
+        context_name="ConversationSummary",
+        artifact_kind="memory",
+        scope="session",
+        description="Session-scoped conversation memory summary.",
+    ),
+    ContextBoundaryDefinition(
+        context_name="PreviousCandidateMemory",
+        artifact_kind="memory",
+        scope="session",
+        description="Previous session candidate memory used by SessionMemoryAgent.",
+    ),
+    ContextBoundaryDefinition(
+        context_name="PreviousConversationSummary",
+        artifact_kind="memory",
+        scope="session",
+        description="Previous session conversation summary used by SessionMemoryAgent.",
+    ),
+    ContextBoundaryDefinition(
+        context_name="ProjectCandidateProfile",
+        artifact_kind="profile",
+        scope="project",
+        description="Versioned project-level candidate capability profile.",
+    ),
+    ContextBoundaryDefinition(
+        context_name="Evaluation",
+        artifact_kind="evaluation",
+        scope="session",
+        description="Final interview evaluation context.",
+    ),
+)
+
+
 class ArtifactBoundaryRegistry:
     def __init__(
         self,
@@ -103,6 +154,10 @@ class ArtifactBoundaryRegistry:
         self._definitions = {
             definition.artifact_kind: definition
             for definition in definitions
+        }
+        self._context_definitions = {
+            definition.context_name: definition
+            for definition in CONTEXT_BOUNDARY_DEFINITIONS
         }
 
     def get(self, artifact_kind: str) -> ArtifactBoundaryDefinition:
@@ -119,6 +174,15 @@ class ArtifactBoundaryRegistry:
             if definition.owner_agent == owner_agent:
                 return definition
         return None
+
+    def context(self, context_name: str) -> ContextBoundaryDefinition | None:
+        return self._context_definitions.get(context_name)
+
+    def all_contexts(self) -> tuple[ContextBoundaryDefinition, ...]:
+        return tuple(
+            self._context_definitions[context_name]
+            for context_name in sorted(self._context_definitions)
+        )
 
 
 class ArtifactBoundaryValidator:
@@ -139,11 +203,13 @@ class ArtifactBoundaryValidator:
         for boundary in self.boundaries.all():
             self._validate_boundary_agent(boundary, errors)
             self._validate_boundary_workflows(boundary, errors, warnings)
+        self._validate_prompt_context_boundaries(errors)
 
         metadata = {
             "artifact_kinds": [definition.artifact_kind for definition in self.boundaries.all()],
             "owner_agents": [definition.owner_agent for definition in self.boundaries.all()],
             "storage_models": [definition.storage_model for definition in self.boundaries.all()],
+            "context_names": [definition.context_name for definition in self.boundaries.all_contexts()],
         }
         return GovernanceCheckResult(
             ok=not errors,
@@ -211,6 +277,43 @@ class ArtifactBoundaryValidator:
             warnings.append(
                 f"Artifact boundary '{boundary.artifact_kind}' owner_agent does not appear in any workflow"
             )
+
+    def _validate_prompt_context_boundaries(self, errors: list[str]) -> None:
+        for agent in self.agents.all():
+            owner_boundary = self.boundaries.by_owner_agent(agent.agent_name)
+            for prompt in agent.prompts:
+                for context_name in (*prompt.required_context, *prompt.optional_context):
+                    context_boundary = self.boundaries.context(context_name)
+                    if not context_boundary:
+                        continue
+                    self._validate_prompt_context_boundary(
+                        agent=agent,
+                        context_name=context_name,
+                        context_boundary=context_boundary,
+                        owner_boundary=owner_boundary,
+                        errors=errors,
+                    )
+
+    def _validate_prompt_context_boundary(
+        self,
+        agent: AgentDefinition,
+        context_name: str,
+        context_boundary: ContextBoundaryDefinition,
+        owner_boundary: ArtifactBoundaryDefinition | None,
+        errors: list[str],
+    ) -> None:
+        if agent.category == "memory" and context_boundary.artifact_kind != "memory":
+            errors.append(
+                f"Agent '{agent.agent_name}' memory prompt uses non-memory context "
+                f"'{context_name}' ({context_boundary.artifact_kind})"
+            )
+        if owner_boundary and owner_boundary.artifact_kind == "memory" and context_boundary.artifact_kind != "memory":
+            errors.append(
+                f"Artifact boundary '{owner_boundary.artifact_kind}' owner_agent "
+                f"uses non-memory context '{context_name}' ({context_boundary.artifact_kind})"
+            )
+        if context_name == "CandidateProfile" and context_boundary.artifact_kind != "memory":
+            errors.append("Context 'CandidateProfile' must map to memory, not project profile")
 
 
 artifact_boundary_registry = ArtifactBoundaryRegistry()

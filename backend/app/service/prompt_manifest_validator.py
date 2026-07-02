@@ -81,6 +81,7 @@ class PromptManifestValidator:
                 for workflow in self._workflow_metadata(registry)
             ],
             "artifact_boundary_kinds": self._artifact_boundary_kinds(),
+            "artifact_boundary_contexts": self._artifact_boundary_contexts(),
         }
         return GovernanceCheckResult(
             ok=not errors,
@@ -261,6 +262,11 @@ class PromptManifestValidator:
         from app.service.artifact_boundary import artifact_boundary_registry
 
         return [definition.artifact_kind for definition in artifact_boundary_registry.all()]
+
+    def _artifact_boundary_contexts(self) -> list[str]:
+        from app.service.artifact_boundary import artifact_boundary_registry
+
+        return [definition.context_name for definition in artifact_boundary_registry.all_contexts()]
 
     def _duplicates(self, values: tuple[str, ...]) -> tuple[str, ...]:
         seen = set()
