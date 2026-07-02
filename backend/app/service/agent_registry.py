@@ -2,7 +2,22 @@ from dataclasses import dataclass
 from typing import Iterable
 
 from app.service.prompt_manifest_validator import GovernanceCheckResult
-from app.service.prompt_registry import PromptDefinition, PromptRegistry, prompt_registry
+from app.service.prompt_registry import AgentMetadata, PromptDefinition, PromptRegistry, prompt_registry
+
+
+ALLOWED_AGENT_CATEGORIES = frozenset(
+    {
+        "analysis",
+        "planning",
+        "runtime",
+        "runtime_judgement",
+        "memory",
+        "evaluation",
+        "profile",
+        "verification",
+        "artifact_generation",
+    }
+)
 
 # 表示Agent绑定的一个prompt/task
 @dataclass(frozen=True)
@@ -21,6 +36,10 @@ class AgentPromptBinding:
 class AgentDefinition:
     agent_name: str
     prompts: tuple[AgentPromptBinding, ...]
+    category: str | None = None
+    responsibility: str | None = None
+    owns: tuple[str, ...] = ()
+    not_responsible_for: tuple[str, ...] = ()
 
     @property
     def prompt_ids(self) -> tuple[str, ...]:
@@ -95,7 +114,9 @@ class AgentRegistry:
             errors.append("Agent registry has no agent definitions")
 
         for definition in definitions:
-            self._validate_definition(definition, errors)
+            self._validate_definition(definition, errors, warnings)
+
+        self._validate_orphan_metadata(definitions, errors)
 
         multi_prompt_agents = [
             definition.agent_name
@@ -107,6 +128,8 @@ class AgentRegistry:
             "agent_names": [definition.agent_name for definition in definitions],
             "prompt_count": sum(len(definition.prompts) for definition in definitions),
             "multi_prompt_agents": multi_prompt_agents,
+            "categories": sorted({definition.category for definition in definitions if definition.category}),
+            "allowed_categories": sorted(ALLOWED_AGENT_CATEGORIES),
         }
         return GovernanceCheckResult(
             ok=not errors,
@@ -133,24 +156,66 @@ class AgentRegistry:
                     required_evidence=definition.required_evidence,
                 )
             )
+        metadata_by_agent = {
+            metadata.agent_name: metadata
+            for metadata in self._all_agent_metadata()
+        }
         return {
-            agent_name: AgentDefinition(
-                agent_name=agent_name,
-                prompts=tuple(bindings),
-            )
+            agent_name: self._definition_from_group(agent_name, tuple(bindings), metadata_by_agent)
             for agent_name, bindings in grouped.items()
         }
+
+    def _definition_from_group(
+        self,
+        agent_name: str,
+        bindings: tuple[AgentPromptBinding, ...],
+        metadata_by_agent: dict[str, AgentMetadata],
+    ) -> AgentDefinition:
+        metadata = self._metadata(metadata_by_agent, agent_name)
+        return AgentDefinition(
+            agent_name=agent_name,
+            prompts=bindings,
+            category=metadata.category,
+            responsibility=metadata.responsibility,
+            owns=metadata.owns,
+            not_responsible_for=metadata.not_responsible_for,
+        )
+
+    def _metadata(
+        self,
+        metadata_by_agent: dict[str, AgentMetadata],
+        agent_name: str,
+    ) -> AgentMetadata:
+        metadata = metadata_by_agent.get(agent_name)
+        if metadata:
+            return metadata
+        return AgentMetadata(
+            agent_name=agent_name,
+            category="",
+            responsibility="",
+        )
 
     def _validate_definition(
         self,
         definition: AgentDefinition,
         errors: list[str],
+        warnings: list[str],
     ) -> None:
         prefix = f"Agent '{definition.agent_name}'"
         if not definition.agent_name:
             errors.append("Agent definition missing agent_name")
         if not definition.prompts:
             errors.append(f"{prefix} has no prompt bindings")
+        if not definition.category:
+            errors.append(f"{prefix} missing category")
+        elif definition.category not in ALLOWED_AGENT_CATEGORIES:
+            errors.append(f"{prefix} has unknown category: {definition.category}")
+        if not definition.responsibility:
+            errors.append(f"{prefix} missing responsibility")
+        if not definition.owns:
+            warnings.append(f"{prefix} has empty owns boundary")
+        if not definition.not_responsible_for:
+            warnings.append(f"{prefix} has empty not_responsible_for boundary")
 
         duplicate_prompt_ids = self._duplicates(definition.prompt_ids)
         for prompt_id in duplicate_prompt_ids:
@@ -160,6 +225,13 @@ class AgentRegistry:
         for task in duplicate_tasks:
             errors.append(f"{prefix} has duplicate task binding: {task}")
 
+        for task in definition.tasks:
+            if task not in definition.owns:
+                errors.append(f"{prefix} task is not declared in owns boundary: {task}")
+        for owned_task in definition.owns:
+            if owned_task not in definition.tasks:
+                warnings.append(f"{prefix} owns boundary has no prompt task: {owned_task}")
+
         for binding in definition.prompts:
             binding_prefix = f"{prefix} prompt '{binding.prompt_id}'"
             self._require_value(binding_prefix, "prompt_id", binding.prompt_id, errors)
@@ -167,6 +239,21 @@ class AgentRegistry:
             self._require_value(binding_prefix, "task", binding.task, errors)
             self._require_value(binding_prefix, "input_schema", binding.input_schema, errors)
             self._require_value(binding_prefix, "output_schema", binding.output_schema, errors)
+
+    def _validate_orphan_metadata(
+        self,
+        definitions: tuple[AgentDefinition, ...],
+        errors: list[str],
+    ) -> None:
+        defined_agents = {definition.agent_name for definition in definitions}
+        for metadata in self._all_agent_metadata():
+            if metadata.agent_name not in defined_agents:
+                errors.append(f"Agent metadata has no prompt owner: {metadata.agent_name}")
+
+    def _all_agent_metadata(self) -> tuple[AgentMetadata, ...]:
+        if not hasattr(self.prompts, "all_agent_metadata"):
+            return ()
+        return self.prompts.all_agent_metadata()
 
     def _require_value(
         self,

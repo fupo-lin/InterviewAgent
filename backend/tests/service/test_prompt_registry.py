@@ -25,6 +25,16 @@ def valid_prompt_item(prompt_id: str = "test_prompt") -> dict:
     }
 
 
+def valid_agent_item() -> dict:
+    return {
+        "agent_name": "TestAgent",
+        "category": "analysis",
+        "responsibility": "Validate prompt registry loading in tests.",
+        "owns": ["test_task"],
+        "not_responsible_for": ["runtime execution"],
+    }
+
+
 def write_manifest(temp_dir: tempfile.TemporaryDirectory, content: dict) -> Path:
     manifest_path = Path(temp_dir.name) / "manifest.json"
     manifest_path.write_text(json.dumps(content), encoding="utf-8")
@@ -48,6 +58,8 @@ class PromptRegistryTest(unittest.TestCase):
         registry = PromptRegistry()
 
         resume_rewrite = registry.get("resume_rewrite")
+        metadata = registry.agent_metadata("ResumeRewriteAgent")
+
         self.assertEqual(resume_rewrite.prompt_file, "resume_rewrite.txt")
         self.assertEqual(resume_rewrite.version, "3.0.0")
         self.assertEqual(resume_rewrite.owner_agent, "ResumeRewriteAgent")
@@ -56,6 +68,9 @@ class PromptRegistryTest(unittest.TestCase):
         self.assertEqual(resume_rewrite.output_schema, "ResumeRewriteResult.v1")
         self.assertEqual(resume_rewrite.required_context, ("ResumeDocument", "ResumeProfile"))
         self.assertEqual(resume_rewrite.required_evidence, ("resume_claim", "authenticity_check"))
+        self.assertIsNotNone(metadata)
+        self.assertEqual(metadata.category, "artifact_generation")
+        self.assertEqual(metadata.owns, ("resume_rewrite",))
         self.assertEqual(registry.prompt_file("followup"), "followup.txt")
 
     def test_current_manifest_prompt_files_exist(self):
@@ -74,6 +89,15 @@ class PromptRegistryTest(unittest.TestCase):
                 self.assertIsInstance(definition.required_context, tuple)
                 self.assertIsInstance(definition.optional_context, tuple)
                 self.assertIsInstance(definition.required_evidence, tuple)
+
+    def test_current_manifest_agent_metadata_exists_for_prompt_owners(self):
+        registry = PromptRegistry()
+
+        owner_agents = {definition.owner_agent for definition in registry.all()}
+        metadata_agents = {metadata.agent_name for metadata in registry.all_agent_metadata()}
+
+        self.assertTrue(owner_agents)
+        self.assertEqual(owner_agents, metadata_agents)
 
     def test_manifest_must_contain_prompt_list(self):
         manifest_path = self.write_manifest({"prompts": {}})
@@ -101,6 +125,33 @@ class PromptRegistryTest(unittest.TestCase):
         manifest_path = self.write_manifest({"prompts": [item, dict(item)]})
 
         with self.assertRaisesRegex(ValueError, "duplicate prompt_id"):
+            PromptRegistry(manifest_path=manifest_path)
+
+    def test_manifest_rejects_duplicate_agent_names(self):
+        item = valid_prompt_item()
+        agent = valid_agent_item()
+        manifest_path = self.write_manifest({"agents": [agent, dict(agent)], "prompts": [item]})
+
+        with self.assertRaisesRegex(ValueError, "duplicate agent_name"):
+            PromptRegistry(manifest_path=manifest_path)
+
+    def test_manifest_rejects_invalid_agents_section_shape(self):
+        item = valid_prompt_item()
+        manifest_path = self.write_manifest({"agents": {}, "prompts": [item]})
+
+        with self.assertRaisesRegex(ValueError, "agents"):
+            PromptRegistry(manifest_path=manifest_path)
+
+    def test_manifest_rejects_missing_agent_metadata_required_fields(self):
+        item = valid_prompt_item()
+        manifest_path = self.write_manifest(
+            {
+                "agents": [{"agent_name": "TestAgent"}],
+                "prompts": [item],
+            }
+        )
+
+        with self.assertRaisesRegex(ValueError, "Agent metadata missing required fields"):
             PromptRegistry(manifest_path=manifest_path)
 
     def test_manifest_rejects_missing_prompt_file(self):

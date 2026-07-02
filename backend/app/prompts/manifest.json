@@ -1,4 +1,83 @@
 {
+  "agents": [
+    {
+      "agent_name": "InterviewExecutorAgent",
+      "category": "runtime",
+      "responsibility": "Generate interview questions and follow-up questions during an active interview session.",
+      "owns": ["interviewer_system_instruction", "followup_generation"],
+      "not_responsible_for": ["final evaluation", "candidate memory persistence", "resume rewriting"]
+    },
+    {
+      "agent_name": "SessionMemoryAgent",
+      "category": "memory",
+      "responsibility": "Maintain session-scoped conversation summary and candidate memory from interview transcript deltas.",
+      "owns": ["session_candidate_memory_generation", "conversation_summary_generation"],
+      "not_responsible_for": ["project-level candidate profile", "final evaluation", "resume rewriting"]
+    },
+    {
+      "agent_name": "JDAnalysisAgent",
+      "category": "analysis",
+      "responsibility": "Extract structured requirements and evaluation signals from the job description.",
+      "owns": ["jd_analysis"],
+      "not_responsible_for": ["resume analysis", "candidate evaluation", "interview execution"]
+    },
+    {
+      "agent_name": "ResumeAnalysisAgent",
+      "category": "analysis",
+      "responsibility": "Extract structured candidate claims and resume facts from the original resume document.",
+      "owns": ["resume_analysis"],
+      "not_responsible_for": ["authenticity judgement", "resume rewriting", "interview evaluation"]
+    },
+    {
+      "agent_name": "GapAnalysisAgent",
+      "category": "analysis",
+      "responsibility": "Compare JD requirements with resume claims to identify matched points and gaps.",
+      "owns": ["gap_analysis"],
+      "not_responsible_for": ["interview plan execution", "candidate memory persistence", "resume rewriting"]
+    },
+    {
+      "agent_name": "InterviewPlanAgent",
+      "category": "planning",
+      "responsibility": "Create an interview plan from available JD, resume, and gap analysis context.",
+      "owns": ["interview_plan_generation"],
+      "not_responsible_for": ["asking runtime questions", "topic completion judgement", "final evaluation"]
+    },
+    {
+      "agent_name": "TopicJudgeAgent",
+      "category": "runtime_judgement",
+      "responsibility": "Judge whether the current interview topic or probe point has been sufficiently covered.",
+      "owns": ["topic_completion_judge"],
+      "not_responsible_for": ["question generation", "final evaluation", "candidate profile generation"]
+    },
+    {
+      "agent_name": "EvaluationAgent",
+      "category": "evaluation",
+      "responsibility": "Produce final interview evaluation from interview answers and execution evidence.",
+      "owns": ["evaluation_generation"],
+      "not_responsible_for": ["session memory updates", "resume authenticity judgement", "resume rewriting"]
+    },
+    {
+      "agent_name": "ProjectCandidateProfileAgent",
+      "category": "profile",
+      "responsibility": "Generate versioned project-level candidate capability profile from resume, interview, and evaluation evidence.",
+      "owns": ["project_candidate_profile_generation"],
+      "not_responsible_for": ["session memory summary", "final interview score", "resume rewriting"]
+    },
+    {
+      "agent_name": "ResumeAuthenticityAgent",
+      "category": "verification",
+      "responsibility": "Assess whether resume claims are supported by interview answers and execution probes.",
+      "owns": ["resume_authenticity_check"],
+      "not_responsible_for": ["resume rewriting", "project-level capability modeling", "question generation"]
+    },
+    {
+      "agent_name": "ResumeRewriteAgent",
+      "category": "artifact_generation",
+      "responsibility": "Rewrite the resume using verified claims, candidate profile, and target role context.",
+      "owns": ["resume_rewrite"],
+      "not_responsible_for": ["authenticity judgement", "interview evaluation", "candidate memory persistence"]
+    }
+  ],
   "prompts": [
     {
       "prompt_id": "interviewer",

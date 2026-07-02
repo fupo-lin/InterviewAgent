@@ -35,6 +35,10 @@ def get_agent(agent_name: str):
 def _definition_response(definition: AgentDefinition) -> AgentDefinitionResponse:
     return AgentDefinitionResponse(
         agentName=definition.agent_name,
+        category=definition.category,
+        responsibility=definition.responsibility,
+        owns=list(definition.owns),
+        notResponsibleFor=list(definition.not_responsible_for),
         promptIds=list(definition.prompt_ids),
         tasks=list(definition.tasks),
         inputSchemas=list(definition.input_schemas),

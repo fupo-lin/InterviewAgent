@@ -6,7 +6,7 @@ from service.support import configure_backend_imports
 configure_backend_imports()
 
 from app.service.agent_registry import AgentDefinitionValidator, AgentRegistry
-from app.service.prompt_registry import PromptDefinition, PromptRegistry
+from app.service.prompt_registry import AgentMetadata, PromptDefinition, PromptRegistry
 
 
 def prompt_definition(**overrides) -> PromptDefinition:
@@ -27,7 +27,34 @@ def prompt_definition(**overrides) -> PromptDefinition:
 
 
 def prompt_registry_with(*definitions: PromptDefinition):
-    return SimpleNamespace(all=lambda: tuple(definitions))
+    agent_names = sorted({definition.owner_agent for definition in definitions})
+    return SimpleNamespace(
+        all=lambda: tuple(definitions),
+        all_agent_metadata=lambda: tuple(
+            AgentMetadata(
+                agent_name=agent_name,
+                category="analysis",
+                responsibility=f"{agent_name} test responsibility.",
+                owns=tuple(
+                    definition.task
+                    for definition in definitions
+                    if definition.owner_agent == agent_name
+                ),
+                not_responsible_for=("runtime execution",),
+            )
+            for agent_name in agent_names
+        ),
+    )
+
+
+def prompt_registry_with_metadata(
+    definitions: tuple[PromptDefinition, ...],
+    metadata: tuple[AgentMetadata, ...],
+):
+    return SimpleNamespace(
+        all=lambda: tuple(definitions),
+        all_agent_metadata=lambda: tuple(metadata),
+    )
 
 
 class AgentRegistryTest(unittest.TestCase):
@@ -37,6 +64,10 @@ class AgentRegistryTest(unittest.TestCase):
         definition = registry.get("ResumeRewriteAgent")
 
         self.assertEqual(definition.agent_name, "ResumeRewriteAgent")
+        self.assertEqual(definition.category, "artifact_generation")
+        self.assertIn("Rewrite the resume", definition.responsibility)
+        self.assertEqual(definition.owns, ("resume_rewrite",))
+        self.assertIn("authenticity judgement", definition.not_responsible_for)
         self.assertEqual(definition.prompt_ids, ("resume_rewrite",))
         self.assertEqual(definition.tasks, ("resume_rewrite",))
         self.assertEqual(definition.input_schemas, ("ResumeRewriteInput.v1",))
@@ -95,6 +126,8 @@ class AgentRegistryTest(unittest.TestCase):
         self.assertIn("ResumeRewriteAgent", result.metadata["agent_names"])
         self.assertIn("InterviewExecutorAgent", result.metadata["multi_prompt_agents"])
         self.assertIn("SessionMemoryAgent", result.metadata["multi_prompt_agents"])
+        self.assertIn("artifact_generation", result.metadata["categories"])
+        self.assertIn("runtime", result.metadata["allowed_categories"])
 
     def test_validation_rejects_duplicate_task_under_same_agent(self):
         registry = AgentRegistry(
@@ -126,6 +159,71 @@ class AgentRegistryTest(unittest.TestCase):
         self.assertIn("Agent 'TestAgent' prompt '' missing task", result.errors)
         self.assertIn("Agent 'TestAgent' prompt '' missing input_schema", result.errors)
         self.assertIn("Agent 'TestAgent' prompt '' missing output_schema", result.errors)
+
+    def test_validation_rejects_missing_agent_metadata(self):
+        registry = AgentRegistry(
+            prompt_registry_with_metadata(
+                definitions=(prompt_definition(),),
+                metadata=(),
+            )
+        )
+
+        result = registry.validate()
+
+        self.assertFalse(result.ok)
+        self.assertIn("Agent 'TestAgent' missing category", result.errors)
+        self.assertIn("Agent 'TestAgent' missing responsibility", result.errors)
+
+    def test_validation_rejects_unknown_category_and_missing_owns_task(self):
+        registry = AgentRegistry(
+            prompt_registry_with_metadata(
+                definitions=(prompt_definition(),),
+                metadata=(
+                    AgentMetadata(
+                        agent_name="TestAgent",
+                        category="unknown",
+                        responsibility="Test responsibility.",
+                        owns=("other_task",),
+                        not_responsible_for=("runtime execution",),
+                    ),
+                ),
+            )
+        )
+
+        result = registry.validate()
+
+        self.assertFalse(result.ok)
+        self.assertIn("Agent 'TestAgent' has unknown category: unknown", result.errors)
+        self.assertIn("Agent 'TestAgent' task is not declared in owns boundary: test_task", result.errors)
+        self.assertIn("Agent 'TestAgent' owns boundary has no prompt task: other_task", result.warnings)
+
+    def test_validation_rejects_orphan_agent_metadata(self):
+        registry = AgentRegistry(
+            prompt_registry_with_metadata(
+                definitions=(prompt_definition(),),
+                metadata=(
+                    AgentMetadata(
+                        agent_name="TestAgent",
+                        category="analysis",
+                        responsibility="Test responsibility.",
+                        owns=("test_task",),
+                        not_responsible_for=("runtime execution",),
+                    ),
+                    AgentMetadata(
+                        agent_name="OrphanAgent",
+                        category="analysis",
+                        responsibility="Orphan responsibility.",
+                        owns=("orphan_task",),
+                        not_responsible_for=("runtime execution",),
+                    ),
+                ),
+            )
+        )
+
+        result = registry.validate()
+
+        self.assertFalse(result.ok)
+        self.assertIn("Agent metadata has no prompt owner: OrphanAgent", result.errors)
 
     def test_definition_validator_accepts_current_prompt_binding(self):
         prompt_registry = PromptRegistry()

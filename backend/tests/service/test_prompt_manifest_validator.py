@@ -6,7 +6,7 @@ from service.support import configure_backend_imports
 configure_backend_imports()
 
 from app.service.prompt_manifest_validator import GovernanceCheckResult, PromptManifestValidator
-from app.service.prompt_registry import PromptDefinition, PromptRegistry
+from app.service.prompt_registry import AgentMetadata, PromptDefinition, PromptRegistry
 from app.service.evidence_contract import ALLOWED_EVIDENCE_TYPES
 
 
@@ -31,6 +31,23 @@ def registry_with(*definitions: PromptDefinition):
     return SimpleNamespace(
         manifest_path="memory://manifest.json",
         all=lambda: tuple(definitions),
+        all_agent_metadata=lambda: (
+            AgentMetadata(
+                agent_name="TestAgent",
+                category="analysis",
+                responsibility="Test agent responsibility.",
+                owns=("test_task",),
+                not_responsible_for=("runtime execution",),
+            ),
+        ),
+    )
+
+
+def registry_with_metadata(definitions: tuple[PromptDefinition, ...], metadata: tuple[AgentMetadata, ...]):
+    return SimpleNamespace(
+        manifest_path="memory://manifest.json",
+        all=lambda: tuple(definitions),
+        all_agent_metadata=lambda: tuple(metadata),
     )
 
 
@@ -48,6 +65,8 @@ class PromptManifestValidatorTest(unittest.TestCase):
         self.assertIn("resume_rewrite", result.metadata["prompt_ids"])
         self.assertIn("ResumeRewriteAgent", result.metadata["owner_agents"])
         self.assertIn("interview_answer", result.metadata["allowed_evidence_types"])
+        self.assertIn("artifact_generation", result.metadata["agent_categories"])
+        self.assertIn("analysis", result.metadata["allowed_agent_categories"])
         self.assertEqual(result.metadata["allowed_evidence_types"], sorted(ALLOWED_EVIDENCE_TYPES))
 
     def test_registry_validate_uses_manifest_validator(self):
@@ -164,6 +183,63 @@ class PromptManifestValidatorTest(unittest.TestCase):
 
         self.assertFalse(result.ok)
         self.assertIn("Duplicate prompt_id: same_prompt", result.errors)
+
+    def test_missing_agent_metadata_is_error(self):
+        result = self.validator.validate(
+            registry_with_metadata(
+                definitions=(prompt_definition(),),
+                metadata=(),
+            )
+        )
+
+        self.assertFalse(result.ok)
+        self.assertIn("Agent 'TestAgent' missing metadata definition", result.errors)
+
+    def test_unknown_agent_category_and_missing_boundaries_are_reported(self):
+        result = self.validator.validate(
+            registry_with_metadata(
+                definitions=(prompt_definition(),),
+                metadata=(
+                    AgentMetadata(
+                        agent_name="TestAgent",
+                        category="unknown",
+                        responsibility="Test agent responsibility.",
+                    ),
+                ),
+            )
+        )
+
+        self.assertFalse(result.ok)
+        self.assertIn("Agent 'TestAgent' has unknown category: unknown", result.errors)
+        self.assertIn("Agent 'TestAgent' task is not declared in owns boundary: test_task", result.errors)
+        self.assertIn("Agent 'TestAgent' has empty owns boundary", result.warnings)
+        self.assertIn("Agent 'TestAgent' has empty not_responsible_for boundary", result.warnings)
+
+    def test_orphan_agent_metadata_is_error(self):
+        result = self.validator.validate(
+            registry_with_metadata(
+                definitions=(prompt_definition(),),
+                metadata=(
+                    AgentMetadata(
+                        agent_name="TestAgent",
+                        category="analysis",
+                        responsibility="Test agent responsibility.",
+                        owns=("test_task",),
+                        not_responsible_for=("runtime execution",),
+                    ),
+                    AgentMetadata(
+                        agent_name="OrphanAgent",
+                        category="analysis",
+                        responsibility="Orphan metadata.",
+                        owns=("orphan_task",),
+                        not_responsible_for=("runtime execution",),
+                    ),
+                ),
+            )
+        )
+
+        self.assertFalse(result.ok)
+        self.assertIn("Agent metadata has no prompt owner: OrphanAgent", result.errors)
 
 
 if __name__ == "__main__":

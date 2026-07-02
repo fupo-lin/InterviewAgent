@@ -19,6 +19,10 @@ class AgentPromptBindingResponse(BaseModel):
 
 class AgentDefinitionResponse(BaseModel):
     agent_name: str = Field(alias="agentName")
+    category: str | None = None
+    responsibility: str | None = None
+    owns: list[str] = Field(default_factory=list)
+    not_responsible_for: list[str] = Field(default_factory=list, alias="notResponsibleFor")
     prompt_ids: list[str] = Field(default_factory=list, alias="promptIds")
     tasks: list[str] = Field(default_factory=list)
     input_schemas: list[str] = Field(default_factory=list, alias="inputSchemas")

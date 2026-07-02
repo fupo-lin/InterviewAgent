@@ -8,6 +8,15 @@ MANIFEST_PATH = PROMPT_DIR / "manifest.json"
 
 
 @dataclass(frozen=True)
+class AgentMetadata:
+    agent_name: str
+    category: str
+    responsibility: str
+    owns: tuple[str, ...] = field(default_factory=tuple)
+    not_responsible_for: tuple[str, ...] = field(default_factory=tuple)
+
+
+@dataclass(frozen=True)
 class PromptDefinition:
     prompt_id: str
     prompt_file: str
@@ -22,12 +31,16 @@ class PromptDefinition:
 
 
 class PromptRegistry:
-    #初始化的时候加载manifest文件，并将其中的prompt以prompt_id为key，PromptDefinition为value存入字典中
     def __init__(self, manifest_path: Path = MANIFEST_PATH) -> None:
         self.manifest_path = manifest_path
+        manifest = self._load_manifest(manifest_path)
         self._definitions = {
             item.prompt_id: item
-            for item in self._load_manifest(manifest_path)
+            for item in manifest["prompts"]
+        }
+        self._agent_metadata = {
+            item.agent_name: item
+            for item in manifest["agents"]
         }
 
     def get(self, prompt_id: str) -> PromptDefinition:
@@ -42,13 +55,18 @@ class PromptRegistry:
     def all(self) -> tuple[PromptDefinition, ...]:
         return tuple(self._definitions.values())
 
+    def agent_metadata(self, agent_name: str) -> AgentMetadata | None:
+        return self._agent_metadata.get(agent_name)
+
+    def all_agent_metadata(self) -> tuple[AgentMetadata, ...]:
+        return tuple(self._agent_metadata.values())
+
     def validate(self):
         from app.service.prompt_manifest_validator import PromptManifestValidator
 
         return PromptManifestValidator().validate(self)
 
-# 检查json文件是否存在，并且确保里面有prompts列表且没有重复的prompt_id
-    def _load_manifest(self, manifest_path: Path) -> list[PromptDefinition]:
+    def _load_manifest(self, manifest_path: Path) -> dict:
         if not manifest_path.exists():
             raise FileNotFoundError(f"Prompt manifest not found: {manifest_path}")
 
@@ -57,11 +75,23 @@ class PromptRegistry:
         if not isinstance(prompts, list):
             raise ValueError("Prompt manifest must contain a 'prompts' list")
 
-        definitions = [self._definition_from_item(item) for item in prompts]
-        prompt_ids = [item.prompt_id for item in definitions]
+        prompt_definitions = [self._definition_from_item(item) for item in prompts]
+        prompt_ids = [item.prompt_id for item in prompt_definitions]
         if len(prompt_ids) != len(set(prompt_ids)):
             raise ValueError("Prompt manifest contains duplicate prompt_id values")
-        return definitions
+
+        agent_items = data.get("agents", [])
+        if not isinstance(agent_items, list):
+            raise ValueError("Prompt manifest 'agents' must be a list when provided")
+        agent_metadata = [self._agent_metadata_from_item(item) for item in agent_items]
+        agent_names = [item.agent_name for item in agent_metadata]
+        if len(agent_names) != len(set(agent_names)):
+            raise ValueError("Prompt manifest contains duplicate agent_name values")
+
+        return {
+            "prompts": prompt_definitions,
+            "agents": agent_metadata,
+        }
 
     def _definition_from_item(self, item: dict) -> PromptDefinition:
         required_fields = (
@@ -73,7 +103,6 @@ class PromptRegistry:
             "input_schema",
             "output_schema",
         )
-        # 等价于先循环，再判断if not 再missing_fields = []
         missing_fields = [field_name for field_name in required_fields if not item.get(field_name)]
         if missing_fields:
             raise ValueError(f"Prompt definition missing required fields: {missing_fields}")
@@ -93,6 +122,24 @@ class PromptRegistry:
             required_context=tuple(item.get("required_context") or ()),
             optional_context=tuple(item.get("optional_context") or ()),
             required_evidence=tuple(item.get("required_evidence") or ()),
+        )
+
+    def _agent_metadata_from_item(self, item: dict) -> AgentMetadata:
+        required_fields = (
+            "agent_name",
+            "category",
+            "responsibility",
+        )
+        missing_fields = [field_name for field_name in required_fields if not item.get(field_name)]
+        if missing_fields:
+            raise ValueError(f"Agent metadata missing required fields: {missing_fields}")
+
+        return AgentMetadata(
+            agent_name=item["agent_name"],
+            category=item["category"],
+            responsibility=item["responsibility"],
+            owns=tuple(item.get("owns") or ()),
+            not_responsible_for=tuple(item.get("not_responsible_for") or ()),
         )
 
 
