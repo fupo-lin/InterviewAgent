@@ -1,5 +1,16 @@
 from dataclasses import dataclass
 
+from app.schemas.agent_contract import (
+    GapAnalysisInputV1,
+    GapAnalysisV1,
+    InterviewPlanInputV1,
+    InterviewPlanV1,
+    JDAnalysisInputV1,
+    JDAnalysisV1,
+    ProjectAgentContextRefs,
+    ResumeAnalysisInputV1,
+    ResumeProfileV1,
+)
 from app.service.agent_run_service import AgentRunExecutor, AgentSpec
 from app.service.agent_runtime import AgentRuntimeConfig, BaseAgent
 from app.service.evidence_service import EvidencePacketBuilder
@@ -54,6 +65,18 @@ class _ProjectSpecAgent(BaseAgent):
 
 class JDAnalysisAgent(_ProjectSpecAgent):
     prompt_id = "jd_analysis"
+    input_model = JDAnalysisInputV1
+    output_model = JDAnalysisV1
+
+    def input_contract_payload(self, agent_input: JDAnalysisAgentInput) -> dict:
+        return {
+            "project_id": agent_input.project_id,
+            "jd_id": agent_input.jd.id,
+            "content_length": len(agent_input.jd.raw_content or ""),
+            "has_title": bool(agent_input.jd.title),
+            "has_company_name": bool(agent_input.jd.company_name),
+            "has_source_url": bool(agent_input.jd.source_url),
+        }
 
     def build_spec(self, agent_input: JDAnalysisAgentInput) -> AgentSpec:
         return self.spec_builder.jd_analysis(
@@ -71,6 +94,17 @@ class JDAnalysisAgent(_ProjectSpecAgent):
 
 class ResumeAnalysisAgent(_ProjectSpecAgent):
     prompt_id = "resume_analysis"
+    input_model = ResumeAnalysisInputV1
+    output_model = ResumeProfileV1
+
+    def input_contract_payload(self, agent_input: ResumeAnalysisAgentInput) -> dict:
+        return {
+            "project_id": agent_input.project_id,
+            "resume_id": agent_input.resume.id,
+            "content_length": len(agent_input.resume.raw_content or ""),
+            "file_name": agent_input.resume.file_name,
+            "file_type": agent_input.resume.file_type,
+        }
 
     def build_spec(self, agent_input: ResumeAnalysisAgentInput) -> AgentSpec:
         return self.spec_builder.resume_analysis(
@@ -88,6 +122,25 @@ class ResumeAnalysisAgent(_ProjectSpecAgent):
 
 class GapAnalysisAgent(_ProjectSpecAgent):
     prompt_id = "gap_analysis"
+    input_model = GapAnalysisInputV1
+    output_model = GapAnalysisV1
+
+    def input_contract_payload(self, agent_input: GapAnalysisAgentInput) -> dict:
+        return {
+            "project_id": agent_input.project_id,
+            "jd_analysis_id": agent_input.jd_analysis.id,
+            "resume_profile_id": agent_input.resume_profile.id,
+            "jd_analysis_schema_version": getattr(
+                agent_input.jd_analysis,
+                "schema_version",
+                None,
+            ),
+            "resume_profile_schema_version": getattr(
+                agent_input.resume_profile,
+                "schema_version",
+                None,
+            ),
+        }
 
     def build_spec(self, agent_input: GapAnalysisAgentInput) -> AgentSpec:
         return self.spec_builder.gap_analysis(
@@ -109,6 +162,29 @@ class GapAnalysisAgent(_ProjectSpecAgent):
 
 class InterviewPlanAgent(_ProjectSpecAgent):
     prompt_id = "interview_plan"
+    input_model = InterviewPlanInputV1
+    output_model = InterviewPlanV1
+
+    def input_contract_payload(self, agent_input: InterviewPlanAgentInput) -> dict:
+        return {
+            "project_id": agent_input.project_id,
+            "target_role": agent_input.target_role,
+            "plan_mode": agent_input.plan_mode,
+            "has_jd_analysis": bool(agent_input.jd_analysis),
+            "has_resume_profile": bool(agent_input.resume_profile),
+            "has_gap_analysis": bool(agent_input.gap_analysis),
+            "context_refs": ProjectAgentContextRefs(
+                jd_analysis_id=(
+                    agent_input.jd_analysis.id if agent_input.jd_analysis else None
+                ),
+                resume_profile_id=(
+                    agent_input.resume_profile.id if agent_input.resume_profile else None
+                ),
+                gap_analysis_id=(
+                    agent_input.gap_analysis.id if agent_input.gap_analysis else None
+                ),
+            ),
+        }
 
     def build_spec(self, agent_input: InterviewPlanAgentInput) -> AgentSpec:
         return self.spec_builder.interview_plan(

@@ -111,6 +111,19 @@ class RuntimeAgentTest(unittest.IsolatedAsyncioTestCase):
         self.llm = FakeLLM()
         self.config = AgentRuntimeConfig(model_name=self.llm.model)
 
+    def assert_contract_ok(
+        self,
+        success: dict,
+        input_schema: str,
+        output_schema: str,
+    ) -> None:
+        contract = success["input_snapshot"]["agent_contract_validation"]
+        self.assertEqual(contract["input_schema"], input_schema)
+        self.assertEqual(contract["output_schema"], output_schema)
+        self.assertTrue(contract["input_ok"])
+        self.assertTrue(contract["output_ok"])
+        self.assertEqual(contract["errors"], [])
+
     async def test_interview_executor_agent_generates_first_question(self):
         agent = InterviewExecutorAgent(self.executor, self.evidence_builder, self.llm, self.config)
         session = SimpleNamespace(id=10, project_id=1, interview_plan_id=20)
@@ -139,6 +152,7 @@ class RuntimeAgentTest(unittest.IsolatedAsyncioTestCase):
             success["input_snapshot"]["workflow_context"]["step_id"],
             "first_question",
         )
+        self.assert_contract_ok(success, "InterviewExecutorInputV1", "InterviewQuestionOutputV1")
 
     async def test_interview_executor_agent_generates_followup(self):
         agent = InterviewExecutorAgent(self.executor, self.evidence_builder, self.llm, self.config)
@@ -213,6 +227,7 @@ class RuntimeAgentTest(unittest.IsolatedAsyncioTestCase):
             success["input_snapshot"]["workflow_context"]["step_id"],
             "followup",
         )
+        self.assert_contract_ok(success, "InterviewExecutorInputV1", "InterviewQuestionOutputV1")
 
     async def test_session_memory_agent_generates_candidate_profile_memory(self):
         agent = SessionMemoryAgent(self.executor, self.evidence_builder, self.llm, self.config)
@@ -244,6 +259,7 @@ class RuntimeAgentTest(unittest.IsolatedAsyncioTestCase):
         success = self.recorder.success_calls[0]
         self.assertEqual(success["definition"].owner_agent, "SessionMemoryAgent")
         self.assertEqual(success["context_refs"]["previous_summary_id"], 201)
+        self.assert_contract_ok(success, "SessionMemoryInputV1", "SessionMemoryOutputV1")
 
     async def test_session_memory_agent_generates_conversation_summary(self):
         agent = SessionMemoryAgent(self.executor, self.evidence_builder, self.llm, self.config)
@@ -277,6 +293,7 @@ class RuntimeAgentTest(unittest.IsolatedAsyncioTestCase):
             success["input_snapshot"]["workflow_context"]["step_id"],
             "conversation_summary",
         )
+        self.assert_contract_ok(success, "SessionMemoryInputV1", "SessionMemoryOutputV1")
 
     async def test_topic_judge_agent_runs_through_agent_runtime(self):
         agent = TopicJudgeAgent(self.executor, self.evidence_builder, self.llm, self.config)
@@ -324,6 +341,39 @@ class RuntimeAgentTest(unittest.IsolatedAsyncioTestCase):
         success = self.recorder.success_calls[0]
         self.assertEqual(success["definition"].owner_agent, "TopicJudgeAgent")
         self.assertEqual(success["context_refs"]["execution_id"], 30)
+        self.assert_contract_ok(success, "TopicJudgeInputV1", "TopicJudgeResultV1")
+
+    async def test_followup_agent_records_input_contract_errors(self):
+        agent = InterviewExecutorAgent(self.executor, self.evidence_builder, self.llm, self.config)
+        session = SimpleNamespace(
+            id=10,
+            project_id=1,
+            role_name="Backend Engineer",
+            interview_plan_id=20,
+        )
+        answer_message = message(104, "", round_no=6)
+
+        await agent.run(
+            FollowupAgentInput(
+                session=session,
+                answer_message=answer_message,
+                recent_history=[answer_message],
+                candidate_profile=None,
+                conversation_summary=None,
+                plan_context=None,
+                execution_context=None,
+                candidate_profile_id=None,
+                conversation_summary_id=None,
+                execution=None,
+            )
+        )
+
+        contract = self.recorder.success_calls[0]["input_snapshot"]["agent_contract_validation"]
+        self.assertEqual(contract["input_schema"], "InterviewExecutorInputV1")
+        self.assertEqual(contract["output_schema"], "InterviewQuestionOutputV1")
+        self.assertFalse(contract["input_ok"])
+        self.assertTrue(contract["output_ok"])
+        self.assertIn("input.answer_content_length", contract["errors"][0])
 
 
 if __name__ == "__main__":

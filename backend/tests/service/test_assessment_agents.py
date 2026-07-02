@@ -43,11 +43,23 @@ class FakeLLM:
             "weaknesses": "needs metrics",
             "suggestions": "prepare numbers",
             "summary": "ok",
+            "technical_ability": "medium",
+            "project_experience": "medium",
+            "communication": "clear",
+            "improvement_suggestions": "prepare numbers",
         }, {"raw": "evaluation"}
 
     async def generate_project_candidate_profile(self, **kwargs):
         self.project_profile_calls.append(kwargs)
-        return {"summary": "project profile"}, {"raw": "project_profile"}
+        return {
+            "basic_profile": {"target_role": kwargs["target_role"]},
+            "project_experience": [],
+            "capability_profile": {},
+            "risk_profile": [],
+            "learning_needs": [],
+            "resume_optimization_focus": [],
+            "summary": "project profile",
+        }, {"raw": "project_profile"}
 
 
 def message(message_id: int, role_type: str, content: str, round_no: int = 1):
@@ -133,6 +145,12 @@ class AssessmentAgentRuntimeTest(unittest.IsolatedAsyncioTestCase):
         success = self.recorder.success_calls[0]
         self.assertEqual(success["definition"].owner_agent, "EvaluationAgent")
         self.assertEqual(success["context_refs"]["execution_id"], 30)
+        contract = success["input_snapshot"]["agent_contract_validation"]
+        self.assertEqual(contract["input_schema"], "EvaluationInputV1")
+        self.assertEqual(contract["output_schema"], "InterviewEvaluationV1")
+        self.assertTrue(contract["input_ok"])
+        self.assertTrue(contract["output_ok"])
+        self.assertEqual(contract["errors"], [])
 
     async def test_project_candidate_profile_agent_runs_through_agent_runtime(self):
         agent = ProjectCandidateProfileAgent(
@@ -166,7 +184,7 @@ class AssessmentAgentRuntimeTest(unittest.IsolatedAsyncioTestCase):
             )
         )
 
-        self.assertEqual(result.output, {"summary": "project profile"})
+        self.assertEqual(result.output["summary"], "project profile")
         self.assertEqual(result.raw_response, {"raw": "project_profile"})
         self.assertEqual(result.definition.prompt_id, "project_candidate_profile")
         self.assertEqual(result.output_schema, "ProjectCandidateProfile.v1")
@@ -182,6 +200,37 @@ class AssessmentAgentRuntimeTest(unittest.IsolatedAsyncioTestCase):
         success = self.recorder.success_calls[0]
         self.assertEqual(success["definition"].owner_agent, "ProjectCandidateProfileAgent")
         self.assertEqual(success["context_refs"]["source_session_id"], 10)
+        contract = success["input_snapshot"]["agent_contract_validation"]
+        self.assertEqual(contract["input_schema"], "ProjectCandidateProfileInputV1")
+        self.assertEqual(contract["output_schema"], "ProjectCandidateProfileV1")
+        self.assertTrue(contract["input_ok"])
+        self.assertTrue(contract["output_ok"])
+        self.assertEqual(contract["errors"], [])
+
+    async def test_project_candidate_profile_agent_records_input_contract_errors(self):
+        agent = ProjectCandidateProfileAgent(
+            agent_run_executor=self.executor,
+            evidence_builder=self.evidence_builder,
+            llm=self.llm,
+            config=self.config,
+        )
+
+        await agent.run(
+            ProjectCandidateProfileAgentInput(
+                project_id=0,
+                target_role="Backend Engineer",
+                source_session_id=None,
+                execution_state=None,
+                evaluation=None,
+                transcript_messages=[],
+                context=ProjectAgentContext(),
+            )
+        )
+
+        contract = self.recorder.success_calls[0]["input_snapshot"]["agent_contract_validation"]
+        self.assertFalse(contract["input_ok"])
+        self.assertTrue(contract["output_ok"])
+        self.assertIn("input.project_id", contract["errors"][0])
 
 
 if __name__ == "__main__":

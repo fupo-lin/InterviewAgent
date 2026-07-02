@@ -1,5 +1,12 @@
 from dataclasses import dataclass
 
+from app.schemas.agent_contract import (
+    EvaluationInputV1,
+    InterviewEvaluationV1,
+    ProjectAgentContextRefs,
+    ProjectCandidateProfileInputV1,
+    ProjectCandidateProfileV1,
+)
 from app.service.agent_run_service import AgentRunExecutor, AgentSpec
 from app.service.agent_runtime import AgentRuntimeConfig, BaseAgent
 from app.service.evidence_service import EvidencePacketBuilder
@@ -32,6 +39,8 @@ class ProjectCandidateProfileAgentInput:
 
 class EvaluationAgent(BaseAgent[EvaluationAgentInput]):
     prompt_id = "evaluation"
+    input_model = EvaluationInputV1
+    output_model = InterviewEvaluationV1
 
     def __init__(
         self,
@@ -46,6 +55,27 @@ class EvaluationAgent(BaseAgent[EvaluationAgentInput]):
             agent_run_executor=agent_run_executor,
             evidence_builder=evidence_builder,
         )
+
+    def input_contract_payload(self, agent_input: EvaluationAgentInput) -> dict:
+        session = agent_input.session
+        execution = agent_input.execution
+        return {
+            "session_id": session.id,
+            "project_id": session.project_id,
+            "history_message_count": len(agent_input.history or []),
+            "full_history_message_count": len(agent_input.full_history or []),
+            "execution_id": execution.id if execution else None,
+            "candidate_profile_summary_id": (
+                agent_input.candidate_profile.id if agent_input.candidate_profile else None
+            ),
+            "conversation_summary_id": (
+                agent_input.conversation_summary.id
+                if agent_input.conversation_summary
+                else None
+            ),
+            "interview_plan_id": session.interview_plan_id,
+            "has_plan_context": bool(agent_input.plan_context),
+        }
 
     def build_spec(self, agent_input: EvaluationAgentInput) -> AgentSpec:
         return self.spec_builder.evaluation(
@@ -79,6 +109,8 @@ class EvaluationAgent(BaseAgent[EvaluationAgentInput]):
 
 class ProjectCandidateProfileAgent(BaseAgent[ProjectCandidateProfileAgentInput]):
     prompt_id = "project_candidate_profile"
+    input_model = ProjectCandidateProfileInputV1
+    output_model = ProjectCandidateProfileV1
 
     def __init__(
         self,
@@ -93,6 +125,24 @@ class ProjectCandidateProfileAgent(BaseAgent[ProjectCandidateProfileAgentInput])
             agent_run_executor=agent_run_executor,
             evidence_builder=evidence_builder,
         )
+
+    def input_contract_payload(self, agent_input: ProjectCandidateProfileAgentInput) -> dict:
+        context = agent_input.context
+        return {
+            "project_id": agent_input.project_id,
+            "target_role": agent_input.target_role,
+            "source_session_id": agent_input.source_session_id,
+            "has_evaluation": bool(agent_input.evaluation),
+            "transcript_message_count": len(agent_input.transcript_messages or []),
+            "context_refs": ProjectAgentContextRefs(
+                jd_analysis_id=context.jd_analysis.id if context.jd_analysis else None,
+                resume_profile_id=context.resume_profile.id if context.resume_profile else None,
+                gap_analysis_id=context.gap_analysis.id if context.gap_analysis else None,
+                project_candidate_profile_id=(
+                    context.candidate_profile.id if context.candidate_profile else None
+                ),
+            ),
+        }
 
     def build_spec(self, agent_input: ProjectCandidateProfileAgentInput) -> AgentSpec:
         return self.spec_builder.project_candidate_profile(

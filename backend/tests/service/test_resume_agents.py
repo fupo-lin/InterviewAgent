@@ -38,11 +38,27 @@ class FakeLLM:
 
     async def generate_resume_authenticity_report(self, **kwargs):
         self.authenticity_calls.append(kwargs)
-        return {"overall_authenticity": "medium"}, {"raw": "authenticity"}
+        return {
+            "overall_authenticity": "medium",
+            "claim_checks": [],
+            "unsupported_claims": [],
+            "strongly_supported_claims": [],
+            "rewrite_constraints": [],
+            "missing_evidence_to_collect": [],
+            "summary": "ok",
+        }, {"raw": "authenticity"}
 
     async def generate_resume_rewrite(self, **kwargs):
         self.rewrite_calls.append(kwargs)
-        return {"rewrite_mode": kwargs["rewrite_mode"]}, {"raw": "rewrite"}
+        return {
+            "rewrite_mode": kwargs["rewrite_mode"],
+            "summary": "ok",
+            "rewritten_sections": [],
+            "missing_info_to_collect": [],
+            "risk_warnings": [],
+            "ats_keywords": [],
+            "final_suggestions": [],
+        }, {"raw": "rewrite"}
 
 
 def artifact(artifact_id: int, content: dict):
@@ -90,7 +106,7 @@ class ResumeAgentRuntimeTest(unittest.IsolatedAsyncioTestCase):
             )
         )
 
-        self.assertEqual(result.output, {"overall_authenticity": "medium"})
+        self.assertEqual(result.output["overall_authenticity"], "medium")
         self.assertEqual(result.raw_response, {"raw": "authenticity"})
         self.assertEqual(result.agent_run.id, 701)
         self.assertEqual(result.definition.prompt_id, "resume_authenticity")
@@ -105,6 +121,12 @@ class ResumeAgentRuntimeTest(unittest.IsolatedAsyncioTestCase):
         success = self.recorder.success_calls[0]
         self.assertEqual(success["definition"].owner_agent, "ResumeAuthenticityAgent")
         self.assertEqual(success["model_name"], "test-model")
+        contract = success["input_snapshot"]["agent_contract_validation"]
+        self.assertEqual(contract["input_schema"], "ResumeAuthenticityInputV1")
+        self.assertEqual(contract["output_schema"], "ResumeAuthenticityReportV1")
+        self.assertTrue(contract["input_ok"])
+        self.assertTrue(contract["output_ok"])
+        self.assertEqual(contract["errors"], [])
 
     async def test_resume_rewrite_agent_runs_through_agent_runtime(self):
         agent = ResumeRewriteAgent(
@@ -145,7 +167,7 @@ class ResumeAgentRuntimeTest(unittest.IsolatedAsyncioTestCase):
             )
         )
 
-        self.assertEqual(result.output, {"rewrite_mode": "jd_targeted"})
+        self.assertEqual(result.output["rewrite_mode"], "jd_targeted")
         self.assertEqual(result.raw_response, {"raw": "rewrite"})
         self.assertEqual(result.definition.prompt_id, "resume_rewrite")
         self.assertEqual(result.output_schema, "ResumeRewriteResult.v1")
@@ -159,6 +181,39 @@ class ResumeAgentRuntimeTest(unittest.IsolatedAsyncioTestCase):
         success = self.recorder.success_calls[0]
         self.assertEqual(success["definition"].owner_agent, "ResumeRewriteAgent")
         self.assertEqual(success["context_refs"]["authenticity_report_id"], 88)
+        contract = success["input_snapshot"]["agent_contract_validation"]
+        self.assertEqual(contract["input_schema"], "ResumeRewriteInputV1")
+        self.assertEqual(contract["output_schema"], "ResumeRewriteResultV1")
+        self.assertTrue(contract["input_ok"])
+        self.assertTrue(contract["output_ok"])
+        self.assertEqual(contract["errors"], [])
+
+    async def test_resume_authenticity_agent_records_input_contract_errors(self):
+        agent = ResumeAuthenticityAgent(
+            agent_run_executor=self.executor,
+            evidence_builder=self.evidence_builder,
+            llm=self.llm,
+            config=self.config,
+        )
+        context = ProjectAgentContext()
+
+        await agent.run(
+            ResumeAuthenticityAgentInput(
+                project_id=1,
+                resume_id=9,
+                resume_content="",
+                session_id=None,
+                execution_state=None,
+                evaluation=None,
+                transcript_messages=[],
+                context=context,
+            )
+        )
+
+        contract = self.recorder.success_calls[0]["input_snapshot"]["agent_contract_validation"]
+        self.assertFalse(contract["input_ok"])
+        self.assertTrue(contract["output_ok"])
+        self.assertIn("input.resume_content", contract["errors"][0])
 
 
 if __name__ == "__main__":
