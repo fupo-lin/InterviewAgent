@@ -97,6 +97,13 @@ class ProjectInterviewStartResponse(BaseModel):
 
 class ProjectCandidateProfileResponse(BaseModel):
     profile_id: int = Field(alias="profileId")
+    profile_version_no: int = Field(alias="profileVersionNo")
+    previous_profile_id: int | None = Field(default=None, alias="previousProfileId")
+    is_current: bool = Field(alias="isCurrent")
+    schema_version: str = Field(alias="schemaVersion")
+    agent_run_id: int | None = Field(default=None, alias="agentRunId")
+    evidence_refs: list[str] = Field(default_factory=list, alias="evidenceRefs")
+    source_context_refs: dict[str, Any] = Field(default_factory=dict, alias="sourceContextRefs")
     profile: dict[str, Any]
 
     class Config:

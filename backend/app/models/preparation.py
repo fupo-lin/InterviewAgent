@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, String, Text, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text, func
 from sqlalchemy.dialects.mysql import JSON, MEDIUMTEXT
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -138,8 +138,14 @@ class ProjectCandidateProfile(Base):
     project_id: Mapped[int] = mapped_column(ForeignKey("preparation_projects.id"), nullable=False)
     source_session_id: Mapped[int | None] = mapped_column(ForeignKey("interview_sessions.id"), nullable=True)
     agent_run_id: Mapped[int | None] = mapped_column(ForeignKey("agent_runs.id"), nullable=True)
+    previous_profile_id: Mapped[int | None] = mapped_column(
+        ForeignKey("project_candidate_profiles.id"),
+        nullable=True,
+    )
     schema_version: Mapped[str] = mapped_column(String(80), default="ProjectCandidateProfile.v1", nullable=False)
     profile_version_no: Mapped[int] = mapped_column(default=1, nullable=False)
+    is_current: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    source_context_refs: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     evidence_refs: Mapped[list | None] = mapped_column(JSON, nullable=True)
     content: Mapped[dict] = mapped_column(JSON, nullable=False)
     raw_response: Mapped[dict | None] = mapped_column(JSON, nullable=True)

@@ -337,7 +337,11 @@ class PreparationService:
             resumeProfile=resume_profile.content if resume_profile else None,
             gapAnalysis=gap_analysis.content if gap_analysis else None,
             interviewPlan=interview_plan.content if interview_plan else None,
-            candidateProfile=candidate_profile.content if candidate_profile else None,
+            candidateProfile=(
+                self._candidate_profile_dict(candidate_profile)
+                if candidate_profile
+                else None
+            ),
             resumeAuthenticity=authenticity_report.content if authenticity_report else None,
             resumeRewrite=rewrite_result.content if rewrite_result else None,
         )
@@ -354,7 +358,7 @@ class PreparationService:
             transcript_messages=messages,
         )
         self.db.commit()
-        return ProjectCandidateProfileResponse(profileId=saved.id, profile=saved.content)
+        return self._candidate_profile_response(saved)
 
     async def generate_resume_authenticity(self, project_uid: str) -> ResumeAuthenticityResponse:
         project = self._get_project(project_uid)
@@ -436,6 +440,15 @@ class PreparationService:
         return self.candidate_profile_repo.create(
             project_id=project_id,
             source_session_id=source_session_id,
+            source_context_refs=self._candidate_profile_source_context_refs(
+                context=context,
+                source_session_id=source_session_id,
+                execution_state=execution_state,
+                evaluation=evaluation,
+                transcript_messages=transcript_messages,
+                agent_run_id=run_result.agent_run.id,
+                evidence_refs=run_result.evidence_refs,
+            ),
             **run_result.artifact_fields(),
         )
 
@@ -585,6 +598,87 @@ class PreparationService:
             "fileName": resume.file_name,
             "fileType": resume.file_type,
             "status": resume.status,
+        }
+
+    def _candidate_profile_response(self, profile) -> ProjectCandidateProfileResponse:
+        return ProjectCandidateProfileResponse(
+            profileId=profile.id,
+            profileVersionNo=profile.profile_version_no,
+            previousProfileId=profile.previous_profile_id,
+            isCurrent=profile.is_current,
+            schemaVersion=profile.schema_version,
+            agentRunId=profile.agent_run_id,
+            evidenceRefs=profile.evidence_refs or [],
+            sourceContextRefs=profile.source_context_refs or {},
+            profile=profile.content,
+        )
+
+    def _candidate_profile_dict(self, profile) -> dict:
+        return {
+            "profileId": profile.id,
+            "profileVersionNo": profile.profile_version_no,
+            "previousProfileId": profile.previous_profile_id,
+            "isCurrent": profile.is_current,
+            "schemaVersion": profile.schema_version,
+            "agentRunId": profile.agent_run_id,
+            "evidenceRefs": profile.evidence_refs or [],
+            "sourceContextRefs": profile.source_context_refs or {},
+            "profile": profile.content,
+        }
+
+    def _candidate_profile_source_context_refs(
+        self,
+        context: ProjectAgentContext,
+        source_session_id: int | None,
+        execution_state: dict | None,
+        evaluation: dict | None,
+        transcript_messages: list | None,
+        agent_run_id: int,
+        evidence_refs: list[str],
+    ) -> dict:
+        return {
+            "jd_analysis_id": context.jd_analysis.id if context.jd_analysis else None,
+            "jd_analysis_schema_version": (
+                getattr(context.jd_analysis, "schema_version", None)
+                if context.jd_analysis
+                else None
+            ),
+            "jd_analysis_agent_run_id": (
+                getattr(context.jd_analysis, "agent_run_id", None)
+                if context.jd_analysis
+                else None
+            ),
+            "resume_profile_id": context.resume_profile.id if context.resume_profile else None,
+            "resume_profile_schema_version": (
+                getattr(context.resume_profile, "schema_version", None)
+                if context.resume_profile
+                else None
+            ),
+            "resume_profile_agent_run_id": (
+                getattr(context.resume_profile, "agent_run_id", None)
+                if context.resume_profile
+                else None
+            ),
+            "gap_analysis_id": context.gap_analysis.id if context.gap_analysis else None,
+            "gap_analysis_schema_version": (
+                getattr(context.gap_analysis, "schema_version", None)
+                if context.gap_analysis
+                else None
+            ),
+            "gap_analysis_agent_run_id": (
+                getattr(context.gap_analysis, "agent_run_id", None)
+                if context.gap_analysis
+                else None
+            ),
+            "source_session_id": source_session_id,
+            "has_execution_state": bool(execution_state),
+            "has_evaluation": bool(evaluation),
+            "transcript_message_count": len(transcript_messages or []),
+            "transcript_message_ids": [
+                message.id for message in transcript_messages or [] if hasattr(message, "id")
+            ],
+            "agent_run_id": agent_run_id,
+            "evidence_refs": evidence_refs or [],
         }
 
     def _latest_interview_context(self, project_id: int):
