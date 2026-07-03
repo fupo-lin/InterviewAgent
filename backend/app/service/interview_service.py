@@ -11,6 +11,7 @@ from app.repository.interview_repository import (
     InterviewSessionRepository,
     InterviewSummaryRepository,
 )
+from app.repository.agent_run_repository import AgentRunRepository
 from app.repository.preparation_repository import InterviewPlanRepository, PreparationProjectRepository
 from app.service.agent_run_service import AgentRunExecutor, AgentRunRecorder
 from app.service.agent_runtime import AgentRuntimeConfig
@@ -18,6 +19,8 @@ from app.service.assessment_agents import EvaluationAgent, EvaluationAgentInput
 from app.service.evidence_service import EvidencePacketBuilder
 from app.service.interview_agent_spec_builder import InterviewAgentSpecBuilder
 from app.service.interview_execution_service import InterviewExecutionService
+from app.service.interview_runtime_nodes import InterviewRuntimeNodes
+from app.service.interview_runtime_workflow import InterviewRuntimeWorkflow
 from app.service.preparation_service import PreparationService
 from app.service.runtime_agents import (
     FirstQuestionAgentInput,
@@ -43,6 +46,7 @@ class InterviewService:
         self.evaluation_repo = InterviewEvaluationRepository(db)
         self.summary_repo = InterviewSummaryRepository(db)
         self.execution_repo = InterviewPlanExecutionRepository(db)
+        self.agent_run_repo = AgentRunRepository(db)
         self.execution_service = InterviewExecutionService(self.execution_repo)
         self.project_repo = PreparationProjectRepository(db)
         self.plan_repo = InterviewPlanRepository(db)
@@ -78,6 +82,19 @@ class InterviewService:
             llm=self.llm,
             config=AgentRuntimeConfig(model_name=self.llm.model),
         )
+        self.runtime_nodes = InterviewRuntimeNodes(
+            message_repo=self.message_repo,
+            summary_repo=self.summary_repo,
+            execution_repo=self.execution_repo,
+            plan_repo=self.plan_repo,
+            execution_service=self.execution_service,
+            topic_judge_agent=self.topic_judge_agent,
+            session_memory_agent=self.session_memory_agent,
+            interview_executor_agent=self.interview_executor_agent,
+            agent_run_repo=self.agent_run_repo,
+            logger_=logger,
+        )
+        self.runtime_workflow = InterviewRuntimeWorkflow(self.runtime_nodes)
 
     async def start(self, role_name: str) -> tuple[str, str]:
         session_uid = uuid4().hex
@@ -149,50 +166,9 @@ class InterviewService:
 
     async def chat(self, session_uid: str, message: str) -> tuple[str, int]:
         session = self._get_active_session(session_uid)
-        round_no = self.message_repo.latest_assistant_question_round_no(session.id)
-        answer_message = self.message_repo.create(
-            session_id=session.id,
-            role_type="user",
-            message_type="answer",
-            round_no=round_no,
-            content=message,
-        )
-
-        latest_completed_round_no = self.message_repo.latest_completed_round_no(session.id)
-        recent_history = self.message_repo.list_recent_rounds(session.id, rounds=4)
-        execution = await self._advance_execution_if_needed(session, answer_message, recent_history)
-        await self._refresh_memory_if_needed(session.id, latest_completed_round_no)
-        candidate_profile = self.summary_repo.get_latest_by_session_id(session.id, "candidate_profile")
-        conversation_summary = self.summary_repo.get_latest_by_session_id(session.id, "conversation")
-        plan_context = self._session_plan_context(session)
-        execution_context = self._session_execution_context(session, execution)
-        message_fields = await self._generate_followup_with_run(
-            session=session,
-            answer_message=answer_message,
-            recent_history=recent_history,
-            candidate_profile=candidate_profile.content if candidate_profile else None,
-            conversation_summary=conversation_summary.content if conversation_summary else None,
-            plan_context=plan_context,
-            execution_context=execution_context,
-            candidate_profile_id=candidate_profile.id if candidate_profile else None,
-            conversation_summary_id=conversation_summary.id if conversation_summary else None,
-            execution=execution,
-        )
-        self.message_repo.create(
-            session_id=session.id,
-            role_type="assistant",
-            message_type="followup",
-            round_no=round_no + 1,
-            **{
-                **message_fields,
-                "raw_response": {
-                    **(message_fields.get("raw_response") or {}),
-                    "execution": self.execution_service.response(execution) if execution else None,
-                },
-            },
-        )
+        result = await self.runtime_workflow.resume_with_user_input(session, message)
         self.db.commit()
-        return message_fields["content"], round_no + 1
+        return result.reply, result.round_no
 
     async def end(self, session_uid: str) -> EvaluationResponse:
         session = self._get_session(session_uid)

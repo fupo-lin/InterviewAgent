@@ -10,6 +10,7 @@ from app.service.agent_run_service import AgentRunExecutor, AgentRunResult, Agen
 
 InputT = TypeVar("InputT")
 
+# 轻量Agent生命周期
 
 @dataclass(frozen=True)
 class AgentRuntimeConfig:

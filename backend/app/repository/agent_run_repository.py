@@ -50,6 +50,25 @@ class AgentRunRepository:
             limit=limit,
         )
 
+    def get_latest_success_by_context(
+        self,
+        session_id: int,
+        prompt_id: str,
+        context_refs: dict,
+        limit: int = 50,
+    ) -> AgentRun | None:
+        candidates = self.list(
+            session_id=session_id,
+            status="success",
+            prompt_id=prompt_id,
+            limit=limit,
+        )
+        for run in candidates:
+            run_context_refs = run.context_refs or {}
+            if all(run_context_refs.get(key) == value for key, value in context_refs.items()):
+                return run
+        return None
+
 
 class AgentEvidenceItemRepository:
     def __init__(self, db: Session):
