@@ -249,6 +249,35 @@ class InterviewPlanRepository(BaseProjectRepository):
 class ProjectCandidateProfileRepository(BaseProjectRepository):
     model = ProjectCandidateProfile
 
+    def get_latest_by_project_id(self, project_id: int):
+        statement = (
+            select(ProjectCandidateProfile)
+            .where(
+                ProjectCandidateProfile.project_id == project_id,
+                ProjectCandidateProfile.status != "deleted",
+                ProjectCandidateProfile.is_current.is_(True),
+            )
+            .order_by(
+                ProjectCandidateProfile.profile_version_no.desc(),
+                ProjectCandidateProfile.id.desc(),
+            )
+        )
+        current = self.db.scalars(statement).first()
+        if current:
+            return current
+        statement = (
+            select(ProjectCandidateProfile)
+            .where(
+                ProjectCandidateProfile.project_id == project_id,
+                ProjectCandidateProfile.status != "deleted",
+            )
+            .order_by(
+                ProjectCandidateProfile.profile_version_no.desc(),
+                ProjectCandidateProfile.id.desc(),
+            )
+        )
+        return self.db.scalars(statement).first()
+
     def create(
         self,
         project_id: int,
@@ -259,19 +288,27 @@ class ProjectCandidateProfileRepository(BaseProjectRepository):
         schema_version: str = "ProjectCandidateProfile.v1",
         profile_version_no: int | None = None,
         evidence_refs: list[str] | None = None,
+        source_context_refs: dict | None = None,
     ) -> ProjectCandidateProfile:
+        latest = self.get_latest_by_project_id(project_id)
         if profile_version_no is None:
-            latest = self.get_latest_by_project_id(project_id)
             profile_version_no = (latest.profile_version_no if latest else 0) + 1
+        if latest:
+            latest.is_current = False
+            latest.status = "superseded"
         item = ProjectCandidateProfile(
             project_id=project_id,
             source_session_id=source_session_id,
             agent_run_id=agent_run_id,
+            previous_profile_id=latest.id if latest else None,
             schema_version=schema_version,
             profile_version_no=profile_version_no,
+            is_current=True,
+            source_context_refs=source_context_refs or {},
             evidence_refs=evidence_refs or [],
             content=content,
             raw_response=raw_response,
+            status="current",
         )
         self.db.add(item)
         self.db.flush()

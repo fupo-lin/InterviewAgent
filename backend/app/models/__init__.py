@@ -1,4 +1,4 @@
-from app.models.agent import AgentRun
+from app.models.agent import AgentEvidenceItem, AgentRun
 from app.models.interview import (
     InterviewEvaluation,
     InterviewMessage,
@@ -21,6 +21,7 @@ from app.models.preparation import (
 
 __all__ = [
     "AgentRun",
+    "AgentEvidenceItem",
     "InterviewSession",
     "InterviewMessage",
     "InterviewEvaluation",

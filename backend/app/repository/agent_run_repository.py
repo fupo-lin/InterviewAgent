@@ -3,7 +3,7 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models.agent import AgentRun
+from app.models.agent import AgentEvidenceItem, AgentRun
 
 
 class AgentRunRepository:
@@ -49,3 +49,39 @@ class AgentRunRepository:
             status="failed",
             limit=limit,
         )
+
+
+class AgentEvidenceItemRepository:
+    def __init__(self, db: Session):
+        self.db = db
+
+    def list_by_agent_run_id(self, agent_run_id: int) -> list[AgentEvidenceItem]:
+        statement = (
+            select(AgentEvidenceItem)
+            .where(AgentEvidenceItem.agent_run_id == agent_run_id)
+            .order_by(AgentEvidenceItem.id.asc())
+        )
+        return list(self.db.scalars(statement).all())
+
+    def list(
+        self,
+        project_id: int | None = None,
+        session_id: int | None = None,
+        evidence_type: str | None = None,
+        source_type: str | None = None,
+        prompt_id: str | None = None,
+        limit: int = 100,
+    ) -> list[AgentEvidenceItem]:
+        statement = select(AgentEvidenceItem)
+        if project_id is not None:
+            statement = statement.where(AgentEvidenceItem.project_id == project_id)
+        if session_id is not None:
+            statement = statement.where(AgentEvidenceItem.session_id == session_id)
+        if evidence_type:
+            statement = statement.where(AgentEvidenceItem.evidence_type == evidence_type)
+        if source_type:
+            statement = statement.where(AgentEvidenceItem.source_type == source_type)
+        if prompt_id:
+            statement = statement.where(AgentEvidenceItem.prompt_id == prompt_id)
+        statement = statement.order_by(AgentEvidenceItem.id.desc()).limit(limit)
+        return list(self.db.scalars(statement).all())
