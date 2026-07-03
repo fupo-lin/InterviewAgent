@@ -4,6 +4,7 @@ from typing import Any
 from fastapi import HTTPException
 
 from app.repository.agent_run_repository import AgentRunRepository
+from app.repository.workflow_run_repository import WorkflowRunRepository
 from app.schemas.agent_run import AgentRunListItem
 from app.schemas.workflow_run import (
     WorkflowRunDetailResponse,
@@ -22,6 +23,7 @@ class WorkflowRunQueryService:
         registry: WorkflowRegistry = workflow_registry,
     ) -> None:
         self.repo = AgentRunRepository(db)
+        self.workflow_repo = WorkflowRunRepository(db)
         self.agent_runs = AgentRunQueryService(db)
         self.registry = registry
 
@@ -33,22 +35,53 @@ class WorkflowRunQueryService:
         status: str | None = None,
         limit: int = 50,
     ) -> WorkflowRunListResponse:
-        items = [
-            self._summary_from_group(workflow_run_id, runs)
-            for workflow_run_id, runs in self._groups(
-                workflow_id=workflow_id,
-                project_id=project_id,
-                session_id=session_id,
-                limit=self._scan_limit(limit),
-            ).items()
-        ]
-        if status:
-            items = [item for item in items if item.status == status]
+        workflow_runs = self.workflow_repo.list(
+            workflow_id=workflow_id,
+            project_id=project_id,
+            session_id=session_id,
+            status=status,
+            limit=self._limit(limit),
+        )
+        if workflow_runs:
+            items = [
+                self._summary_from_workflow_run(item)
+                for item in workflow_runs
+            ]
+        else:
+            items = [
+                self._summary_from_group(workflow_run_id, runs)
+                for workflow_run_id, runs in self._groups(
+                    workflow_id=workflow_id,
+                    project_id=project_id,
+                    session_id=session_id,
+                    limit=self._scan_limit(limit),
+                ).items()
+            ]
+            if status:
+                items = [item for item in items if item.status == status]
         items = sorted(items, key=lambda item: item.update_time or item.create_time, reverse=True)
         items = items[: self._limit(limit)]
         return WorkflowRunListResponse(items=items, total=len(items))
 
     def get_detail(self, workflow_run_id: str) -> WorkflowRunDetailResponse:
+        workflow_run = self.workflow_repo.get_by_workflow_run_id(workflow_run_id)
+        if workflow_run:
+            summary = self._summary_from_workflow_run(workflow_run)
+            runs = self._groups(workflow_run_id=workflow_run_id, limit=1000).get(
+                workflow_run_id,
+                [],
+            )
+            agent_run_items = [self.agent_runs._list_item(run) for run in runs]
+            agent_run_items = sorted(agent_run_items, key=lambda item: item.id)
+            definition = self._definition(summary.workflow_id)
+            return WorkflowRunDetailResponse(
+                **summary.model_dump(),
+                steps=self._step_summaries(definition, agent_run_items, workflow_run),
+                agentRuns=agent_run_items,
+                state=workflow_run.state or {},
+                lastError=workflow_run.last_error,
+            )
+
         groups = self._groups(workflow_run_id=workflow_run_id, limit=1000)
         runs = groups.get(workflow_run_id)
         if not runs:
@@ -112,9 +145,11 @@ class WorkflowRunQueryService:
         return WorkflowRunListItem(
             workflowRunId=workflow_run_id,
             workflowId=workflow_id,
+            threadId=None,
             projectId=latest.project_id,
             sessionId=latest.session_id,
             status=self._status(failed_steps, missing_required_steps),
+            currentStep=None,
             completedSteps=completed_steps,
             failedSteps=failed_steps,
             missingRequiredSteps=missing_required_steps,
@@ -125,20 +160,60 @@ class WorkflowRunQueryService:
             updateTime=latest_time,
         )
 
+    def _summary_from_workflow_run(self, workflow_run) -> WorkflowRunListItem:
+        state = workflow_run.state or {}
+        agent_runs = self._groups(
+            workflow_run_id=workflow_run.workflow_run_id,
+            project_id=workflow_run.project_id,
+            session_id=workflow_run.session_id,
+            limit=1000,
+        ).get(workflow_run.workflow_run_id, [])
+        latest_agent_run = max(agent_runs, key=lambda run: run.id) if agent_runs else None
+        definition = self._definition(workflow_run.workflow_id)
+        step_count = len(definition.steps)
+        return WorkflowRunListItem(
+            workflowRunId=workflow_run.workflow_run_id,
+            workflowId=workflow_run.workflow_id,
+            threadId=workflow_run.thread_id,
+            projectId=workflow_run.project_id,
+            sessionId=workflow_run.session_id,
+            status=workflow_run.status,
+            currentStep=workflow_run.current_step,
+            completedSteps=state.get("completed_steps") or [],
+            failedSteps=state.get("failed_steps") or [],
+            missingRequiredSteps=[],
+            stepCount=step_count,
+            agentRunCount=len(agent_runs),
+            latestAgentRunId=latest_agent_run.id if latest_agent_run else None,
+            createTime=workflow_run.create_time,
+            updateTime=workflow_run.update_time,
+        )
+
     def _step_summaries(
         self,
         definition: WorkflowDefinition,
         agent_run_items: list[AgentRunListItem],
+        workflow_run=None,
     ) -> list[WorkflowRunStepSummary]:
         runs_by_step = defaultdict(list)
         for item in agent_run_items:
             if item.workflow.step_id:
                 runs_by_step[item.workflow.step_id].append(item)
         summaries = []
+        state = (workflow_run.state or {}) if workflow_run else {}
+        completed_steps = set(state.get("completed_steps") or [])
+        failed_steps = set(state.get("failed_steps") or [])
+        current_step = workflow_run.current_step if workflow_run else None
         for step in definition.steps:
             step_runs = sorted(runs_by_step.get(step.step_id, []), key=lambda item: item.id)
             latest = step_runs[-1] if step_runs else None
             status = self._step_status(step_runs)
+            if step.step_id in failed_steps:
+                status = "failed"
+            elif step.step_id in completed_steps:
+                status = "success"
+            elif step.step_id == current_step:
+                status = workflow_run.status if workflow_run else status
             summaries.append(
                 WorkflowRunStepSummary(
                     stepId=step.step_id,

@@ -1,4 +1,5 @@
 from app.models.agent import AgentEvidenceItem, AgentRun
+from app.models.workflow import WorkflowRun
 from app.models.interview import (
     InterviewEvaluation,
     InterviewMessage,
@@ -22,6 +23,7 @@ from app.models.preparation import (
 __all__ = [
     "AgentRun",
     "AgentEvidenceItem",
+    "WorkflowRun",
     "InterviewSession",
     "InterviewMessage",
     "InterviewEvaluation",
@@ -38,3 +40,7 @@ __all__ = [
     "ResumeAuthenticityReport",
     "ResumeRewriteResult",
 ]
+
+
+# 将散落在不同子模块的模型类统一导入到当前模块中，方便在其他地方直接从 app.models 导入使用
+#如果没有这段代码，外部使用的时候必须从子模块导入模型类，例如 from app.models.agent import AgentRun，而不能直接 from app.models import AgentRun

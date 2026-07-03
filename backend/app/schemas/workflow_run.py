@@ -22,9 +22,11 @@ class WorkflowRunStepSummary(BaseModel):
 class WorkflowRunListItem(BaseModel):
     workflow_run_id: str = Field(alias="workflowRunId")
     workflow_id: str = Field(alias="workflowId")
+    thread_id: str | None = Field(default=None, alias="threadId")
     project_id: int | None = Field(default=None, alias="projectId")
     session_id: int | None = Field(default=None, alias="sessionId")
     status: str
+    current_step: str | None = Field(default=None, alias="currentStep")
     completed_steps: list[str] = Field(default_factory=list, alias="completedSteps")
     failed_steps: list[str] = Field(default_factory=list, alias="failedSteps")
     missing_required_steps: list[str] = Field(default_factory=list, alias="missingRequiredSteps")
@@ -46,6 +48,8 @@ class WorkflowRunListResponse(BaseModel):
 class WorkflowRunDetailResponse(WorkflowRunListItem):
     steps: list[WorkflowRunStepSummary] = Field(default_factory=list)
     agent_runs: list[AgentRunListItem] = Field(default_factory=list, alias="agentRuns")
+    state: dict | None = None
+    last_error: dict | None = Field(default=None, alias="lastError")
 
     class Config:
         populate_by_name = True

@@ -116,6 +116,29 @@ class FakeAgentRunRepo:
         return self.runs.get(key)
 
 
+class FakeWorkflowRuntime:
+    def __init__(self) -> None:
+        self.run = None
+        self.saved = []
+
+    def load_or_create(self, **kwargs):
+        self.run = SimpleNamespace(
+            workflow_run_id="workflow-run-1",
+            workflow_id=kwargs["workflow_id"],
+            thread_id=kwargs["thread_id"],
+            project_id=kwargs["project_id"],
+            session_id=kwargs["session_id"],
+            state=kwargs["initial_state"],
+        )
+        return self.run
+
+    def save(self, workflow_run, **kwargs):
+        for key, value in kwargs.items():
+            setattr(workflow_run, key, value)
+        self.saved.append((workflow_run, kwargs))
+        return workflow_run
+
+
 class FakeExecutionService:
     def __init__(self) -> None:
         self.advance_calls = []
@@ -445,7 +468,8 @@ class InterviewRuntimeNodesTest(unittest.IsolatedAsyncioTestCase):
             "sections": [{"section_key": "system_design", "evidence": []}],
             "next_action": {"type": "continue_current_topic"},
         }
-        workflow = InterviewRuntimeWorkflow(self.nodes)
+        runtime = FakeWorkflowRuntime()
+        workflow = InterviewRuntimeWorkflow(self.nodes, runtime=runtime)
 
         result = await workflow.resume_with_user_input(
             session=self.session,
@@ -460,6 +484,10 @@ class InterviewRuntimeNodesTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("save_user_answer", result.state["completed_steps"])
         self.assertIn("generate_followup", result.state["completed_steps"])
         self.assertIn("save_assistant_message", result.state["completed_steps"])
+        self.assertEqual(result.state["workflow_run_id"], "workflow-run-1")
+        self.assertEqual(runtime.saved[-1][1]["current_step"], "wait_user_answer")
+        self.assertEqual(runtime.saved[-1][1]["status"], "waiting_user")
+        self.assertEqual(runtime.saved[-1][1]["state"]["status"], "waiting_user")
 
 
 if __name__ == "__main__":

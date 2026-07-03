@@ -12,6 +12,7 @@ from app.repository.interview_repository import (
     InterviewSummaryRepository,
 )
 from app.repository.agent_run_repository import AgentRunRepository
+from app.repository.workflow_run_repository import WorkflowRunRepository
 from app.repository.preparation_repository import InterviewPlanRepository, PreparationProjectRepository
 from app.service.agent_run_service import AgentRunExecutor, AgentRunRecorder
 from app.service.agent_runtime import AgentRuntimeConfig
@@ -22,6 +23,7 @@ from app.service.interview_execution_service import InterviewExecutionService
 from app.service.interview_runtime_nodes import InterviewRuntimeNodes
 from app.service.interview_runtime_workflow import InterviewRuntimeWorkflow
 from app.service.preparation_service import PreparationService
+from app.service.workflow_runtime import WorkflowRuntime
 from app.service.runtime_agents import (
     FirstQuestionAgentInput,
     FollowupAgentInput,
@@ -47,6 +49,7 @@ class InterviewService:
         self.summary_repo = InterviewSummaryRepository(db)
         self.execution_repo = InterviewPlanExecutionRepository(db)
         self.agent_run_repo = AgentRunRepository(db)
+        self.workflow_run_repo = WorkflowRunRepository(db)
         self.execution_service = InterviewExecutionService(self.execution_repo)
         self.project_repo = PreparationProjectRepository(db)
         self.plan_repo = InterviewPlanRepository(db)
@@ -94,7 +97,11 @@ class InterviewService:
             agent_run_repo=self.agent_run_repo,
             logger_=logger,
         )
-        self.runtime_workflow = InterviewRuntimeWorkflow(self.runtime_nodes)
+        self.workflow_runtime = WorkflowRuntime(self.workflow_run_repo)
+        self.runtime_workflow = InterviewRuntimeWorkflow(
+            self.runtime_nodes,
+            runtime=self.workflow_runtime,
+        )
 
     async def start(self, role_name: str) -> tuple[str, str]:
         session_uid = uuid4().hex
