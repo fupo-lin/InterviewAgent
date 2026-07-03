@@ -7,6 +7,7 @@ from service.support import configure_backend_imports
 configure_backend_imports()
 
 from app.service.interview_runtime_nodes import InterviewRuntimeNodes
+from app.service.interview_runtime_langgraph import LangGraphNotAvailable, StateGraph
 from app.service.interview_runtime_workflow import InterviewRuntimeWorkflow
 
 
@@ -122,6 +123,8 @@ class FakeWorkflowRuntime:
         self.saved = []
 
     def load_or_create(self, **kwargs):
+        if self.run:
+            return self.run
         self.run = SimpleNamespace(
             workflow_run_id="workflow-run-1",
             workflow_id=kwargs["workflow_id"],
@@ -488,6 +491,130 @@ class InterviewRuntimeNodesTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(runtime.saved[-1][1]["current_step"], "wait_user_answer")
         self.assertEqual(runtime.saved[-1][1]["status"], "waiting_user")
         self.assertEqual(runtime.saved[-1][1]["state"]["status"], "waiting_user")
+
+    async def test_runtime_workflow_resumes_from_persisted_state_for_new_turn(self):
+        self.execution.state = {
+            "sections": [{"section_key": "system_design", "evidence": []}],
+            "next_action": {"type": "continue_current_topic"},
+        }
+        runtime = FakeWorkflowRuntime()
+        runtime.run = SimpleNamespace(
+            workflow_run_id="workflow-run-1",
+            workflow_id="interview_runtime",
+            thread_id="interview:session-uid",
+            project_id=1,
+            session_id=10,
+            state={
+                "workflow_id": "interview_runtime",
+                "thread_id": "interview:session-uid",
+                "workflow_run_id": "workflow-run-1",
+                "status": "waiting_user",
+                "incoming_user_input": "old answer",
+                "last_assistant_message_id": 444,
+                "completed_steps": ["old_turn_step"],
+                "failed_steps": ["old_turn_failure"],
+                "last_memory_agent_run_ids": [333],
+                "last_error": {"step_id": "old", "message": "old failure"},
+            },
+        )
+        workflow = InterviewRuntimeWorkflow(self.nodes, runtime=runtime)
+
+        result = await workflow.resume_with_user_input(
+            session=self.session,
+            message="second answer",
+        )
+
+        start_state = runtime.saved[0][1]["state"]
+        self.assertEqual(start_state["workflow_run_id"], "workflow-run-1")
+        self.assertEqual(start_state["incoming_user_input"], "second answer")
+        self.assertEqual(start_state["last_assistant_message_id"], 444)
+        self.assertEqual(start_state["completed_steps"], [])
+        self.assertEqual(start_state["failed_steps"], [])
+        self.assertEqual(start_state["last_memory_agent_run_ids"], [])
+        self.assertIsNone(start_state["last_error"])
+        self.assertEqual(result.state["workflow_run_id"], "workflow-run-1")
+        self.assertNotIn("old_turn_step", result.state["completed_steps"])
+        self.assertNotIn("old_turn_failure", result.state["failed_steps"])
+
+    async def test_runtime_workflow_can_enable_langgraph_path(self):
+        self.execution.state = {
+            "sections": [{"section_key": "system_design", "evidence": []}],
+            "next_action": {"type": "continue_current_topic"},
+        }
+        runtime = FakeWorkflowRuntime()
+        workflow = InterviewRuntimeWorkflow(
+            self.nodes,
+            runtime=runtime,
+            use_langgraph=True,
+        )
+
+        if StateGraph is None:
+            with self.assertRaises(LangGraphNotAvailable):
+                await workflow.resume_with_user_input(
+                    session=self.session,
+                    message="candidate answer",
+                )
+            return
+
+        result = await workflow.resume_with_user_input(
+                session=self.session,
+                message="candidate answer",
+        )
+
+        self.assertEqual(result.reply, "followup question")
+        self.assertEqual(result.round_no, 4)
+        self.assertEqual(result.state["status"], "waiting_user")
+        self.assertEqual(result.state["workflow_run_id"], "workflow-run-1")
+        self.assertEqual(runtime.saved[-1][1]["current_step"], "wait_user_answer")
+        self.assertEqual(runtime.saved[-1][1]["status"], "waiting_user")
+
+    async def test_langgraph_path_resumes_from_persisted_state_when_available(self):
+        if StateGraph is None:
+            return
+
+        self.execution.state = {
+            "sections": [{"section_key": "system_design", "evidence": []}],
+            "next_action": {"type": "continue_current_topic"},
+        }
+        runtime = FakeWorkflowRuntime()
+        runtime.run = SimpleNamespace(
+            workflow_run_id="workflow-run-1",
+            workflow_id="interview_runtime",
+            thread_id="interview:session-uid",
+            project_id=1,
+            session_id=10,
+            state={
+                "workflow_id": "interview_runtime",
+                "thread_id": "interview:session-uid",
+                "workflow_run_id": "workflow-run-1",
+                "status": "waiting_user",
+                "incoming_user_input": "old answer",
+                "last_assistant_message_id": 444,
+                "completed_steps": ["old_turn_step"],
+                "failed_steps": ["old_turn_failure"],
+                "last_error": {"step_id": "old", "message": "old failure"},
+            },
+        )
+        workflow = InterviewRuntimeWorkflow(
+            self.nodes,
+            runtime=runtime,
+            use_langgraph=True,
+        )
+
+        result = await workflow.resume_with_user_input(
+            session=self.session,
+            message="second answer",
+        )
+
+        start_state = runtime.saved[0][1]["state"]
+        self.assertEqual(start_state["workflow_run_id"], "workflow-run-1")
+        self.assertEqual(start_state["incoming_user_input"], "second answer")
+        self.assertEqual(start_state["last_assistant_message_id"], 444)
+        self.assertEqual(start_state["completed_steps"], [])
+        self.assertEqual(start_state["failed_steps"], [])
+        self.assertIsNone(start_state["last_error"])
+        self.assertEqual(result.state["workflow_run_id"], "workflow-run-1")
+        self.assertNotIn("old_turn_step", result.state["completed_steps"])
 
 
 if __name__ == "__main__":

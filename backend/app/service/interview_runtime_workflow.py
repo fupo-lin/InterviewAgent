@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
 
+from app.config.settings import settings
 from app.service.interview_runtime_nodes import InterviewRuntimeNodes
+from app.service.interview_runtime_resume import resume_interview_runtime_state
 from app.service.interview_runtime_state import InterviewRuntimeState
 
 
@@ -20,20 +23,32 @@ class InterviewRuntimeWorkflow:
         self,
         nodes: InterviewRuntimeNodes,
         runtime=None,
+        use_langgraph: bool | None = None,
     ) -> None:
         self.nodes = nodes
         self.runtime = runtime
+        self.use_langgraph = (
+            settings.use_langgraph_interview_runtime
+            if use_langgraph is None
+            else use_langgraph
+        )
+        self._langgraph_runtime = None
 
     async def resume_with_user_input(
         self,
         session,
         message: str,
     ) -> InterviewRuntimeWorkflowResult:
-        state = self.nodes.initial_chat_state(
-            session=session,
-            incoming_user_input=message,
-        )
-        workflow_run = self._load_or_create_workflow_run(session, state)
+        if self.use_langgraph:
+            return await self._langgraph().resume_with_user_input(session, message)
+        return await self._resume_sequential(session, message)
+
+    async def _resume_sequential(
+        self,
+        session,
+        message: str,
+    ) -> InterviewRuntimeWorkflowResult:
+        workflow_run, state = self._state_for_turn(session, message)
         self._save(workflow_run, state, "start", "running")
 
         answer_message = self.nodes.save_user_answer_node(state, session)
@@ -90,22 +105,48 @@ class InterviewRuntimeWorkflow:
             assistant_message_id=assistant_message.id,
         )
 
+    def _langgraph(self):
+        if self._langgraph_runtime is None:
+            from app.service.interview_runtime_langgraph import InterviewRuntimeLangGraph
+
+            self._langgraph_runtime = InterviewRuntimeLangGraph(
+                nodes=self.nodes,
+                runtime=self.runtime,
+            )
+        return self._langgraph_runtime
+
+    def _state_for_turn(
+        self,
+        session,
+        message: str,
+    ) -> tuple[object | None, InterviewRuntimeState]:
+        initial_state = self.nodes.initial_chat_state(
+            session=session,
+            incoming_user_input=message,
+        )
+        workflow_run = self._load_or_create_workflow_run(session, initial_state)
+        if not workflow_run:
+            return None, initial_state
+        return (
+            workflow_run,
+            resume_interview_runtime_state(
+                workflow_run=workflow_run,
+                initial_state=initial_state,
+                session=session,
+                incoming_user_input=message,
+            ),
+        )
+
     def _load_or_create_workflow_run(self, session, state: InterviewRuntimeState):
         if not self.runtime:
             return None
-        workflow_run = self.runtime.load_or_create(
+        return self.runtime.load_or_create(
             workflow_id=state["workflow_id"],
             thread_id=state["thread_id"],
             project_id=session.project_id,
             session_id=session.id,
             initial_state=state,
         )
-        state["workflow_run_id"] = workflow_run.workflow_run_id
-        stored_state = workflow_run.state or {}
-        if stored_state:
-            state.setdefault("completed_steps", stored_state.get("completed_steps", []))
-            state.setdefault("failed_steps", stored_state.get("failed_steps", []))
-        return workflow_run
 
     def _save(
         self,
@@ -119,7 +160,7 @@ class InterviewRuntimeWorkflow:
         state["status"] = status
         self.runtime.save(
             workflow_run,
-            state=dict(state),
+            state=deepcopy(dict(state)),
             current_step=current_step,
             status=status,
             last_error=state.get("last_error"),
