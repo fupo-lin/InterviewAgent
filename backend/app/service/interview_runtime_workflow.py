@@ -36,9 +36,11 @@ class InterviewRuntimeWorkflow:
         nodes: InterviewRuntimeNodes,
         runtime=None,
         use_langgraph: bool | None = None,
+        checkpointer=None,
     ) -> None:
         self.nodes = nodes
         self.runtime = runtime
+        self.checkpointer = checkpointer
         self.use_langgraph = (
             settings.use_langgraph_interview_runtime
             if use_langgraph is None
@@ -137,6 +139,7 @@ class InterviewRuntimeWorkflow:
             self._langgraph_runtime = InterviewRuntimeLangGraph(
                 nodes=self.nodes,
                 runtime=self.runtime,
+                checkpointer=self.checkpointer,
             )
         return self._langgraph_runtime
 
