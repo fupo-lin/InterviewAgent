@@ -553,6 +553,119 @@ textarea:focus {
   padding: 12px;
 }
 
+.reconciliation-panel {
+  border: 1px solid #dbe3ea;
+  border-radius: 8px;
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+}
+
+.reconciliation-ok {
+  border-color: #a8cfa8;
+}
+
+.reconciliation-failed {
+  border-color: #efb1a9;
+}
+
+.reconciliation-header {
+  align-items: start;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.reconciliation-header h4 {
+  font-size: 14px;
+  margin: 0 0 4px;
+}
+
+.reconciliation-status {
+  border-radius: 999px;
+  display: inline-flex;
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1;
+  padding: 7px 9px;
+  white-space: nowrap;
+}
+
+.status-ok {
+  background: #eef7ee;
+  color: #2f6d36;
+}
+
+.status-error {
+  background: #fff2ef;
+  color: #973928;
+}
+
+.reconciliation-issues {
+  display: grid;
+  gap: 8px;
+}
+
+.reconciliation-issue {
+  border-radius: 8px;
+  font-size: 13px;
+  line-height: 1.45;
+  padding: 10px;
+}
+
+.issue-error {
+  background: #fff2ef;
+  color: #973928;
+}
+
+.issue-warning {
+  background: #fff5df;
+  color: #875f09;
+}
+
+.reconciliation-checks {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.reconciliation-check {
+  background: #f8fafb;
+  border: 1px solid #edf1f4;
+  border-radius: 8px;
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 10px;
+}
+
+.reconciliation-check div {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.reconciliation-check strong,
+.reconciliation-check p {
+  overflow-wrap: anywhere;
+}
+
+.reconciliation-check p {
+  color: #607080;
+  font-size: 13px;
+  line-height: 1.45;
+  margin: 0;
+}
+
+.check-error {
+  border-color: #efb1a9;
+}
+
+.check-warning {
+  border-color: #e5bd65;
+}
+
 .detail-section {
   display: grid;
   gap: 10px;
@@ -639,6 +752,16 @@ textarea:focus {
 .status-text-failed {
   background: #fff2ef;
   color: #973928;
+}
+
+.status-text-error {
+  background: #fff2ef;
+  color: #973928;
+}
+
+.status-text-warning {
+  background: #fff5df;
+  color: #875f09;
 }
 
 .status-text-running,
@@ -742,6 +865,7 @@ textarea:focus {
   .detail-grid,
   .steps-grid,
   .agent-run-list,
+  .reconciliation-checks,
   .detail-json-grid {
     grid-template-columns: 1fr;
   }

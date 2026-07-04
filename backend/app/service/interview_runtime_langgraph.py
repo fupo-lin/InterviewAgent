@@ -39,6 +39,7 @@ class InterviewRuntimeLangGraph:
         *,
         nodes: InterviewRuntimeNodes,
         runtime=None,
+        checkpointer=None,
     ) -> None:
         if StateGraph is None:
             raise LangGraphNotAvailable(
@@ -47,6 +48,7 @@ class InterviewRuntimeLangGraph:
             )
         self.nodes = nodes
         self.runtime = runtime
+        self.checkpointer = checkpointer
         self.graph = self._build_graph()
 
     async def resume_with_user_input(
@@ -62,7 +64,10 @@ class InterviewRuntimeLangGraph:
             "session_obj": session,
         }
         # ainvoke 是 LangGraph 的异步入口：传入初始状态，返回最终状态。
-        final_state = await self.graph.ainvoke(state)
+        final_state = await self.graph.ainvoke(
+            state,
+            config={"configurable": {"thread_id": state["thread_id"]}},
+        )
         assistant_message = final_state["assistant_message_obj"]
         answer_message = final_state["answer_message_obj"]
         public_state = self._public_state(final_state)
@@ -96,7 +101,7 @@ class InterviewRuntimeLangGraph:
         builder.add_edge("reload_followup_context", "generate_followup")
         builder.add_edge("generate_followup", "save_assistant_message")
         builder.add_edge("save_assistant_message", END)
-        return builder.compile()
+        return builder.compile(checkpointer=self.checkpointer)
 
     async def _start_node(self, state: InterviewRuntimeGraphState) -> dict:
         session = state["session_obj"]

@@ -99,6 +99,21 @@ export type WorkflowRunDetailResponse = WorkflowRunListItem & {
   lastError?: Record<string, unknown> | null;
 };
 
+export type WorkflowRunReconciliationCheck = {
+  name: string;
+  ok: boolean;
+  level: "info" | "warning" | "error" | string;
+  detail: string;
+};
+
+export type WorkflowRunReconciliationResponse = {
+  ok: boolean;
+  errors: string[];
+  warnings: string[];
+  checks: WorkflowRunReconciliationCheck[];
+  metadata: Record<string, unknown>;
+};
+
 //  核心请求封装，统一处理所有的HTTP请求
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
@@ -156,6 +171,12 @@ export async function listWorkflowRuns(status?: WorkflowRunStatus | "") {
 
 export async function getWorkflowRunDetail(workflowRunId: string) {
   return request<WorkflowRunDetailResponse>(`/workflow-runs/${encodeURIComponent(workflowRunId)}`);
+}
+
+export async function getWorkflowRunReconciliation(workflowRunId: string) {
+  return request<WorkflowRunReconciliationResponse>(
+    `/workflow-runs/${encodeURIComponent(workflowRunId)}/reconciliation`,
+  );
 }
 
 // 当前没有处理鉴权，需要在请求头中加入相应的认证信息（如Token）才能访问需要鉴权的接口

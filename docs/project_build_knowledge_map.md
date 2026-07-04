@@ -378,6 +378,8 @@ save_assistant_message_node
 
 ## Phase 5：Workflow 可观测化与 LangGraph 接入加固
 
+状态：已完成。正常路径、失败可观测、failed retry、前端 Workflow Runs 列表和详情已通过手动验收。
+
 ### 阶段目标
 
 让 workflow 不只是后端内部机制，而是可以被开发者观察、理解、调试和验证的运行时系统。
@@ -487,6 +489,12 @@ backend/tests/service/test_workflow_run_query_service.py
 
 ## Phase 6：LangGraph Checkpointer 与状态对账
 
+详细设计文档：
+
+```text
+docs/phase6_langgraph_checkpoint_design.md
+```
+
 ### 阶段目标
 
 引入 LangGraph checkpointer，让图执行过程具备 checkpoint / resume 能力，同时保持业务状态可靠。
@@ -555,9 +563,10 @@ checkpointer 解决的是图执行恢复，业务恢复仍需要 DB artifact 证
 ```text
 1. checkpointer 在开发环境可用。
 2. checkpoint 和 workflow_runs.state 的职责边界清楚。
-3. 至少一个安全场景支持 checkpoint resume。
-4. 不安全场景仍能 fallback 到 start retry。
-5. 测试覆盖 checkpoint resume 和 DB artifact 对账。
+3. LangGraph normal path 可以写 checkpoint。
+4. workflow_runs.state 与 DB artifact 至少有 reconciliation service。
+5. 测试覆盖 checkpoint 写入和 DB artifact 对账。
+6. 不安全场景仍能 fallback 到 start retry。
 ```
 
 ---
