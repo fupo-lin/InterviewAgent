@@ -155,6 +155,7 @@ class AgentRunRecorder:
         status: str,
         error_message: str | None = None,
     ) -> AgentRun:
+        workflow_context = (input_snapshot or {}).get("workflow_context") or {}
         item = AgentRun(
             agent_name=definition.owner_agent,
             agent_version="1.0.0",
@@ -174,6 +175,9 @@ class AgentRunRecorder:
             status=status,
             error_message=error_message,
         )
+        for field_name in ("workflow_id", "workflow_run_id", "step_id"):
+            if hasattr(item, field_name):
+                setattr(item, field_name, workflow_context.get(field_name))
         item.output_snapshot = output_snapshot
         self.db.add(item)
         self.db.flush()

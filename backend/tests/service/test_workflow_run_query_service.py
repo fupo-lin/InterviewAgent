@@ -285,6 +285,49 @@ class WorkflowRunQueryServiceTest(unittest.TestCase):
         self.assertEqual([item.id for item in response.agent_runs], [1])
         self.assertIn("topic_completion_judge", [step.step_id for step in response.steps])
 
+    def test_get_detail_links_persisted_runtime_run_with_real_workflow_run_id(self):
+        runtime_workflow_run_id = "interview_runtime_abc123"
+        self.workflow_repo.runs = [
+            workflow_run(
+                workflow_run_id=runtime_workflow_run_id,
+                workflow_id="interview_runtime",
+            )
+        ]
+        self.repo.runs = [
+            agent_run(
+                1,
+                workflow_id="interview_runtime",
+                workflow_run_id=runtime_workflow_run_id,
+                step_id="topic_completion_judge",
+                session_id=10,
+            ),
+            agent_run(
+                2,
+                workflow_id="interview_runtime",
+                workflow_run_id=runtime_workflow_run_id,
+                step_id="followup",
+                session_id=10,
+            ),
+            agent_run(
+                3,
+                workflow_id="interview_runtime",
+                workflow_run_id="session_10_interview_runtime",
+                step_id="followup",
+                session_id=10,
+            ),
+        ]
+
+        response = self.service.get_detail(runtime_workflow_run_id)
+
+        self.assertEqual(response.workflow_run_id, runtime_workflow_run_id)
+        self.assertEqual(response.agent_run_count, 2)
+        self.assertEqual(response.latest_agent_run_id, 2)
+        self.assertEqual([item.id for item in response.agent_runs], [1, 2])
+        steps = {step.step_id: step for step in response.steps}
+        self.assertEqual(steps["topic_completion_judge"].agent_run_ids, [1])
+        self.assertEqual(steps["followup"].agent_run_ids, [2])
+        self.assertEqual(steps["followup"].latest_agent_run_id, 2)
+
     def test_get_detail_raises_404_when_missing(self):
         with self.assertRaises(HTTPException) as exc:
             self.service.get_detail("missing_run")

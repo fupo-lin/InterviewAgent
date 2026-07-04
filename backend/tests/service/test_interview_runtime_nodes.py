@@ -191,8 +191,21 @@ class FailingTopicJudgeAgent:
 
 
 class FakeSessionMemoryAgent:
+    def __init__(self) -> None:
+        self.calls = []
+
     async def run(self, agent_input):
-        raise AssertionError("memory should be skipped in this test")
+        self.calls.append(agent_input)
+        return SimpleNamespace(
+            agent_run=SimpleNamespace(id=701 + len(self.calls)),
+            message_fields=lambda: {
+                "content": "memory summary",
+                "raw_response": {"raw": "memory"},
+                "agent_run_id": 701 + len(self.calls),
+                "schema_version": "SessionMemory.v1",
+                "evidence_refs": [],
+            },
+        )
 
 
 class FakeInterviewExecutorAgent:
@@ -234,6 +247,7 @@ class InterviewRuntimeNodesTest(unittest.IsolatedAsyncioTestCase):
         self.execution_service = FakeExecutionService()
         self.agent_run_repo = FakeAgentRunRepo()
         self.topic_judge_agent = FakeTopicJudgeAgent()
+        self.session_memory_agent = FakeSessionMemoryAgent()
         self.interview_executor_agent = FakeInterviewExecutorAgent()
         self.nodes = InterviewRuntimeNodes(
             message_repo=self.message_repo,
@@ -242,7 +256,7 @@ class InterviewRuntimeNodesTest(unittest.IsolatedAsyncioTestCase):
             plan_repo=FakePlanRepo(),
             execution_service=self.execution_service,
             topic_judge_agent=self.topic_judge_agent,
-            session_memory_agent=FakeSessionMemoryAgent(),
+            session_memory_agent=self.session_memory_agent,
             interview_executor_agent=self.interview_executor_agent,
             agent_run_repo=self.agent_run_repo,
             logger_=logging.getLogger("test_interview_runtime_nodes"),
@@ -491,6 +505,8 @@ class InterviewRuntimeNodesTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(runtime.saved[-1][1]["current_step"], "wait_user_answer")
         self.assertEqual(runtime.saved[-1][1]["status"], "waiting_user")
         self.assertEqual(runtime.saved[-1][1]["state"]["status"], "waiting_user")
+        self.assertEqual(self.topic_judge_agent.calls[0].workflow_run_id, "workflow-run-1")
+        self.assertEqual(self.interview_executor_agent.calls[0].workflow_run_id, "workflow-run-1")
 
     async def test_runtime_workflow_resumes_from_persisted_state_for_new_turn(self):
         self.execution.state = {

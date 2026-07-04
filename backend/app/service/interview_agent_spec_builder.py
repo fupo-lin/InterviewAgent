@@ -97,6 +97,7 @@ class InterviewAgentSpecBuilder:
         candidate_profile_id: int | None = None,
         conversation_summary_id: int | None = None,
         execution=None,
+        workflow_run_id: str | None = None,
     ) -> AgentSpec:
         prompt_id = "followup"
         definition = self.agent_run_executor.definition(prompt_id)
@@ -136,6 +137,7 @@ class InterviewAgentSpecBuilder:
                 workflow_id="interview_runtime",
                 step_id="followup",
                 session_id=session.id,
+                workflow_run_id=workflow_run_id,
             ),
             output_snapshot=lambda output: {"reply": output},
         )
@@ -148,6 +150,7 @@ class InterviewAgentSpecBuilder:
         previous_content: str | None,
         profile_messages: list,
         previous_summary_id: int | None = None,
+        workflow_run_id: str | None = None,
     ) -> AgentSpec:
         definition = self.agent_run_executor.definition(prompt_id)
         evidence_packet = self.evidence_builder.build_memory_packet(
@@ -178,6 +181,7 @@ class InterviewAgentSpecBuilder:
                 if prompt_id == "candidate_profile"
                 else "conversation_summary",
                 session_id=session_id,
+                workflow_run_id=workflow_run_id,
             ),
             output_snapshot=lambda output: {"content": output},
         )
@@ -189,6 +193,7 @@ class InterviewAgentSpecBuilder:
         current_section: dict,
         answer_message,
         recent_history: list,
+        workflow_run_id: str | None = None,
     ) -> AgentSpec:
         evidence_packet = self.evidence_builder.build_topic_judge_packet(
             session_id=session.id,
@@ -222,6 +227,7 @@ class InterviewAgentSpecBuilder:
                 workflow_id="interview_runtime",
                 step_id="topic_completion_judge",
                 session_id=session.id,
+                workflow_run_id=workflow_run_id,
             ),
         )
 
@@ -230,10 +236,11 @@ class InterviewAgentSpecBuilder:
         workflow_id: str,
         step_id: str,
         session_id: int | None = None,
+        workflow_run_id: str | None = None,
     ) -> dict:
         return {
             "workflow_id": workflow_id,
-            "workflow_run_id": self._workflow_run_id(
+            "workflow_run_id": workflow_run_id or self._workflow_run_id(
                 workflow_id=workflow_id,
                 session_id=session_id,
             ),

@@ -23,6 +23,7 @@ class SessionMemoryAgentInput:
     previous_content: str | None
     profile_messages: list
     previous_summary_id: int | None = None
+    workflow_run_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -45,6 +46,7 @@ class FollowupAgentInput:
     candidate_profile_id: int | None = None
     conversation_summary_id: int | None = None
     execution: object | None = None
+    workflow_run_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -54,6 +56,7 @@ class TopicJudgeAgentInput:
     current_section: dict
     answer_message: object
     recent_history: list
+    workflow_run_id: str | None = None
 
 
 class _InterviewSpecAgent(BaseAgent):
@@ -99,6 +102,7 @@ class SessionMemoryAgent(_InterviewSpecAgent):
             previous_content=agent_input.previous_content,
             profile_messages=agent_input.profile_messages,
             previous_summary_id=agent_input.previous_summary_id,
+            workflow_run_id=agent_input.workflow_run_id,
         )
 
     async def call_model(
@@ -186,6 +190,7 @@ class InterviewExecutorAgent(_InterviewSpecAgent):
             candidate_profile_id=agent_input.candidate_profile_id,
             conversation_summary_id=agent_input.conversation_summary_id,
             execution=agent_input.execution,
+            workflow_run_id=agent_input.workflow_run_id,
         )
 
     async def call_model(
@@ -240,6 +245,7 @@ class TopicJudgeAgent(_InterviewSpecAgent):
             current_section=agent_input.current_section,
             answer_message=agent_input.answer_message,
             recent_history=agent_input.recent_history,
+            workflow_run_id=agent_input.workflow_run_id,
         )
 
     async def call_model(

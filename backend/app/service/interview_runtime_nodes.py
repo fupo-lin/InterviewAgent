@@ -157,6 +157,7 @@ class InterviewRuntimeNodes:
                     current_section=current_section,
                     answer_message=answer_message,
                     recent_history=recent_history,
+                    workflow_run_id=state.get("workflow_run_id"),
                 )
             )
         except Exception as exc:
@@ -245,6 +246,7 @@ class InterviewRuntimeNodes:
                             previous_content=latest_profile.content if latest_profile else None,
                             profile_messages=profile_messages,
                             previous_summary_id=latest_profile.id if latest_profile else None,
+                            workflow_run_id=state.get("workflow_run_id"),
                         )
                     except Exception as exc:
                         self.logger.warning(
@@ -297,6 +299,7 @@ class InterviewRuntimeNodes:
                 previous_content=latest_conversation.content if latest_conversation else None,
                 profile_messages=new_messages,
                 previous_summary_id=latest_conversation.id if latest_conversation else None,
+                workflow_run_id=state.get("workflow_run_id"),
             )
         except Exception as exc:
             self.logger.warning("Failed to refresh conversation summary", exc_info=True)
@@ -389,6 +392,7 @@ class InterviewRuntimeNodes:
                     else None
                 ),
                 execution=context.execution,
+                workflow_run_id=state.get("workflow_run_id"),
             )
         )
         state["last_followup_agent_run_id"] = run_result.agent_run.id
@@ -550,6 +554,7 @@ class InterviewRuntimeNodes:
         previous_content: str | None,
         profile_messages: list,
         previous_summary_id: int | None = None,
+        workflow_run_id: str | None = None,
     ) -> dict:
         run_result = await self.session_memory_agent.run(
             SessionMemoryAgentInput(
@@ -559,6 +564,7 @@ class InterviewRuntimeNodes:
                 previous_content=previous_content,
                 profile_messages=profile_messages,
                 previous_summary_id=previous_summary_id,
+                workflow_run_id=workflow_run_id,
             )
         )
         return run_result.message_fields()

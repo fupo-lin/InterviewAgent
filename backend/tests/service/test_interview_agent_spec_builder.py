@@ -87,6 +87,7 @@ class InterviewAgentSpecBuilderTest(unittest.TestCase):
             candidate_profile_id=201,
             conversation_summary_id=202,
             execution=execution,
+            workflow_run_id="interview_runtime_live_1",
         )
         run_context = self.executor.context_from_spec(spec)
 
@@ -104,7 +105,7 @@ class InterviewAgentSpecBuilderTest(unittest.TestCase):
         self.assertEqual(spec.context_refs["interview_plan_id"], 20)
         self.assertEqual(spec.context_refs["execution_id"], 30)
         self.assertEqual(spec.workflow_context["workflow_id"], "interview_runtime")
-        self.assertEqual(spec.workflow_context["workflow_run_id"], "session_10_interview_runtime")
+        self.assertEqual(spec.workflow_context["workflow_run_id"], "interview_runtime_live_1")
         self.assertEqual(spec.workflow_context["step_id"], "followup")
         self.assertEqual(spec.evidence_packet["task"], "followup_generation")
         self.assertIn("interview_answer_101", run_context.evidence_refs)
@@ -138,6 +139,7 @@ class InterviewAgentSpecBuilderTest(unittest.TestCase):
             current_section=current_section,
             answer_message=answer_message,
             recent_history=[answer_message],
+            workflow_run_id="interview_runtime_live_1",
         )
         run_context = self.executor.context_from_spec(spec)
 
@@ -151,7 +153,7 @@ class InterviewAgentSpecBuilderTest(unittest.TestCase):
         self.assertEqual(spec.context_refs["answer_message_id"], 102)
         self.assertEqual(spec.context_refs["current_section_key"], "tech_foundation")
         self.assertEqual(spec.workflow_context["workflow_id"], "interview_runtime")
-        self.assertEqual(spec.workflow_context["workflow_run_id"], "session_10_interview_runtime")
+        self.assertEqual(spec.workflow_context["workflow_run_id"], "interview_runtime_live_1")
         self.assertEqual(spec.workflow_context["step_id"], "topic_completion_judge")
         self.assertEqual(spec.evidence_packet["task"], "topic_completion_judge")
         self.assertEqual(spec.evidence_packet["missing_evidence"], [])
@@ -159,6 +161,28 @@ class InterviewAgentSpecBuilderTest(unittest.TestCase):
             run_context.evidence_refs,
             ["interview_answer_102", "topic_probe_tech_foundation_4"],
         )
+
+    def test_runtime_specs_keep_session_workflow_run_id_when_not_overridden(self):
+        session = SimpleNamespace(
+            id=10,
+            project_id=1,
+            role_name="Backend Engineer",
+            interview_plan_id=20,
+        )
+        answer_message = message(
+            message_id=101,
+            session_id=10,
+            round_no=3,
+            content="I used retries.",
+        )
+
+        spec = self.builder.followup(
+            session=session,
+            answer_message=answer_message,
+            recent_history=[],
+        )
+
+        self.assertEqual(spec.workflow_context["workflow_run_id"], "session_10_interview_runtime")
 
 
 if __name__ == "__main__":
