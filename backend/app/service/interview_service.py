@@ -173,7 +173,11 @@ class InterviewService:
 
     async def chat(self, session_uid: str, message: str) -> tuple[str, int]:
         session = self._get_active_session(session_uid)
-        result = await self.runtime_workflow.resume_with_user_input(session, message)
+        try:
+            result = await self.runtime_workflow.resume_with_user_input(session, message)
+        except Exception:
+            self.db.commit()
+            raise
         self.db.commit()
         return result.reply, result.round_no
 
