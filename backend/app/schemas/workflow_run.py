@@ -27,9 +27,13 @@ class WorkflowRunListItem(BaseModel):
     session_id: int | None = Field(default=None, alias="sessionId")
     status: str
     current_step: str | None = Field(default=None, alias="currentStep")
+    active_step: str | None = Field(default=None, alias="activeStep")
+    resume_reason: str | None = Field(default=None, alias="resumeReason")
+    resume_from_step: str | None = Field(default=None, alias="resumeFromStep")
     completed_steps: list[str] = Field(default_factory=list, alias="completedSteps")
     failed_steps: list[str] = Field(default_factory=list, alias="failedSteps")
     missing_required_steps: list[str] = Field(default_factory=list, alias="missingRequiredSteps")
+    error_message: str | None = Field(default=None, alias="errorMessage")
     step_count: int = Field(default=0, alias="stepCount")
     agent_run_count: int = Field(default=0, alias="agentRunCount")
     latest_agent_run_id: int | None = Field(default=None, alias="latestAgentRunId")

@@ -42,6 +42,7 @@ class InterviewRuntimeNodes:
             "workflow_id": "interview_runtime",
             "thread_id": f"interview:{session.session_uid}",
             "status": "running",
+            "active_step": None,
             "project_id": session.project_id,
             "session_id": session.id,
             "session_uid": session.session_uid,

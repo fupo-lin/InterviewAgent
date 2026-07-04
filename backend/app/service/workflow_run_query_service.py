@@ -152,9 +152,13 @@ class WorkflowRunQueryService:
             sessionId=latest.session_id,
             status=self._status(failed_steps, missing_required_steps),
             currentStep=None,
+            activeStep=None,
+            resumeReason=None,
+            resumeFromStep=None,
             completedSteps=completed_steps,
             failedSteps=failed_steps,
             missingRequiredSteps=missing_required_steps,
+            errorMessage=None,
             stepCount=len(step_summaries),
             agentRunCount=len(agent_run_items),
             latestAgentRunId=latest.id,
@@ -181,9 +185,13 @@ class WorkflowRunQueryService:
             sessionId=workflow_run.session_id,
             status=workflow_run.status,
             currentStep=workflow_run.current_step,
+            activeStep=state.get("active_step"),
+            resumeReason=state.get("resume_reason"),
+            resumeFromStep=state.get("resume_from_step"),
             completedSteps=state.get("completed_steps") or [],
             failedSteps=state.get("failed_steps") or [],
             missingRequiredSteps=[],
+            errorMessage=self._error_message(workflow_run),
             stepCount=step_count,
             agentRunCount=len(agent_runs),
             latestAgentRunId=latest_agent_run.id if latest_agent_run else None,
@@ -258,6 +266,13 @@ class WorkflowRunQueryService:
 
     def _workflow_context(self, run) -> dict:
         return (run.input_snapshot or {}).get("workflow_context") or {}
+
+    def _error_message(self, workflow_run) -> str | None:
+        error_message = getattr(workflow_run, "error_message", None)
+        if error_message:
+            return error_message
+        last_error = getattr(workflow_run, "last_error", None) or {}
+        return last_error.get("message")
 
     def _limit(self, limit: int) -> int:
         return max(1, min(limit, 200))

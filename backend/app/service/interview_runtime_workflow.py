@@ -18,6 +18,18 @@ class InterviewRuntimeWorkflowResult:
     assistant_message_id: int
 
 
+class InterviewRuntimeWorkflowError(RuntimeError):
+    def __init__(
+        self,
+        step_id: str,
+        message: str,
+        cause: Exception | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.step_id = step_id
+        self.cause = cause
+
+
 class InterviewRuntimeWorkflow:
     def __init__(
         self,
@@ -49,54 +61,67 @@ class InterviewRuntimeWorkflow:
         message: str,
     ) -> InterviewRuntimeWorkflowResult:
         workflow_run, state = self._state_for_turn(session, message)
-        self._save(workflow_run, state, "start", "running")
+        try:
+            self._save(workflow_run, state, "start", "running")
 
-        answer_message = self.nodes.save_user_answer_node(state, session)
-        self._save(workflow_run, state, "save_user_answer", "running")
-        context = self.nodes.load_runtime_context_node(state, session)
-        self._save(workflow_run, state, "load_runtime_context", "running")
-        judge_result = await self.nodes.topic_judge_node(
-            state=state,
-            session=session,
-            answer_message=answer_message,
-            recent_history=context.recent_history,
-            execution=context.execution,
-        )
-        self._save(workflow_run, state, "topic_judge", "running")
-        execution = self.nodes.advance_execution_node(
-            state=state,
-            execution=context.execution,
-            answer_message=answer_message,
-            judge_result=judge_result,
-        )
-        self._save(workflow_run, state, "advance_execution", "running")
-        await self.nodes.refresh_memory_node(
-            state=state,
-            session=session,
-            latest_completed_round_no=context.latest_completed_round_no,
-        )
-        self._save(workflow_run, state, "refresh_memory", "running")
-        followup_context = self.nodes.reload_followup_context_node(
-            state=state,
-            session=session,
-            execution=execution,
-        )
-        self._save(workflow_run, state, "reload_followup_context", "running")
-        message_fields = await self.nodes.generate_followup_node(
-            state=state,
-            session=session,
-            answer_message=answer_message,
-            context=followup_context,
-        )
-        self._save(workflow_run, state, "generate_followup", "running")
-        assistant_message = self.nodes.save_assistant_message_node(
-            state=state,
-            session=session,
-            round_no=answer_message.round_no + 1,
-            message_fields=message_fields,
-            execution=execution,
-        )
-        self._save(workflow_run, state, "wait_user_answer", "waiting_user")
+            state["active_step"] = "save_user_answer"
+            answer_message = self.nodes.save_user_answer_node(state, session)
+            self._save(workflow_run, state, "save_user_answer", "running")
+            state["active_step"] = "load_runtime_context"
+            context = self.nodes.load_runtime_context_node(state, session)
+            self._save(workflow_run, state, "load_runtime_context", "running")
+            state["active_step"] = "topic_judge"
+            judge_result = await self.nodes.topic_judge_node(
+                state=state,
+                session=session,
+                answer_message=answer_message,
+                recent_history=context.recent_history,
+                execution=context.execution,
+            )
+            self._save(workflow_run, state, "topic_judge", "running")
+            state["active_step"] = "advance_execution"
+            execution = self.nodes.advance_execution_node(
+                state=state,
+                execution=context.execution,
+                answer_message=answer_message,
+                judge_result=judge_result,
+            )
+            self._save(workflow_run, state, "advance_execution", "running")
+            state["active_step"] = "refresh_memory"
+            await self.nodes.refresh_memory_node(
+                state=state,
+                session=session,
+                latest_completed_round_no=context.latest_completed_round_no,
+            )
+            self._save(workflow_run, state, "refresh_memory", "running")
+            state["active_step"] = "reload_followup_context"
+            followup_context = self.nodes.reload_followup_context_node(
+                state=state,
+                session=session,
+                execution=execution,
+            )
+            self._save(workflow_run, state, "reload_followup_context", "running")
+            state["active_step"] = "generate_followup"
+            message_fields = await self.nodes.generate_followup_node(
+                state=state,
+                session=session,
+                answer_message=answer_message,
+                context=followup_context,
+            )
+            self._save(workflow_run, state, "generate_followup", "running")
+            state["active_step"] = "save_assistant_message"
+            assistant_message = self.nodes.save_assistant_message_node(
+                state=state,
+                session=session,
+                round_no=answer_message.round_no + 1,
+                message_fields=message_fields,
+                execution=execution,
+            )
+            state["active_step"] = None
+            self._save(workflow_run, state, "wait_user_answer", "waiting_user")
+        except Exception as exc:
+            self._fail(workflow_run, state, self._failed_step_id(state), exc)
+            raise
         return InterviewRuntimeWorkflowResult(
             reply=assistant_message.content,
             round_no=assistant_message.round_no,
@@ -165,3 +190,34 @@ class InterviewRuntimeWorkflow:
             status=status,
             last_error=state.get("last_error"),
         )
+
+    def _fail(
+        self,
+        workflow_run,
+        state: InterviewRuntimeState,
+        current_step: str,
+        exc: Exception,
+    ) -> None:
+        if isinstance(exc, InterviewRuntimeWorkflowError):
+            current_step = exc.step_id
+        failed_steps = state.setdefault("failed_steps", [])
+        if current_step not in failed_steps:
+            failed_steps.append(current_step)
+        state["last_error"] = {
+            "step_id": current_step,
+            "message": str(exc),
+            "error_type": exc.__class__.__name__,
+        }
+        self._save(workflow_run, state, current_step, "failed")
+
+    def _failed_step_id(self, state: InterviewRuntimeState) -> str:
+        if state.get("last_error") and state["last_error"].get("step_id"):
+            return state["last_error"]["step_id"]
+        if state.get("active_step"):
+            return state["active_step"]
+        completed = state.get("completed_steps") or []
+        if "generate_followup" not in completed:
+            return "generate_followup"
+        if "save_assistant_message" not in completed:
+            return "save_assistant_message"
+        return "unknown"

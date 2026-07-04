@@ -1,171 +1,197 @@
 # Interview Runtime LangGraph Design
 
-本文档是 `docs/agent_lifecycle_langgraph.md` 的下一步细化，专门描述 Interview Runtime Workflow 如何迁移到 LangGraph。
+本文档记录 Interview Runtime 从顺序 `InterviewService.chat()` 迁移到可恢复 Workflow / LangGraph 架构的当前设计。
 
-目标不是一次性重写所有面试逻辑，而是先把当前 `InterviewService.chat()` 中混在一起的流程拆成可 checkpoint、可恢复、可观察的状态机。
+目标不是“为了接 LangGraph 而接 LangGraph”，而是先把面试运行时拆成稳定的 State、Node、Workflow、恢复语义和观测链路。LangGraph 在当前阶段是可选执行引擎，业务语义仍由我们自己的 runtime nodes 和 workflow state 承载。
 
 ---
 
-## 1. 迁移目标
+## 1. 为什么迁移
 
-当前面试运行时逻辑主要集中在：
+原始 `InterviewService.chat()` 把多种职责混在同一个顺序方法里：
 
 ```text
-InterviewService.start_with_project()
+save user answer
+load recent history
+judge topic completion
+advance interview execution
+refresh memory summaries
+generate followup
+save assistant message
+commit
+```
+
+这在正常路径上可以工作，但一旦中途失败或进程停止，会出现几个问题：
+
+```text
+1. 不知道停在了哪个业务边界。
+2. user answer 已保存但 followup 没生成时，恢复语义不清楚。
+3. TopicJudge 成功但 execution 没推进时，容易重复调用或重复推进。
+4. Followup AgentRun 成功但 assistant message 没保存时，可能重复调用 LLM。
+5. Memory refresh 是 best-effort，但失败信息不容易被观察。
+6. 未来加入 LangGraph、retry、human review、streaming 后，chat() 会继续膨胀。
+```
+
+迁移收益：
+
+```text
+1. 每一步有明确 Node 边界。
+2. 每轮面试有 workflow_run_id。
+3. workflow_runs.state 可以持久化和恢复。
+4. AgentRun 可以归属到同一个 workflow_run_id。
+5. blocking failure 可以落到 workflow_runs.status = failed。
+6. 查询接口可以看到 currentStep / activeStep / resumeReason / errorMessage。
+7. sequential runtime 和 LangGraph runtime 可以共享同一套业务节点。
+```
+
+---
+
+## 2. 当前落地范围
+
+当前优先迁移的是 chat loop，不完整迁移 start/end/evaluation。
+
+已落地：
+
+```text
 InterviewService.chat()
-InterviewService.end()
-InterviewExecutionService
-InterviewExecutorAgent
-TopicJudgeAgent
-SessionMemoryAgent
-EvaluationAgent
+-> InterviewRuntimeWorkflow
+-> sequential runtime 或 LangGraph runtime
+-> InterviewRuntimeNodes
+-> workflow_runs state save/resume
+-> AgentRun workflow_context.workflow_run_id 对齐
+-> WorkflowRunQueryService 查询可观测
 ```
 
-第一阶段只迁移 runtime loop，不迁移完整 assessment：
+暂不迁移：
 
 ```text
-start interview
-  -> first question
-  -> wait user answer
-
-chat loop
-  -> save user answer
-  -> topic judge
-  -> advance execution
-  -> refresh memory
-  -> generate followup
-  -> save assistant message
-  -> wait user answer
-```
-
-暂不在第一阶段迁移：
-
-```text
-end interview
+start_with_project()
+end()
 evaluation
 project candidate profile
 resume authenticity
 resume rewrite
 ```
 
-这些可以作为后续 `post_interview_assessment` graph。
+这些后续可以成为独立 workflow：
+
+```text
+post_interview_assessment
+resume_optimization
+preparation
+```
 
 ---
 
-## 2. 当前问题
+## 3. 当前代码结构
 
-当前 `InterviewService.chat()` 大致做了这些事情：
-
-```text
-1. 校验 session active
-2. 获取当前 round_no
-3. 保存用户回答
-4. 查询 recent history
-5. 调用 TopicJudgeAgent
-6. 推进 InterviewPlanExecution.state
-7. 按轮次刷新 candidate memory / conversation summary
-8. 加载 summary / plan / execution context
-9. 调用 InterviewExecutorAgent 生成 followup
-10. 保存 assistant message
-11. commit
-12. 返回 reply
-```
-
-这些步骤目前在一个 service 方法中顺序执行。短期能跑，但有几个问题：
+核心文件：
 
 ```text
-1. 程序中断后，很难准确知道卡在哪一步。
-2. 用户回答已经保存但 followup 没生成时，没有统一恢复机制。
-3. TopicJudge 成功但 execution 未推进时，需要人工推断。
-4. Followup AgentRun 成功但 message 未保存时，可能重复调用 LLM。
-5. Memory refresh 是 best-effort，失败后只能写 warning。
-6. 未来加入 human review、重试、fallback、streaming 会让 chat() 继续膨胀。
+backend/app/service/interview_runtime_state.py
+  InterviewRuntimeState
+  RuntimeContext
+
+backend/app/service/interview_runtime_nodes.py
+  save_user_answer_node
+  load_runtime_context_node
+  topic_judge_node
+  advance_execution_node
+  refresh_memory_node
+  reload_followup_context_node
+  generate_followup_node
+  save_assistant_message_node
+
+backend/app/service/interview_runtime_resume.py
+  resume_interview_runtime_state
+
+backend/app/service/interview_runtime_workflow.py
+  InterviewRuntimeWorkflow
+  sequential runtime facade
+  failure handling
+
+backend/app/service/interview_runtime_langgraph.py
+  optional LangGraph StateGraph wrapper
+
+backend/app/service/workflow_runtime.py
+  load_or_create workflow_run
+  save workflow_run state
+
+backend/app/service/workflow_run_query_service.py
+  workflow run list/detail
+  persisted workflow_runs first
+  legacy AgentRun grouping fallback
 ```
 
-LangGraph 要解决的是这些流程编排问题，不是替代现有 Agent。
+数据表：
+
+```text
+workflow_runs
+agent_runs
+agent_evidence_items
+interview_messages
+interview_plan_executions
+interview_summaries
+```
 
 ---
 
-## 3. Graph 总览
+## 4. Runtime Lifecycle
 
-### 3.1 Runtime Loop
+当前 chat loop 生命周期：
 
 ```mermaid
 flowchart TD
-    START([START]) --> A[load_or_create_session]
-    A --> B[initialize_execution_if_needed]
-    B --> C[first_question_node]
-    C --> D[save_assistant_message_node]
-    D --> WAIT[interrupt: wait_user_answer]
-
-    WAIT --> E[save_user_answer_node]
-    E --> F[load_runtime_context_node]
-    F --> G[topic_judge_node]
-    G --> H[advance_execution_node]
-    H --> I[refresh_memory_node]
-    I --> J[route_next_action]
-
-    J -->|continue_current_topic| K[generate_followup_node]
-    J -->|switch_topic_in_section| K
-    J -->|move_next_section| K
-    J -->|wrap_up_interview| L[wrap_up_node]
-
-    K --> M[save_assistant_message_node]
-    M --> WAIT
-
-    L --> END([END])
+    A[InterviewService.chat] --> B[load active session]
+    B --> C[InterviewRuntimeWorkflow.resume_with_user_input]
+    C --> D[load_or_create workflow_run by thread_id]
+    D --> E[resume runtime state]
+    E --> F[save start boundary]
+    F --> G[save_user_answer_node]
+    G --> H[load_runtime_context_node]
+    H --> I[topic_judge_node]
+    I --> J[advance_execution_node]
+    J --> K[refresh_memory_node]
+    K --> L[reload_followup_context_node]
+    L --> M[generate_followup_node]
+    M --> N[save_assistant_message_node]
+    N --> O[save wait_user_answer boundary]
+    O --> P[return reply and round_no]
 ```
 
-### 3.2 第一阶段建议
-
-第一阶段可以先只改 `chat()` loop，把 `start_with_project()` 保持原样。
-
-也就是说：
+每个边界会保存：
 
 ```text
-start_with_project()
-  仍然由现有 InterviewService 创建 session、execution、first question。
-
-chat()
-  改为进入 LangGraph runtime loop。
+workflow_runs.status
+workflow_runs.current_step
+workflow_runs.state
+workflow_runs.last_error
+workflow_runs.error_message
 ```
-
-原因：
-
-```text
-1. start 流程比较短，当前可控。
-2. chat loop 是真正高频、多轮、需要恢复的地方。
-3. 先迁移 loop，风险小，收益大。
-```
-
-后续再把 `start_with_project()` 也迁进 graph。
 
 ---
 
-## 4. State 设计
+## 5. State 设计
 
-### 4.1 InterviewRuntimeState
+`InterviewRuntimeState` 是 workflow 运行游标，不是完整上下文容器。
 
-State 只保存恢复和路由必需的运行游标，不保存完整大对象。
+当前关键字段：
 
 ```python
-from typing import TypedDict
-
-
 class InterviewRuntimeState(TypedDict, total=False):
     workflow_id: str
     workflow_run_id: str
     thread_id: str
     status: str
+    active_step: str | None
 
     project_id: int | None
     session_id: int
     session_uid: str
     role_name: str
-
     interview_plan_id: int | None
-    execution_id: int | None
 
+    execution_id: int | None
     current_section_key: str | None
     current_section_index: int
     current_section_round_no: int
@@ -181,6 +207,7 @@ class InterviewRuntimeState(TypedDict, total=False):
     last_topic_judge_agent_run_id: int | None
     last_followup_agent_run_id: int | None
     last_memory_agent_run_ids: list[int]
+    last_agent_run_id: int | None
 
     latest_candidate_memory_id: int | None
     latest_conversation_summary_id: int | None
@@ -188,11 +215,22 @@ class InterviewRuntimeState(TypedDict, total=False):
     completed_steps: list[str]
     failed_steps: list[str]
     last_error: dict | None
+
+    resume_reason: str | None
+    resume_from_step: str | None
 ```
 
-### 4.2 不进入 State 的内容
+进入 State 的标准：
 
-以下内容不要放进 State：
+```text
+1. 恢复时需要它判断下一步。
+2. 多个 node 需要共享它。
+3. 它影响 workflow 状态或路由。
+4. 它足够小，适合 JSON 持久化。
+5. 它是业务 artifact / AgentRun / message 的引用 ID，而不是完整内容。
+```
+
+不进入 State：
 
 ```text
 完整 transcript
@@ -205,206 +243,20 @@ class InterviewRuntimeState(TypedDict, total=False):
 完整 evidence_packet
 ```
 
-它们应该按需从 DB 读取。State 里只放：
-
-```text
-message_id
-summary_id
-execution_id
-agent_run_id
-interview_plan_id
-```
-
-### 4.3 thread_id
-
-面试 runtime 是一次会话级长线程：
-
-```text
-thread_id = interview:{session_uid}
-```
-
-原因：
-
-```text
-1. 一次 session 对应一条持续多轮的对话运行线。
-2. 用户每次 chat 都应该恢复同一条 thread。
-3. checkpoint 可以自然表达 wait_user_answer。
-```
+这些内容按需从 DB / AgentRun 读取。
 
 ---
 
-## 5. Node 详细设计
+## 6. Node 设计
 
-### 5.1 load_or_create_session
+当前 Node 是普通 Python 方法，不依赖 LangGraph。LangGraph wrapper 只是把这些方法注册进图里。
 
-第一阶段如果只迁移 `chat()`，这个 node 只需要加载现有 session。
+### 6.1 save_user_answer_node
 
-输入：
-
-```text
-session_uid
-```
-
-读取：
+职责：
 
 ```text
-interview_sessions
-```
-
-输出 State：
-
-```text
-session_id
-session_uid
-project_id
-role_name
-interview_plan_id
-status
-```
-
-失败：
-
-```text
-session 不存在 -> terminal failed
-session 非 active -> terminal failed 或 route 到 finished response
-```
-
-副作用：
-
-```text
-无
-```
-
-幂等键：
-
-```text
-无写入，不需要
-```
-
----
-
-### 5.2 initialize_execution_if_needed
-
-第一阶段通常不会触发，因为 `start_with_project()` 已经初始化 execution。
-
-输入 State：
-
-```text
-session_id
-interview_plan_id
-```
-
-读取：
-
-```text
-interview_plan_executions by session_id
-interview_plans by interview_plan_id
-```
-
-写入：
-
-```text
-interview_plan_executions
-```
-
-输出 State：
-
-```text
-execution_id
-current_section_key
-current_section_index
-current_section_round_no
-total_completed_round_no
-next_action
-```
-
-幂等键：
-
-```text
-session_id + interview_plan_id + active execution
-```
-
-恢复规则：
-
-```text
-如果 active/latest execution 已存在：
-  直接加载并写入 State，不重复创建。
-```
-
----
-
-### 5.3 wait_user_answer
-
-这是 interrupt node。
-
-输入 State：
-
-```text
-session_id
-last_assistant_message_id
-expected_user_round_no
-```
-
-行为：
-
-```text
-暂停 graph，等待 API 用同一个 thread_id 恢复并传入 incoming_user_input。
-```
-
-输出 State：
-
-```text
-status = waiting_user
-```
-
-副作用：
-
-```text
-无
-```
-
-恢复规则：
-
-```text
-如果 checkpoint 停在 wait_user_answer：
-  前端展示最后一条 assistant message。
-  新 user message 到来后 resume。
-```
-
----
-
-### 5.4 save_user_answer_node
-
-负责保存用户回答。
-
-输入 State：
-
-```text
-session_id
-incoming_user_input
-expected_user_round_no
-```
-
-读取：
-
-```text
-latest assistant question round_no
-existing user answer by session_id + round_no
-```
-
-写入：
-
-```text
-interview_messages
-  role_type = user
-  message_type = answer
-```
-
-输出 State：
-
-```text
-last_user_message_id
-expected_user_round_no
+把外部用户输入保存为 interview_messages(user/answer)。
 ```
 
 幂等键：
@@ -416,187 +268,73 @@ session_id + round_no + role_type=user + message_type=answer
 恢复规则：
 
 ```text
-如果 user answer 已存在：
-  不重复写入。
-  将 existing message id 写入 last_user_message_id。
-
-如果 incoming_user_input 为空：
-  回到 wait_user_answer 或 terminal failed。
+如果同 round user answer 已存在：
+  复用 existing message
+  写入 last_user_message_id
+  completed_steps += save_user_answer_reused
 ```
 
-注意：
+### 6.2 load_runtime_context_node
+
+职责：
 
 ```text
-这里不要调用 LLM。
-这个 node 只负责把外部用户输入变成可恢复的业务事实。
-```
-
----
-
-### 5.5 load_runtime_context_node
-
-负责加载后续节点需要的上下文引用，不直接把大内容放入 State。
-
-输入 State：
-
-```text
-session_id
-last_user_message_id
-interview_plan_id
-execution_id
+加载后续节点需要的上下文引用和临时对象。
 ```
 
 读取：
 
 ```text
 recent_history
-active/latest execution
+active execution
 latest candidate_profile summary
 latest conversation summary
 interview plan
 ```
 
-输出 State：
-
-```text
-execution_id
-latest_candidate_memory_id
-latest_conversation_summary_id
-current_section_key
-current_section_index
-current_section_round_no
-total_completed_round_no
-next_action
-```
-
-副作用：
-
-```text
-无
-```
-
 恢复规则：
 
 ```text
-无写入，随时可重跑。
+无写副作用，可随时重跑。
 ```
 
----
+### 6.3 topic_judge_node
 
-### 5.6 topic_judge_node
-
-负责调用 `TopicJudgeAgent` 判断当前回答是否覆盖当前 topic/probe point。
-
-输入 State：
+职责：
 
 ```text
-session_id
-execution_id
-last_user_message_id
-```
-
-读取：
-
-```text
-session
-execution
-current_section
-answer_message
-recent_history
-```
-
-调用：
-
-```text
-TopicJudgeAgent.run(
-  TopicJudgeAgentInput(...)
-)
-```
-
-写入：
-
-```text
-agent_runs
-agent_evidence_items
-```
-
-输出 State：
-
-```text
-last_topic_judge_agent_run_id
-last_agent_run_id
+调用 TopicJudgeAgent 判断当前回答是否覆盖当前 topic / probe point。
 ```
 
 幂等键：
 
 ```text
-workflow_run_id + step_id=topic_completion_judge + answer_message_id
+session_id + prompt_id=topic_completion_judge + context_refs(answer_message_id, execution_id)
 ```
 
 恢复规则：
 
 ```text
-如果同一 answer_message_id 已有成功的 TopicJudgeAgent AgentRun：
-  直接复用 AgentRun.output_snapshot。
-  不重复调用 LLM。
-
-如果没有 current_section：
-  跳过 topic judge，route 到 wrap_up 或 generate_followup。
-
-如果 TopicJudgeAgent 失败：
-  可以记录 failed AgentRun。
-  降级策略：judge_result = None，继续 advance_execution_node。
+如果同 answer_message_id + execution_id 已有成功 AgentRun：
+  复用 output_snapshot
+  不重复调用 LLM
 ```
 
-降级策略要保留当前行为：
+失败语义：
 
 ```text
-当前代码里 topic judge 失败后会 warning，然后仍然 advance_after_answer(..., judge_result=None)。
-第一阶段可以继续这个策略，避免迁移改变用户体验。
+non-blocking failure
+记录 failed_steps / last_error
+返回 judge_result = None
+主流程继续 advance_execution_node
 ```
 
----
+### 6.4 advance_execution_node
 
-### 5.7 advance_execution_node
-
-负责推进 `InterviewPlanExecution.state`。
-
-输入 State：
+职责：
 
 ```text
-execution_id
-last_user_message_id
-last_topic_judge_agent_run_id
-```
-
-读取：
-
-```text
-execution
-answer_message
-topic_judge AgentRun.output_snapshot
-```
-
-调用：
-
-```text
-InterviewExecutionService.advance_after_answer(...)
-```
-
-写入：
-
-```text
-interview_plan_executions
-```
-
-输出 State：
-
-```text
-current_section_key
-current_section_index
-current_section_round_no
-total_completed_round_no
-next_action
+推进 InterviewPlanExecution.state。
 ```
 
 幂等键：
@@ -605,73 +343,21 @@ next_action
 execution_id + answer_message_id
 ```
 
-当前代码需要补强：
-
-```text
-InterviewPlanExecution.state.sections[].evidence 里目前记录 round_no。
-建议新增 answer_message_id 或 source_message_id。
-这样 advance_execution_node 可以判断某个 answer 是否已经推进过。
-```
-
 恢复规则：
 
 ```text
-如果 execution.state.evidence 中已存在 answer_message_id：
-  不重复推进 completed_rounds。
-  只从 execution 读取当前状态写回 State。
-
-如果没有 answer_message_id 字段：
-  临时用 round_no 判断，但长期不够稳。
+如果 execution.state.sections[].evidence 已包含 answer_message_id：
+  不重复调用 advance_after_answer
+  不重复增加 completed round
+  completed_steps += advance_execution_reused
 ```
 
----
+### 6.5 refresh_memory_node
 
-### 5.8 refresh_memory_node
-
-负责按轮次刷新：
+职责：
 
 ```text
-candidate_profile summary
-conversation summary
-```
-
-输入 State：
-
-```text
-session_id
-last_user_message_id
-```
-
-读取：
-
-```text
-latest_completed_round_no
-latest candidate_profile summary
-latest conversation summary
-messages between rounds
-```
-
-调用：
-
-```text
-SessionMemoryAgent.run(prompt_id="candidate_profile")
-SessionMemoryAgent.run(prompt_id="conversation_summary")
-```
-
-写入：
-
-```text
-interview_summaries
-agent_runs
-agent_evidence_items
-```
-
-输出 State：
-
-```text
-latest_candidate_memory_id
-latest_conversation_summary_id
-last_memory_agent_run_ids
+按轮次刷新 candidate_profile summary / conversation summary。
 ```
 
 幂等键：
@@ -680,166 +366,66 @@ last_memory_agent_run_ids
 session_id + summary_type + from_round_no + to_round_no
 ```
 
-恢复规则：
+失败语义：
 
 ```text
-如果同范围 summary 已存在：
-  复用 existing summary。
-  不重复调用 LLM。
-
-如果 memory refresh 失败：
-  第一阶段保持当前策略，不阻断主流程。
-  写入 failed_steps 或 last_error，但继续 generate_followup_node。
+non-blocking failure
+memory 失败不阻断面试主流程
+记录 failed_steps / last_error 后继续 generate_followup_node
 ```
 
-注意：
+### 6.6 reload_followup_context_node
+
+职责：
 
 ```text
-refresh_memory_node 是非关键路径。
-它失败不应该导致用户无法继续面试。
-```
-
----
-
-### 5.9 route_next_action
-
-负责根据 execution state 决定下一步。
-
-输入 State：
-
-```text
-next_action
-current_section_key
-status
-```
-
-路由：
-
-```text
-continue_current_topic -> generate_followup_node
-switch_topic_in_section -> generate_followup_node
-move_next_section -> generate_followup_node
-wrap_up_interview -> wrap_up_node
-```
-
-副作用：
-
-```text
-无
+在 execution/memory 可能变化后重新加载 followup 所需上下文。
 ```
 
 恢复规则：
 
 ```text
-纯路由，可随时重跑。
+无写副作用，可随时重跑。
 ```
 
----
+### 6.7 generate_followup_node
 
-### 5.10 generate_followup_node
-
-负责调用 `InterviewExecutorAgent` 生成下一问。
-
-输入 State：
+职责：
 
 ```text
-session_id
-last_user_message_id
-execution_id
-latest_candidate_memory_id
-latest_conversation_summary_id
-interview_plan_id
-```
-
-读取：
-
-```text
-session
-answer_message
-recent_history
-candidate_profile summary
-conversation_summary
-plan_context
-execution_context
-execution
-```
-
-调用：
-
-```text
-InterviewExecutorAgent.run(
-  FollowupAgentInput(...)
-)
-```
-
-写入：
-
-```text
-agent_runs
-agent_evidence_items
-```
-
-输出 State：
-
-```text
-last_followup_agent_run_id
-last_agent_run_id
+调用 InterviewExecutorAgent 生成下一问。
 ```
 
 幂等键：
 
 ```text
-workflow_run_id + step_id=followup + answer_message_id
+session_id + prompt_id=followup + context_refs(answer_message_id)
 ```
 
 恢复规则：
 
 ```text
-如果同一 answer_message_id 已有成功 followup AgentRun：
-  直接复用 output_snapshot。
-  不重复调用 LLM。
-
-如果 AgentRun 成功但 assistant message 未保存：
-  交给 save_assistant_message_node 补写 message。
+如果同 answer_message_id 已有成功 followup AgentRun：
+  复用 output_snapshot
+  不重复调用 LLM
 ```
 
----
-
-### 5.11 save_assistant_message_node
-
-负责保存 assistant question/followup。
-
-输入 State：
+失败语义：
 
 ```text
-session_id
-last_followup_agent_run_id
-last_assistant_message_id
-expected_user_round_no
+blocking failure
+workflow_runs.status = failed
+workflow_runs.current_step = generate_followup
+workflow_runs.last_error = error detail
+异常继续抛给 API
 ```
 
-读取：
+### 6.8 save_assistant_message_node
+
+职责：
 
 ```text
-followup AgentRun.output_snapshot
-latest assistant question round_no
-execution response
-```
-
-写入：
-
-```text
-interview_messages
-  role_type = assistant
-  message_type = followup 或 question
-```
-
-输出 State：
-
-```text
-last_assistant_message_id
-expected_user_round_no
-status = waiting_user
+把 followup 结果保存为 interview_messages(assistant/followup)。
 ```
 
 幂等键：
@@ -852,354 +438,394 @@ session_id + round_no + role_type=assistant
 
 ```text
 如果 assistant message 已存在：
-  直接复用。
-
-如果 followup AgentRun 存在但 message 不存在：
-  用 AgentRun.output_snapshot 补写。
-
-如果 followup AgentRun 不存在：
-  回到 generate_followup_node。
+  复用 existing message
+  completed_steps += save_assistant_message_reused
 ```
 
 ---
 
-### 5.12 wrap_up_node
+## 7. WorkflowRun 持久化
 
-负责在 runtime loop 中停止继续追问。
+`WorkflowRuntime.load_or_create(...)` 根据 thread_id 读取或创建 workflow run。
 
-输入 State：
+当前 thread_id：
 
 ```text
-session_id
-execution_id
-next_action
+interview:{session_uid}
+```
+
+workflow_run_id：
+
+```text
+interview_runtime_{uuid}
+```
+
+每个边界保存：
+
+```text
+start
+save_user_answer
+load_runtime_context
+topic_judge
+advance_execution
+refresh_memory
+reload_followup_context
+generate_followup
+wait_user_answer
+```
+
+保存内容：
+
+```text
+workflow_id
+thread_id
+workflow_run_id
+status
+current_step
+state
+last_error
+error_message
+```
+
+状态含义：
+
+```text
+running:
+  正在执行某一轮 chat，可能停在中间节点。
+
+waiting_user:
+  本轮已完成，assistant followup 已保存，等待下一次用户输入。
+
+failed:
+  blocking node 失败，本轮未完成，可以基于旧 incoming_user_input 重试。
+```
+
+---
+
+## 8. 恢复策略
+
+当前恢复策略是保守版本：不直接从中间节点跳转，而是从本轮 start 重跑，并依赖节点幂等逻辑跳过已经完成的副作用。
+
+这样做的原因：
+
+```text
+1. 业务副作用分散在 DB / AgentRun / execution state 中。
+2. 只信 checkpoint 可能不准确，必须和 DB artifact 对账。
+3. 从 start 重跑简单可靠，风险低。
+4. 幂等节点已经可以避免重复写消息、重复推进 execution、重复调用 LLM。
+```
+
+### 8.1 waiting_user
+
+含义：
+
+```text
+上一轮已经完成，正在等待用户新回答。
+```
+
+恢复行为：
+
+```text
+使用 API 新传入的 message
+resume_reason = new_user_input
+resume_from_step = wait_user_answer
+清空 completed_steps / failed_steps / last_error
+开始新一轮
+```
+
+### 8.2 running
+
+含义：
+
+```text
+上一轮还在执行中，可能进程停在中间节点。
+```
+
+恢复行为：
+
+```text
+优先使用 workflow_run.state.incoming_user_input
+忽略 API 新传入的 message
+resume_reason = unfinished_turn
+resume_from_step = workflow_run.current_step
+清空 completed_steps / failed_steps / last_error
+从 start 重跑
+```
+
+### 8.3 failed
+
+含义：
+
+```text
+上一轮 blocking node 失败，本轮没有完成。
+```
+
+恢复行为：
+
+```text
+优先使用 workflow_run.state.incoming_user_input
+忽略 API 新传入的 message
+resume_reason = failed_retry
+resume_from_step = workflow_run.current_step
+清空 failed_steps / last_error
+从 start 重跑
+```
+
+典型场景：
+
+```text
+generate_followup failed
+user answer 已保存
+execution 已推进
+assistant message 未保存
+
+下一次重试：
+save_user_answer_node 复用 user message
+advance_execution_node 复用 execution evidence
+generate_followup_node 重新尝试
+save_assistant_message_node 成功后进入 waiting_user
+```
+
+---
+
+## 9. 失败语义
+
+### 9.1 Non-blocking Failure
+
+适用节点：
+
+```text
+topic_judge_node
+refresh_memory_node
 ```
 
 行为：
 
 ```text
-不生成 followup。
-返回面试可结束状态。
+记录 failed_steps
+记录 last_error
+主流程继续
+最终仍可进入 waiting_user
 ```
 
-写入：
+原因：
 
 ```text
-第一阶段可以不写 session finished。
-session finished 仍由 end interview API 控制。
+topic judge 和 memory 是增强质量的步骤，不应该阻断用户继续面试。
 ```
 
-输出 State：
+### 9.2 Blocking Failure
+
+适用节点：
 
 ```text
-status = wrapping_up
+generate_followup_node
+save_assistant_message_node
+关键 DB 写入节点
 ```
 
-恢复规则：
+行为：
 
 ```text
-如果 checkpoint 停在 wrapping_up：
-  前端可以提示用户结束面试或进入 evaluation。
+workflow_runs.status = failed
+workflow_runs.current_step = failed node
+workflow_runs.last_error = {
+  step_id,
+  message,
+  error_type
+}
+state.failed_steps += failed node
+异常继续抛给 API
+```
+
+当前实现通过 `active_step` 定位失败节点。
+
+---
+
+## 10. LangGraph 当前角色
+
+当前 LangGraph 是可选执行路径：
+
+```text
+USE_LANGGRAPH_INTERVIEW_RUNTIME=false
+  使用 sequential runtime
+
+USE_LANGGRAPH_INTERVIEW_RUNTIME=true
+  使用 InterviewRuntimeLangGraph
+```
+
+LangGraph wrapper 做的事情：
+
+```text
+1. 定义 StateGraph。
+2. 注册 runtime nodes。
+3. 按固定边连接 start -> ... -> save_assistant_message -> END。
+4. 每个 graph node 调用同一套 InterviewRuntimeNodes。
+5. 每个边界保存 workflow_runs.state。
+6. 节点失败时保存 workflow_runs.status = failed。
+```
+
+LangGraph 当前不承担的事情：
+
+```text
+1. 不改变业务节点语义。
+2. 不替代 AgentRun / Prompt Contract / EvidencePacket。
+3. 暂不依赖 LangGraph checkpoint 作为唯一恢复来源。
+4. 暂不做复杂 conditional edge。
+5. 暂不迁移 start_with_project / end / evaluation。
+```
+
+这意味着：
+
+```text
+业务恢复语义先稳定在我们自己的 WorkflowRuntime + workflow_runs.state 上。
+LangGraph 后续可以替换执行编排，但不能绕过业务幂等和 DB 对账。
 ```
 
 ---
 
-## 6. Edge 设计
+## 11. workflow_run_id 与 AgentRun 对齐
 
-### 6.1 主路由
-
-```python
-def route_next_action(state: InterviewRuntimeState) -> str:
-    next_action = state.get("next_action")
-    if next_action == "wrap_up_interview":
-        return "wrap_up_node"
-    return "generate_followup_node"
-```
-
-### 6.2 Memory 是否刷新
-
-Memory refresh 目前是 node 内部判断，不建议第一阶段拆成复杂 edge。
-
-规则保持当前逻辑：
-
-```text
-latest_completed_round_no < 10:
-  不刷新
-
-candidate_profile:
-  每 10 个 completed round 刷新
-
-conversation_summary:
-  每 5 个 completed round 刷新
-```
-
----
-
-## 7. API 入口设计
-
-### 7.1 第一阶段保留原 API
-
-现有 API 不需要改：
-
-```text
-POST /api/interview/chat
-```
-
-内部从：
-
-```text
-InterviewService.chat()
-```
-
-改成：
-
-```text
-InterviewRuntimeWorkflow.resume_with_user_input(
-  session_uid=session_uid,
-  message=message,
-)
-```
-
-### 7.2 thread_id
-
-```python
-thread_id = f"interview:{session_uid}"
-```
-
-### 7.3 resume 参数
-
-恢复 graph 时传入：
-
-```python
-{
-    "incoming_user_input": message,
-}
-```
-
-### 7.4 返回值
-
-保持现有返回：
-
-```text
-reply: str
-round_no: int
-```
-
-Graph 内部可以通过最后保存的 assistant message 得到返回值。
-
----
-
-## 8. 数据库补强建议
-
-为了让恢复更稳，建议做两个小改动。
-
-### 8.1 execution evidence 增加 answer_message_id
-
-当前 `InterviewExecutionService.advance_after_answer()` 往 section evidence 里写：
-
-```python
-{
-    "round_no": round_no,
-    "answer_excerpt": answer[:300],
-    "probe_point": probe_point,
-    ...
-}
-```
-
-建议增加：
-
-```python
-{
-    "answer_message_id": answer_message.id,
-    "topic_judge_agent_run_id": run_result.agent_run.id,
-}
-```
-
-这样可以幂等判断：
-
-```text
-某个 answer_message 是否已经推进过 execution。
-```
-
-### 8.2 interview_messages 增加 workflow_run_id / step_id 可选字段
-
-如果不想改表，也可以先放在 raw_response 里：
+当前每个 runtime AgentRun 的 workflow_context 会写入真实 workflow_run_id：
 
 ```json
 {
-  "workflow": {
-    "workflow_id": "interview_runtime",
-    "workflow_run_id": "...",
-    "step_id": "followup"
-  }
+  "workflow_id": "interview_runtime",
+  "workflow_run_id": "interview_runtime_xxx",
+  "step_id": "followup"
 }
 ```
 
-长期建议单独字段，方便查询。
-
----
-
-## 9. 第一阶段落地切法
-
-### Step 1：不引入 LangGraph，先抽 Node 函数
-
-先把 `InterviewService.chat()` 拆成纯 Python node-style 方法：
+来源链路：
 
 ```text
-save_user_answer_node()
-load_runtime_context_node()
-topic_judge_node()
-advance_execution_node()
-refresh_memory_node()
-generate_followup_node()
-save_assistant_message_node()
+workflow_runs.workflow_run_id
+-> state["workflow_run_id"]
+-> Runtime Agent Input
+-> InterviewAgentSpecBuilder.workflow_context
+-> AgentRun.input_snapshot.workflow_context
 ```
-
-这一步不改变行为，只改变结构。
 
 收益：
 
 ```text
-可测试
-可单步验证
-后续迁移 LangGraph 时只需要把函数挂到 graph
-```
-
-### Step 2：补幂等查询
-
-给这些 node 增加“存在则复用”的逻辑：
-
-```text
-save_user_answer_node
-topic_judge_node
-advance_execution_node
-refresh_memory_node
-generate_followup_node
-save_assistant_message_node
-```
-
-### Step 3：引入 LangGraph dependency
-
-添加：
-
-```text
-langgraph
-```
-
-### Step 4：创建 graph wrapper
-
-新增建议文件：
-
-```text
-backend/app/service/interview_runtime_graph.py
-```
-
-职责：
-
-```text
-定义 InterviewRuntimeState
-定义 graph nodes
-定义 edges
-创建 compiled graph
-提供 resume_with_user_input()
-```
-
-### Step 5：替换 InterviewService.chat()
-
-把 `chat()` 改成调用 graph wrapper。
-
-保留旧实现一段时间：
-
-```text
-chat_legacy()
-```
-
-可以用 feature flag 控制：
-
-```text
-USE_LANGGRAPH_INTERVIEW_RUNTIME=true/false
+WorkflowRunQueryService 可以用真实 workflow_run_id 找到本轮 topic_judge / followup / memory AgentRun。
 ```
 
 ---
 
-## 10. 最小代码结构建议
+## 12. 查询与可观测性
+
+`WorkflowRunQueryService` 优先读取 persisted `workflow_runs`。
+
+如果没有 persisted workflow_run，则 fallback 到 legacy AgentRun grouping。
+
+列表/详情响应暴露：
 
 ```text
-backend/app/service/
-  interview_runtime_state.py
-  interview_runtime_nodes.py
-  interview_runtime_graph.py
+workflowRunId
+workflowId
+threadId
+status
+currentStep
+activeStep
+resumeReason
+resumeFromStep
+completedSteps
+failedSteps
+errorMessage
+agentRunCount
+latestAgentRunId
 ```
 
-### 10.1 interview_runtime_state.py
+详情额外暴露：
 
 ```text
-只放 TypedDict / Pydantic state schema。
+state
+lastError
+steps
+agentRuns
 ```
 
-### 10.2 interview_runtime_nodes.py
+调试时重点看：
 
 ```text
-放 node 实现。
-依赖现有 repository、agent、execution_service。
-可以先不依赖 LangGraph。
-```
+status = waiting_user
+  当前没有卡住，正在等用户。
 
-### 10.3 interview_runtime_graph.py
+status = running
+  上一轮可能中断，下一次请求会 unfinished_turn retry。
 
-```text
-放 LangGraph StateGraph wiring。
-把 node 函数注册到 graph。
-处理 checkpointer。
-处理 thread_id。
-提供 service 层调用入口。
+status = failed
+  blocking node 失败，下一次请求会 failed_retry。
+
+currentStep
+  workflow_run 最后保存的边界。
+
+activeStep
+  运行中或失败时正在执行的节点。
+
+resumeReason
+  本次 state 是新用户输入、未完成重试，还是失败重试。
+
+errorMessage
+  blocking failure 的快速摘要。
 ```
 
 ---
 
-## 11. 验收标准
+## 13. 验收标准
 
-第一阶段完成后，应该能回答：
+当前阶段应满足：
 
 ```text
-1. 用户回答保存后程序挂了，能不能继续生成 followup？
-2. TopicJudge 成功后程序挂了，会不会重复调用 TopicJudge？
-3. Followup LLM 成功后 message 没保存，会不会重复调用 Followup？
-4. Memory refresh 失败会不会阻断面试？
-5. 当前 session 正在等待用户，系统如何知道？
-6. 每一轮 chat 的 workflow_run_id / step_id / agent_run_id 能否串起来？
+1. 用户回答保存后程序停止，再次请求不会重复创建 user message。
+2. TopicJudge 成功后程序停止，再次请求不会重复调用 TopicJudge。
+3. execution 已推进后程序停止，再次请求不会重复 advance execution。
+4. Followup AgentRun 成功但 assistant message 未保存时，可以复用 AgentRun 补写 message。
+5. Memory refresh 失败不会阻塞面试。
+6. generate_followup 失败会把 workflow_run 标记为 failed。
+7. failed workflow 再次请求时使用旧 incoming_user_input 重试。
+8. workflow_run_id 可以串起 workflow_runs 和 AgentRun。
+9. `/workflow-runs/{id}` 可以看到 status/currentStep/activeStep/resumeReason/errorMessage。
+10. sequential runtime 和 LangGraph runtime 共享同一套 Node 语义。
 ```
 
-第一阶段不强求：
+已覆盖测试：
 
 ```text
-完整迁移 start_with_project
-完整迁移 end/evaluation
-前端展示 graph 状态
-复杂 human review
-tool calling
+python -m unittest discover -s backend\tests
+```
+
+重点测试文件：
+
+```text
+backend/tests/service/test_interview_runtime_nodes.py
+backend/tests/service/test_workflow_run_query_service.py
+backend/tests/service/test_runtime_agents.py
+backend/tests/service/test_interview_agent_spec_builder.py
+backend/tests/service/test_workflow_runtime.py
 ```
 
 ---
 
-## 12. 推荐结论
+## 14. 下一步
 
-Interview Runtime 的迁移应该按这个方向做：
+建议继续按下面顺序推进：
 
 ```text
-先拆 node，后接 LangGraph。
-先补幂等，后做恢复。
-先迁移 chat loop，后迁移 start/end。
-保留现有 BaseAgent / AgentRun / Evidence / Prompt Contract。
+1. 清理旧文档编码乱码，保留本文件作为 Interview Runtime 当前态设计。
+2. 在前端或调试页展示 workflow run 的 activeStep / resumeReason / errorMessage。
+3. 为 LangGraph path 增加更完整的 failed retry 测试。
+4. 评估是否引入 LangGraph checkpointer，但仍以 DB artifact 对账为准。
+5. 增加 conditional edge：wrap_up_interview / continue_current_topic。
+6. 再考虑迁移 start_with_project。
+7. 最后迁移 end/evaluation 到 post_interview_assessment workflow。
 ```
 
-最终目标：
+核心原则：
 
 ```text
-InterviewService 不再承担复杂流程编排。
-它只负责 API 语义和调用 InterviewRuntimeWorkflow。
-
-InterviewRuntimeWorkflow 负责状态机、checkpoint、resume、interrupt。
-
-现有 Agent 继续负责具体 LLM 能力。
+先稳定业务恢复语义，再扩大 LangGraph 使用面。
+先让状态可见、失败可定位、重试可幂等，再追求更复杂的图编排。
 ```

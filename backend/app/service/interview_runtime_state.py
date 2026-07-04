@@ -9,6 +9,7 @@ class InterviewRuntimeState(TypedDict, total=False):
     workflow_run_id: str
     thread_id: str
     status: str
+    active_step: str | None
     project_id: int | None
     session_id: int
     session_uid: str
@@ -32,6 +33,8 @@ class InterviewRuntimeState(TypedDict, total=False):
     completed_steps: list[str]
     failed_steps: list[str]
     last_error: dict | None
+    resume_reason: str | None
+    resume_from_step: str | None
 
 
 @dataclass(frozen=True)

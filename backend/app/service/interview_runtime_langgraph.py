@@ -125,127 +125,153 @@ class InterviewRuntimeLangGraph:
         }
 
     async def _save_user_answer_node(self, state: InterviewRuntimeGraphState) -> dict:
-        answer_message = self.nodes.save_user_answer_node(state, state["session_obj"])
-        self._save(state.get("workflow_run_obj"), state, "save_user_answer", "running")
-        return {
-            "answer_message_obj": answer_message,
-            "last_user_message_id": answer_message.id,
-            "expected_user_round_no": state.get("expected_user_round_no"),
-            "completed_steps": state.get("completed_steps", []),
-        }
+        async def run() -> dict:
+            answer_message = self.nodes.save_user_answer_node(state, state["session_obj"])
+            self._save(state.get("workflow_run_obj"), state, "save_user_answer", "running")
+            return {
+                "answer_message_obj": answer_message,
+                "last_user_message_id": answer_message.id,
+                "expected_user_round_no": state.get("expected_user_round_no"),
+                "completed_steps": state.get("completed_steps", []),
+            }
+
+        return await self._run_node(state, "save_user_answer", run)
 
     async def _load_runtime_context_node(self, state: InterviewRuntimeGraphState) -> dict:
-        context = self.nodes.load_runtime_context_node(state, state["session_obj"])
-        self._save(state.get("workflow_run_obj"), state, "load_runtime_context", "running")
-        return {
-            "runtime_context_obj": context,
-            "execution_id": state.get("execution_id"),
-            "latest_candidate_memory_id": state.get("latest_candidate_memory_id"),
-            "latest_conversation_summary_id": state.get("latest_conversation_summary_id"),
-            "completed_steps": state.get("completed_steps", []),
-        }
+        async def run() -> dict:
+            context = self.nodes.load_runtime_context_node(state, state["session_obj"])
+            self._save(state.get("workflow_run_obj"), state, "load_runtime_context", "running")
+            return {
+                "runtime_context_obj": context,
+                "execution_id": state.get("execution_id"),
+                "latest_candidate_memory_id": state.get("latest_candidate_memory_id"),
+                "latest_conversation_summary_id": state.get("latest_conversation_summary_id"),
+                "completed_steps": state.get("completed_steps", []),
+            }
+
+        return await self._run_node(state, "load_runtime_context", run)
 
     async def _topic_judge_node(self, state: InterviewRuntimeGraphState) -> dict:
-        context = state["runtime_context_obj"]
-        judge_result = await self.nodes.topic_judge_node(
-            state=state,
-            session=state["session_obj"],
-            answer_message=state["answer_message_obj"],
-            recent_history=context.recent_history,
-            execution=context.execution,
-        )
-        self._save(state.get("workflow_run_obj"), state, "topic_judge", "running")
-        return {
-            "judge_result_obj": judge_result,
-            "last_topic_judge_agent_run_id": state.get("last_topic_judge_agent_run_id"),
-            "last_agent_run_id": state.get("last_agent_run_id"),
-            "completed_steps": state.get("completed_steps", []),
-            "failed_steps": state.get("failed_steps", []),
-            "last_error": state.get("last_error"),
-        }
+        async def run() -> dict:
+            context = state["runtime_context_obj"]
+            judge_result = await self.nodes.topic_judge_node(
+                state=state,
+                session=state["session_obj"],
+                answer_message=state["answer_message_obj"],
+                recent_history=context.recent_history,
+                execution=context.execution,
+            )
+            self._save(state.get("workflow_run_obj"), state, "topic_judge", "running")
+            return {
+                "judge_result_obj": judge_result,
+                "last_topic_judge_agent_run_id": state.get("last_topic_judge_agent_run_id"),
+                "last_agent_run_id": state.get("last_agent_run_id"),
+                "completed_steps": state.get("completed_steps", []),
+                "failed_steps": state.get("failed_steps", []),
+                "last_error": state.get("last_error"),
+            }
+
+        return await self._run_node(state, "topic_judge", run)
 
     async def _advance_execution_node(self, state: InterviewRuntimeGraphState) -> dict:
-        context = state["runtime_context_obj"]
-        execution = self.nodes.advance_execution_node(
-            state=state,
-            execution=context.execution,
-            answer_message=state["answer_message_obj"],
-            judge_result=state.get("judge_result_obj"),
-        )
-        self._save(state.get("workflow_run_obj"), state, "advance_execution", "running")
-        return {
-            "execution_obj": execution,
-            "execution_id": state.get("execution_id"),
-            "current_section_key": state.get("current_section_key"),
-            "current_section_index": state.get("current_section_index"),
-            "current_section_round_no": state.get("current_section_round_no"),
-            "total_completed_round_no": state.get("total_completed_round_no"),
-            "next_action": state.get("next_action"),
-            "completed_steps": state.get("completed_steps", []),
-        }
+        async def run() -> dict:
+            context = state["runtime_context_obj"]
+            execution = self.nodes.advance_execution_node(
+                state=state,
+                execution=context.execution,
+                answer_message=state["answer_message_obj"],
+                judge_result=state.get("judge_result_obj"),
+            )
+            self._save(state.get("workflow_run_obj"), state, "advance_execution", "running")
+            return {
+                "execution_obj": execution,
+                "execution_id": state.get("execution_id"),
+                "current_section_key": state.get("current_section_key"),
+                "current_section_index": state.get("current_section_index"),
+                "current_section_round_no": state.get("current_section_round_no"),
+                "total_completed_round_no": state.get("total_completed_round_no"),
+                "next_action": state.get("next_action"),
+                "completed_steps": state.get("completed_steps", []),
+            }
+
+        return await self._run_node(state, "advance_execution", run)
 
     async def _refresh_memory_node(self, state: InterviewRuntimeGraphState) -> dict:
-        context = state["runtime_context_obj"]
-        await self.nodes.refresh_memory_node(
-            state=state,
-            session=state["session_obj"],
-            latest_completed_round_no=context.latest_completed_round_no,
-        )
-        self._save(state.get("workflow_run_obj"), state, "refresh_memory", "running")
-        return {
-            "latest_candidate_memory_id": state.get("latest_candidate_memory_id"),
-            "latest_conversation_summary_id": state.get("latest_conversation_summary_id"),
-            "last_memory_agent_run_ids": state.get("last_memory_agent_run_ids", []),
-            "completed_steps": state.get("completed_steps", []),
-            "failed_steps": state.get("failed_steps", []),
-            "last_error": state.get("last_error"),
-        }
+        async def run() -> dict:
+            context = state["runtime_context_obj"]
+            await self.nodes.refresh_memory_node(
+                state=state,
+                session=state["session_obj"],
+                latest_completed_round_no=context.latest_completed_round_no,
+            )
+            self._save(state.get("workflow_run_obj"), state, "refresh_memory", "running")
+            return {
+                "latest_candidate_memory_id": state.get("latest_candidate_memory_id"),
+                "latest_conversation_summary_id": state.get("latest_conversation_summary_id"),
+                "last_memory_agent_run_ids": state.get("last_memory_agent_run_ids", []),
+                "completed_steps": state.get("completed_steps", []),
+                "failed_steps": state.get("failed_steps", []),
+                "last_error": state.get("last_error"),
+            }
+
+        return await self._run_node(state, "refresh_memory", run)
 
     async def _reload_followup_context_node(self, state: InterviewRuntimeGraphState) -> dict:
-        context = self.nodes.reload_followup_context_node(
-            state=state,
-            session=state["session_obj"],
-            execution=state.get("execution_obj"),
-        )
-        self._save(state.get("workflow_run_obj"), state, "reload_followup_context", "running")
-        return {
-            "followup_context_obj": context,
-            "latest_candidate_memory_id": state.get("latest_candidate_memory_id"),
-            "latest_conversation_summary_id": state.get("latest_conversation_summary_id"),
-            "completed_steps": state.get("completed_steps", []),
-        }
+        async def run() -> dict:
+            context = self.nodes.reload_followup_context_node(
+                state=state,
+                session=state["session_obj"],
+                execution=state.get("execution_obj"),
+            )
+            self._save(state.get("workflow_run_obj"), state, "reload_followup_context", "running")
+            return {
+                "followup_context_obj": context,
+                "latest_candidate_memory_id": state.get("latest_candidate_memory_id"),
+                "latest_conversation_summary_id": state.get("latest_conversation_summary_id"),
+                "completed_steps": state.get("completed_steps", []),
+            }
+
+        return await self._run_node(state, "reload_followup_context", run)
 
     async def _generate_followup_node(self, state: InterviewRuntimeGraphState) -> dict:
-        message_fields = await self.nodes.generate_followup_node(
-            state=state,
-            session=state["session_obj"],
-            answer_message=state["answer_message_obj"],
-            context=state["followup_context_obj"],
-        )
-        self._save(state.get("workflow_run_obj"), state, "generate_followup", "running")
-        return {
-            "message_fields_obj": message_fields,
-            "last_followup_agent_run_id": state.get("last_followup_agent_run_id"),
-            "last_agent_run_id": state.get("last_agent_run_id"),
-            "completed_steps": state.get("completed_steps", []),
-        }
+        async def run() -> dict:
+            message_fields = await self.nodes.generate_followup_node(
+                state=state,
+                session=state["session_obj"],
+                answer_message=state["answer_message_obj"],
+                context=state["followup_context_obj"],
+            )
+            self._save(state.get("workflow_run_obj"), state, "generate_followup", "running")
+            return {
+                "message_fields_obj": message_fields,
+                "last_followup_agent_run_id": state.get("last_followup_agent_run_id"),
+                "last_agent_run_id": state.get("last_agent_run_id"),
+                "completed_steps": state.get("completed_steps", []),
+            }
+
+        return await self._run_node(state, "generate_followup", run)
 
     async def _save_assistant_message_node(self, state: InterviewRuntimeGraphState) -> dict:
-        answer_message = state["answer_message_obj"]
-        assistant_message = self.nodes.save_assistant_message_node(
-            state=state,
-            session=state["session_obj"],
-            round_no=answer_message.round_no + 1,
-            message_fields=state["message_fields_obj"],
-            execution=state.get("execution_obj"),
-        )
-        self._save(state.get("workflow_run_obj"), state, "wait_user_answer", "waiting_user")
-        return {
-            "assistant_message_obj": assistant_message,
-            "last_assistant_message_id": assistant_message.id,
-            "status": state.get("status"),
-            "completed_steps": state.get("completed_steps", []),
-        }
+        async def run() -> dict:
+            answer_message = state["answer_message_obj"]
+            assistant_message = self.nodes.save_assistant_message_node(
+                state=state,
+                session=state["session_obj"],
+                round_no=answer_message.round_no + 1,
+                message_fields=state["message_fields_obj"],
+                execution=state.get("execution_obj"),
+            )
+            state["active_step"] = None
+            self._save(state.get("workflow_run_obj"), state, "wait_user_answer", "waiting_user")
+            return {
+                "assistant_message_obj": assistant_message,
+                "last_assistant_message_id": assistant_message.id,
+                "status": state.get("status"),
+                "active_step": None,
+                "completed_steps": state.get("completed_steps", []),
+            }
+
+        return await self._run_node(state, "save_assistant_message", run)
 
     def _load_or_create_workflow_run(self, session, state: InterviewRuntimeState):
         if not self.runtime:
@@ -257,6 +283,19 @@ class InterviewRuntimeLangGraph:
             session_id=session.id,
             initial_state=state,
         )
+
+    async def _run_node(
+        self,
+        state: InterviewRuntimeGraphState,
+        step_id: str,
+        run,
+    ) -> dict:
+        state["active_step"] = step_id
+        try:
+            return await run()
+        except Exception as exc:
+            self._fail(state.get("workflow_run_obj"), state, step_id, exc)
+            raise
 
     def _save(
         self,
@@ -275,6 +314,23 @@ class InterviewRuntimeLangGraph:
             status=status,
             last_error=state.get("last_error"),
         )
+
+    def _fail(
+        self,
+        workflow_run,
+        state: InterviewRuntimeGraphState,
+        current_step: str,
+        exc: Exception,
+    ) -> None:
+        failed_steps = state.setdefault("failed_steps", [])
+        if current_step not in failed_steps:
+            failed_steps.append(current_step)
+        state["last_error"] = {
+            "step_id": current_step,
+            "message": str(exc),
+            "error_type": exc.__class__.__name__,
+        }
+        self._save(workflow_run, state, current_step, "failed")
 
     def _public_state(self, state: InterviewRuntimeGraphState) -> InterviewRuntimeState:
         private_keys = {

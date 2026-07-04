@@ -124,7 +124,15 @@ def workflow_run(
     current_step: str = "wait_user_answer",
     project_id: int | None = 1,
     session_id: int | None = 10,
+    state: dict | None = None,
+    last_error: dict | None = None,
+    error_message: str | None = None,
 ):
+    state = state or {
+        "completed_steps": ["save_user_answer", "topic_judge", "generate_followup"],
+        "failed_steps": [],
+        "last_user_message_id": 100,
+    }
     return SimpleNamespace(
         id=1,
         workflow_run_id=workflow_run_id,
@@ -134,12 +142,9 @@ def workflow_run(
         session_id=session_id,
         status=status,
         current_step=current_step,
-        state={
-            "completed_steps": ["save_user_answer", "topic_judge", "generate_followup"],
-            "failed_steps": [],
-            "last_user_message_id": 100,
-        },
-        last_error=None,
+        state=state,
+        last_error=last_error,
+        error_message=error_message,
         create_time=datetime(2026, 7, 2, 12, 0, 0),
         update_time=datetime(2026, 7, 2, 12, 1, 0),
     )
@@ -217,6 +222,10 @@ class WorkflowRunQueryServiceTest(unittest.TestCase):
         self.assertEqual(item.thread_id, "interview:session-uid")
         self.assertEqual(item.status, "waiting_user")
         self.assertEqual(item.current_step, "wait_user_answer")
+        self.assertIsNone(item.active_step)
+        self.assertIsNone(item.resume_reason)
+        self.assertIsNone(item.resume_from_step)
+        self.assertIsNone(item.error_message)
         self.assertEqual(item.completed_steps, ["save_user_answer", "topic_judge", "generate_followup"])
         self.assertEqual(item.agent_run_count, 1)
         self.assertEqual(item.latest_agent_run_id, 1)
@@ -280,10 +289,46 @@ class WorkflowRunQueryServiceTest(unittest.TestCase):
         self.assertEqual(response.thread_id, "interview:session-uid")
         self.assertEqual(response.status, "waiting_user")
         self.assertEqual(response.current_step, "wait_user_answer")
+        self.assertIsNone(response.active_step)
+        self.assertIsNone(response.resume_reason)
+        self.assertIsNone(response.resume_from_step)
+        self.assertIsNone(response.error_message)
         self.assertEqual(response.state["last_user_message_id"], 100)
         self.assertEqual(response.last_error, None)
         self.assertEqual([item.id for item in response.agent_runs], [1])
         self.assertIn("topic_completion_judge", [step.step_id for step in response.steps])
+
+    def test_persisted_workflow_run_exposes_resume_observability_fields(self):
+        self.workflow_repo.runs = [
+            workflow_run(
+                status="failed",
+                current_step="generate_followup",
+                state={
+                    "active_step": "generate_followup",
+                    "resume_reason": "failed_retry",
+                    "resume_from_step": "generate_followup",
+                    "completed_steps": ["save_user_answer", "advance_execution"],
+                    "failed_steps": ["generate_followup"],
+                    "last_user_message_id": 100,
+                },
+                last_error={
+                    "step_id": "generate_followup",
+                    "message": "followup unavailable",
+                },
+                error_message="followup unavailable",
+            )
+        ]
+
+        response = self.service.get_detail("session_10_interview_runtime")
+
+        self.assertEqual(response.status, "failed")
+        self.assertEqual(response.current_step, "generate_followup")
+        self.assertEqual(response.active_step, "generate_followup")
+        self.assertEqual(response.resume_reason, "failed_retry")
+        self.assertEqual(response.resume_from_step, "generate_followup")
+        self.assertEqual(response.error_message, "followup unavailable")
+        self.assertEqual(response.failed_steps, ["generate_followup"])
+        self.assertEqual(response.last_error["step_id"], "generate_followup")
 
     def test_get_detail_links_persisted_runtime_run_with_real_workflow_run_id(self):
         runtime_workflow_run_id = "interview_runtime_abc123"

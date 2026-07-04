@@ -226,6 +226,11 @@ class FakeInterviewExecutorAgent:
         )
 
 
+class FailingInterviewExecutorAgent:
+    async def run(self, agent_input):
+        raise RuntimeError("followup unavailable")
+
+
 class InterviewRuntimeNodesTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.session = SimpleNamespace(
@@ -520,6 +525,8 @@ class InterviewRuntimeNodesTest(unittest.IsolatedAsyncioTestCase):
             thread_id="interview:session-uid",
             project_id=1,
             session_id=10,
+            status="waiting_user",
+            current_step="wait_user_answer",
             state={
                 "workflow_id": "interview_runtime",
                 "thread_id": "interview:session-uid",
@@ -548,9 +555,141 @@ class InterviewRuntimeNodesTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(start_state["failed_steps"], [])
         self.assertEqual(start_state["last_memory_agent_run_ids"], [])
         self.assertIsNone(start_state["last_error"])
+        self.assertEqual(start_state["resume_reason"], "new_user_input")
+        self.assertEqual(start_state["resume_from_step"], "wait_user_answer")
         self.assertEqual(result.state["workflow_run_id"], "workflow-run-1")
         self.assertNotIn("old_turn_step", result.state["completed_steps"])
         self.assertNotIn("old_turn_failure", result.state["failed_steps"])
+
+    async def test_runtime_workflow_retries_unfinished_turn_from_persisted_state(self):
+        existing_answer = message(999, "original interrupted answer", round_no=3)
+        self.message_repo.existing_by_round[(3, "user", "answer")] = existing_answer
+        self.execution.state = {
+            "sections": [
+                {
+                    "section_key": "system_design",
+                    "evidence": [{"answer_message_id": 999, "round_no": 3}],
+                }
+            ],
+            "next_action": {"type": "continue_current_topic"},
+        }
+        runtime = FakeWorkflowRuntime()
+        runtime.run = SimpleNamespace(
+            workflow_run_id="workflow-run-1",
+            workflow_id="interview_runtime",
+            thread_id="interview:session-uid",
+            project_id=1,
+            session_id=10,
+            status="running",
+            current_step="topic_judge",
+            state={
+                "workflow_id": "interview_runtime",
+                "thread_id": "interview:session-uid",
+                "workflow_run_id": "workflow-run-1",
+                "status": "running",
+                "incoming_user_input": "original interrupted answer",
+                "last_user_message_id": 999,
+                "completed_steps": ["save_user_answer", "load_runtime_context"],
+                "failed_steps": [],
+                "last_error": None,
+            },
+        )
+        workflow = InterviewRuntimeWorkflow(self.nodes, runtime=runtime)
+
+        result = await workflow.resume_with_user_input(
+            session=self.session,
+            message="new text that should not replace interrupted turn",
+        )
+
+        start_state = runtime.saved[0][1]["state"]
+        self.assertEqual(start_state["incoming_user_input"], "original interrupted answer")
+        self.assertEqual(start_state["resume_reason"], "unfinished_turn")
+        self.assertEqual(start_state["resume_from_step"], "topic_judge")
+        self.assertEqual(result.answer_message_id, 999)
+        self.assertEqual(self.message_repo.created[0].role_type, "assistant")
+        self.assertEqual(self.execution_service.advance_calls, [])
+        self.assertIn("save_user_answer_reused", result.state["completed_steps"])
+        self.assertIn("advance_execution_reused", result.state["completed_steps"])
+
+    async def test_runtime_workflow_retries_failed_turn_from_persisted_state(self):
+        existing_answer = message(999, "answer before followup failure", round_no=3)
+        self.message_repo.existing_by_round[(3, "user", "answer")] = existing_answer
+        self.execution.state = {
+            "sections": [
+                {
+                    "section_key": "system_design",
+                    "evidence": [{"answer_message_id": 999, "round_no": 3}],
+                }
+            ],
+            "next_action": {"type": "continue_current_topic"},
+        }
+        runtime = FakeWorkflowRuntime()
+        runtime.run = SimpleNamespace(
+            workflow_run_id="workflow-run-1",
+            workflow_id="interview_runtime",
+            thread_id="interview:session-uid",
+            project_id=1,
+            session_id=10,
+            status="failed",
+            current_step="generate_followup",
+            state={
+                "workflow_id": "interview_runtime",
+                "thread_id": "interview:session-uid",
+                "workflow_run_id": "workflow-run-1",
+                "status": "failed",
+                "incoming_user_input": "answer before followup failure",
+                "last_user_message_id": 999,
+                "completed_steps": ["save_user_answer", "advance_execution"],
+                "failed_steps": ["generate_followup"],
+                "last_error": {
+                    "step_id": "generate_followup",
+                    "message": "followup unavailable",
+                },
+            },
+        )
+        workflow = InterviewRuntimeWorkflow(self.nodes, runtime=runtime)
+
+        result = await workflow.resume_with_user_input(
+            session=self.session,
+            message="new answer that should wait for next turn",
+        )
+
+        start_state = runtime.saved[0][1]["state"]
+        self.assertEqual(start_state["incoming_user_input"], "answer before followup failure")
+        self.assertEqual(start_state["resume_reason"], "failed_retry")
+        self.assertEqual(start_state["resume_from_step"], "generate_followup")
+        self.assertEqual(start_state["failed_steps"], [])
+        self.assertIsNone(start_state["last_error"])
+        self.assertEqual(result.answer_message_id, 999)
+        self.assertEqual(result.reply, "followup question")
+        self.assertEqual(runtime.saved[-1][1]["status"], "waiting_user")
+        self.assertEqual(self.execution_service.advance_calls, [])
+        self.assertIn("save_user_answer_reused", result.state["completed_steps"])
+        self.assertIn("advance_execution_reused", result.state["completed_steps"])
+
+    async def test_runtime_workflow_marks_blocking_failure(self):
+        self.nodes.interview_executor_agent = FailingInterviewExecutorAgent()
+        self.execution.state = {
+            "sections": [{"section_key": "system_design", "evidence": []}],
+            "next_action": {"type": "continue_current_topic"},
+        }
+        runtime = FakeWorkflowRuntime()
+        workflow = InterviewRuntimeWorkflow(self.nodes, runtime=runtime)
+
+        with self.assertRaisesRegex(RuntimeError, "followup unavailable"):
+            await workflow.resume_with_user_input(
+                session=self.session,
+                message="candidate answer",
+            )
+
+        failed_save = runtime.saved[-1][1]
+        self.assertEqual(failed_save["current_step"], "generate_followup")
+        self.assertEqual(failed_save["status"], "failed")
+        self.assertEqual(failed_save["state"]["status"], "failed")
+        self.assertEqual(failed_save["last_error"]["step_id"], "generate_followup")
+        self.assertEqual(failed_save["last_error"]["message"], "followup unavailable")
+        self.assertIn("generate_followup", failed_save["state"]["failed_steps"])
+        self.assertNotIn("last_assistant_message_id", failed_save["state"])
 
     async def test_runtime_workflow_can_enable_langgraph_path(self):
         self.execution.state = {
@@ -599,6 +738,8 @@ class InterviewRuntimeNodesTest(unittest.IsolatedAsyncioTestCase):
             thread_id="interview:session-uid",
             project_id=1,
             session_id=10,
+            status="waiting_user",
+            current_step="wait_user_answer",
             state={
                 "workflow_id": "interview_runtime",
                 "thread_id": "interview:session-uid",
@@ -629,6 +770,8 @@ class InterviewRuntimeNodesTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(start_state["completed_steps"], [])
         self.assertEqual(start_state["failed_steps"], [])
         self.assertIsNone(start_state["last_error"])
+        self.assertEqual(start_state["resume_reason"], "new_user_input")
+        self.assertEqual(start_state["resume_from_step"], "wait_user_answer")
         self.assertEqual(result.state["workflow_run_id"], "workflow-run-1")
         self.assertNotIn("old_turn_step", result.state["completed_steps"])
 
