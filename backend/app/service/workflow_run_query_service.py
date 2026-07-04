@@ -9,6 +9,7 @@ from app.schemas.agent_run import AgentRunListItem
 from app.schemas.workflow_run import (
     WorkflowRunDetailResponse,
     WorkflowRunListItem,
+    WorkflowRunListQuery,
     WorkflowRunListResponse,
     WorkflowRunStepSummary,
 )
@@ -29,18 +30,26 @@ class WorkflowRunQueryService:
 
     def list_runs(
         self,
+        query: WorkflowRunListQuery | None = None,
         workflow_id: str | None = None,
         project_id: int | None = None,
         session_id: int | None = None,
         status: str | None = None,
         limit: int = 50,
     ) -> WorkflowRunListResponse:
-        workflow_runs = self.workflow_repo.list(
+        query = query or WorkflowRunListQuery(
             workflow_id=workflow_id,
             project_id=project_id,
             session_id=session_id,
             status=status,
-            limit=self._limit(limit),
+            limit=limit,
+        )
+        workflow_runs = self.workflow_repo.list(
+            workflow_id=query.workflow_id,
+            project_id=query.project_id,
+            session_id=query.session_id,
+            status=query.status,
+            limit=query.limit,
         )
         if workflow_runs:
             items = [
@@ -51,17 +60,17 @@ class WorkflowRunQueryService:
             items = [
                 self._summary_from_group(workflow_run_id, runs)
                 for workflow_run_id, runs in self._groups(
-                    workflow_id=workflow_id,
-                    project_id=project_id,
-                    session_id=session_id,
-                    limit=self._scan_limit(limit),
+                    workflow_id=query.workflow_id,
+                    project_id=query.project_id,
+                    session_id=query.session_id,
+                    limit=self._scan_limit(query.limit),
                 ).items()
             ]
-            if status:
-                items = [item for item in items if item.status == status]
+            if query.status:
+                items = [item for item in items if item.status == query.status]
         # 列表按更新时间倒序；没有 update_time 时用 create_time 兜底。
         items = sorted(items, key=lambda item: item.update_time or item.create_time, reverse=True)
-        items = items[: self._limit(limit)]
+        items = items[: query.limit]
         return WorkflowRunListResponse(items=items, total=len(items))
 
     def get_detail(self, workflow_run_id: str) -> WorkflowRunDetailResponse:
