@@ -15,11 +15,13 @@ from service.test_interview_runtime_nodes import (
     FakeExecutionRepo,
     FakeExecutionService,
     FakeInterviewExecutorAgent,
+    FailingInterviewExecutorAgent,
     FakeMessageRepo,
     FakePlanRepo,
     FakeSummaryRepo,
     FakeTopicJudgeAgent,
     FakeWorkflowRuntime,
+    message,
 )
 
 
@@ -114,6 +116,7 @@ class InterviewRuntimeLangGraphCheckpointTest(unittest.IsolatedAsyncioTestCase):
         self.message_repo = FakeMessageRepo()
         self.topic_judge_agent = FakeTopicJudgeAgent()
         self.interview_executor_agent = FakeInterviewExecutorAgent()
+        self.execution_service = FakeExecutionService()
         self.runtime = FakeWorkflowRuntime()
         self.checkpointer = create_memory_checkpointer()
         self.nodes = InterviewRuntimeNodes(
@@ -121,7 +124,7 @@ class InterviewRuntimeLangGraphCheckpointTest(unittest.IsolatedAsyncioTestCase):
             summary_repo=FakeSummaryRepo(),
             execution_repo=FakeExecutionRepo(self.execution),
             plan_repo=FakePlanRepo(),
-            execution_service=FakeExecutionService(),
+            execution_service=self.execution_service,
             topic_judge_agent=self.topic_judge_agent,
             session_memory_agent=None,
             interview_executor_agent=self.interview_executor_agent,
@@ -156,6 +159,101 @@ class InterviewRuntimeLangGraphCheckpointTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.runtime.saved[-1][1]["state"]["status"], "waiting_user")
         self.assertEqual(self.topic_judge_agent.calls[0].workflow_run_id, "workflow-run-1")
         self.assertEqual(self.interview_executor_agent.calls[0].workflow_run_id, "workflow-run-1")
+
+    async def test_checkpointer_does_not_hide_generate_followup_failure(self):
+        self.nodes.interview_executor_agent = FailingInterviewExecutorAgent()
+        workflow = InterviewRuntimeWorkflow(
+            self.nodes,
+            runtime=self.runtime,
+            use_langgraph=True,
+            checkpointer=self.checkpointer,
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "followup unavailable"):
+            await workflow.resume_with_user_input(
+                session=self.session,
+                message="candidate answer",
+            )
+
+        thread_id = "interview:session-uid"
+        checkpoint = latest_checkpoint(self.checkpointer, thread_id)
+        failed_save = self.runtime.saved[-1][1]
+
+        self.assertIsNotNone(checkpoint)
+        self.assertEqual(self.runtime.run.thread_id, thread_id)
+        self.assertEqual(failed_save["current_step"], "generate_followup")
+        self.assertEqual(failed_save["status"], "failed")
+        self.assertEqual(failed_save["state"]["status"], "failed")
+        self.assertEqual(failed_save["last_error"]["step_id"], "generate_followup")
+        self.assertEqual(failed_save["last_error"]["message"], "followup unavailable")
+        self.assertIn("generate_followup", failed_save["state"]["failed_steps"])
+        self.assertNotIn("last_assistant_message_id", failed_save["state"])
+
+    async def test_failed_retry_with_checkpointer_keeps_phase5_idempotency(self):
+        existing_answer = message(999, "answer before followup failure", round_no=3)
+        self.message_repo.existing_by_round[(3, "user", "answer")] = existing_answer
+        self.execution.state = {
+            "sections": [
+                {
+                    "section_key": "system_design",
+                    "evidence": [{"answer_message_id": 999, "round_no": 3}],
+                }
+            ],
+            "next_action": {"type": "continue_current_topic"},
+        }
+        self.runtime.run = SimpleNamespace(
+            workflow_run_id="workflow-run-1",
+            workflow_id="interview_runtime",
+            thread_id="interview:session-uid",
+            project_id=1,
+            session_id=10,
+            status="failed",
+            current_step="generate_followup",
+            state={
+                "workflow_id": "interview_runtime",
+                "thread_id": "interview:session-uid",
+                "workflow_run_id": "workflow-run-1",
+                "status": "failed",
+                "incoming_user_input": "answer before followup failure",
+                "last_user_message_id": 999,
+                "completed_steps": ["save_user_answer", "advance_execution"],
+                "failed_steps": ["generate_followup"],
+                "last_error": {
+                    "step_id": "generate_followup",
+                    "message": "followup unavailable",
+                },
+            },
+        )
+        workflow = InterviewRuntimeWorkflow(
+            self.nodes,
+            runtime=self.runtime,
+            use_langgraph=True,
+            checkpointer=self.checkpointer,
+        )
+
+        result = await workflow.resume_with_user_input(
+            session=self.session,
+            message="new answer that should wait for next turn",
+        )
+
+        thread_id = "interview:session-uid"
+        checkpoint = latest_checkpoint(self.checkpointer, thread_id)
+        start_state = self.runtime.saved[0][1]["state"]
+
+        self.assertIsNotNone(checkpoint)
+        self.assertEqual(start_state["incoming_user_input"], "answer before followup failure")
+        self.assertEqual(start_state["resume_reason"], "failed_retry")
+        self.assertEqual(start_state["resume_from_step"], "generate_followup")
+        self.assertEqual(start_state["failed_steps"], [])
+        self.assertIsNone(start_state["last_error"])
+        self.assertEqual(result.answer_message_id, 999)
+        self.assertEqual(result.reply, "followup question")
+        self.assertEqual(self.runtime.saved[-1][1]["current_step"], "wait_user_answer")
+        self.assertEqual(self.runtime.saved[-1][1]["status"], "waiting_user")
+        self.assertEqual(self.message_repo.created[0].role_type, "assistant")
+        self.assertEqual(self.execution_service.advance_calls, [])
+        self.assertIn("save_user_answer_reused", result.state["completed_steps"])
+        self.assertIn("advance_execution_reused", result.state["completed_steps"])
 
 
 if __name__ == "__main__":

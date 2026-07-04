@@ -17,10 +17,12 @@ import {
   Evaluation,
   WorkflowRunDetailResponse,
   WorkflowRunListItem,
+  WorkflowRunReconciliationResponse,
   WorkflowRunStatus,
   deleteInterview,
   endInterview,
   getWorkflowRunDetail,
+  getWorkflowRunReconciliation,
   getHistory,
   listWorkflowRuns,
   sendMessage,
@@ -337,10 +339,12 @@ function WorkflowRunsView() {
   const [statusFilter, setStatusFilter] = useState<WorkflowRunStatus | "">("");
   const [selectedWorkflowRunId, setSelectedWorkflowRunId] = useState("");
   const [detail, setDetail] = useState<WorkflowRunDetailResponse | null>(null);
+  const [reconciliation, setReconciliation] = useState<WorkflowRunReconciliationResponse | null>(null);
   const [loadingRuns, setLoadingRuns] = useState(false);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [error, setError] = useState("");
   const [detailError, setDetailError] = useState("");
+  const [reconciliationError, setReconciliationError] = useState("");
   const [copyMessage, setCopyMessage] = useState("");
 
   async function loadRuns(nextStatus = statusFilter) {
@@ -355,7 +359,9 @@ function WorkflowRunsView() {
       ) {
         setSelectedWorkflowRunId("");
         setDetail(null);
+        setReconciliation(null);
         setDetailError("");
+        setReconciliationError("");
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Load workflow runs failed");
@@ -368,12 +374,18 @@ function WorkflowRunsView() {
     setSelectedWorkflowRunId(workflowRunId);
     setLoadingDetail(true);
     setDetailError("");
+    setReconciliationError("");
     setCopyMessage("");
     try {
-      const result = await getWorkflowRunDetail(workflowRunId);
-      setDetail(result);
+      const [detailResult, reconciliationResult] = await Promise.all([
+        getWorkflowRunDetail(workflowRunId),
+        getWorkflowRunReconciliation(workflowRunId),
+      ]);
+      setDetail(detailResult);
+      setReconciliation(reconciliationResult);
     } catch (err) {
       setDetail(null);
+      setReconciliation(null);
       setDetailError(err instanceof Error ? err.message : "Load workflow run detail failed");
     } finally {
       setLoadingDetail(false);
@@ -516,6 +528,8 @@ function WorkflowRunsView() {
         detailError={detailError}
         loading={loadingDetail}
         copyMessage={copyMessage}
+        reconciliation={reconciliation}
+        reconciliationError={reconciliationError}
         onCopyWorkflowRunId={handleCopyWorkflowRunId}
         onRefreshDetail={() => void loadDetail(selectedWorkflowRunId)}
         selectedWorkflowRunId={selectedWorkflowRunId}
@@ -563,6 +577,8 @@ function WorkflowRunDetailPanel({
   loading,
   onCopyWorkflowRunId,
   onRefreshDetail,
+  reconciliation,
+  reconciliationError,
   selectedWorkflowRunId,
 }: {
   copyMessage: string;
@@ -571,6 +587,8 @@ function WorkflowRunDetailPanel({
   loading: boolean;
   onCopyWorkflowRunId: (workflowRunId: string) => void;
   onRefreshDetail: () => void;
+  reconciliation: WorkflowRunReconciliationResponse | null;
+  reconciliationError: string;
   selectedWorkflowRunId: string;
 }) {
   if (!selectedWorkflowRunId) {
@@ -630,6 +648,7 @@ function WorkflowRunDetailPanel({
       </div>
 
       {detail.errorMessage && <div className="detail-error">{detail.errorMessage}</div>}
+      <ReconciliationPanel reconciliation={reconciliation} error={reconciliationError} />
 
       <section className="detail-section">
         <h4>Steps</h4>
@@ -675,6 +694,76 @@ function WorkflowRunDetailPanel({
         <JsonBlock label="State" value={detail.state || {}} />
         <JsonBlock label="Last Error" value={detail.lastError || null} />
       </section>
+    </section>
+  );
+}
+
+function ReconciliationPanel({
+  error,
+  reconciliation,
+}: {
+  error: string;
+  reconciliation: WorkflowRunReconciliationResponse | null;
+}) {
+  if (error) {
+    return <div className="detail-error">{error}</div>;
+  }
+
+  if (!reconciliation) {
+    return (
+      <section className="reconciliation-panel">
+        <div className="reconciliation-header">
+          <div>
+            <h4>Reconciliation</h4>
+            <span className="muted">No reconciliation result loaded.</span>
+          </div>
+        </div>
+      </section>
+    );
+  }
+
+  const failingChecks = reconciliation.checks.filter((check) => !check.ok);
+
+  return (
+    <section className={`reconciliation-panel ${reconciliation.ok ? "reconciliation-ok" : "reconciliation-failed"}`}>
+      <div className="reconciliation-header">
+        <div>
+          <h4>Reconciliation</h4>
+          <span className="muted">
+            {reconciliation.errors.length} errors / {reconciliation.warnings.length} warnings
+          </span>
+        </div>
+        <span className={`reconciliation-status ${reconciliation.ok ? "status-ok" : "status-error"}`}>
+          {reconciliation.ok ? "aligned" : "needs review"}
+        </span>
+      </div>
+
+      {(reconciliation.errors.length > 0 || reconciliation.warnings.length > 0) && (
+        <div className="reconciliation-issues">
+          {reconciliation.errors.map((item) => (
+            <div className="reconciliation-issue issue-error" key={`error-${item}`}>
+              {item}
+            </div>
+          ))}
+          {reconciliation.warnings.map((item) => (
+            <div className="reconciliation-issue issue-warning" key={`warning-${item}`}>
+              {item}
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="reconciliation-checks">
+        {(failingChecks.length > 0 ? failingChecks : reconciliation.checks).map((check) => (
+          <article className={`reconciliation-check check-${check.level}`} key={check.name}>
+            <div>
+              <strong>{check.name}</strong>
+              <StatusText value={check.ok ? "success" : check.level} />
+            </div>
+            <p>{check.detail}</p>
+          </article>
+        ))}
+      </div>
     </section>
   );
 }

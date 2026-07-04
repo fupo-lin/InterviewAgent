@@ -6,8 +6,10 @@ from app.schemas.workflow_run import (
     WorkflowRunDetailResponse,
     WorkflowRunListQuery,
     WorkflowRunListResponse,
+    WorkflowRunReconciliationResponse,
     WorkflowRunStatus,
 )
+from app.service.workflow_reconciliation_query_service import WorkflowReconciliationQueryService
 from app.service.workflow_run_query_service import WorkflowRunQueryService
 
 router = APIRouter(prefix="/workflow-runs", tags=["workflow-runs"])
@@ -31,6 +33,16 @@ def list_workflow_runs(
         limit=limit,
     )
     return service.list_runs(query)
+
+
+@router.get(
+    "/{workflow_run_id}/reconciliation",
+    response_model=WorkflowRunReconciliationResponse,
+    response_model_by_alias=True,
+)
+def get_workflow_run_reconciliation(workflow_run_id: str, db: Session = Depends(get_db)):
+    service = WorkflowReconciliationQueryService(db)
+    return service.get_reconciliation(workflow_run_id)
 
 
 @router.get("/{workflow_run_id}", response_model=WorkflowRunDetailResponse, response_model_by_alias=True)

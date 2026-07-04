@@ -74,3 +74,18 @@ class WorkflowRunDetailResponse(WorkflowRunListItem):
 
     class Config:
         populate_by_name = True
+
+
+class WorkflowRunReconciliationCheck(BaseModel):
+    name: str
+    ok: bool
+    level: str
+    detail: str
+
+
+class WorkflowRunReconciliationResponse(BaseModel):
+    ok: bool
+    errors: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    checks: list[WorkflowRunReconciliationCheck] = Field(default_factory=list)
+    metadata: dict = Field(default_factory=dict)
