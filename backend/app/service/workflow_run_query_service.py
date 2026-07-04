@@ -59,7 +59,8 @@ class WorkflowRunQueryService:
             ]
             if status:
                 items = [item for item in items if item.status == status]
-        items = sorted(items, key=lambda item: item.update_time or item.create_time, reverse=True) #对列表进行排序，按照 item.update_time 来排序；如果 update_time 是空（None），那就退而求其次，按照 item.create_time 来排序。降序
+        # 列表按更新时间倒序；没有 update_time 时用 create_time 兜底。
+        items = sorted(items, key=lambda item: item.update_time or item.create_time, reverse=True)
         items = items[: self._limit(limit)]
         return WorkflowRunListResponse(items=items, total=len(items))
 
@@ -96,7 +97,6 @@ class WorkflowRunQueryService:
             agentRuns=agent_run_items,
         )
 
-# 把一堆 agent run 按 workflow_run_id 分组，返回一个字典，key 是 workflow_run_id，value 是对应的 agent run 列表
     def _groups(
         self,
         workflow_id: str | None = None,
@@ -124,7 +124,6 @@ class WorkflowRunQueryService:
             grouped[run_workflow_run_id].append(run)
         return dict(grouped)
 
-# 把同一个 workflow_run_id 的 agent run 列表，汇总成一个 WorkflowRunListItem 对象
     def _summary_from_group(self, workflow_run_id: str, runs: list) -> WorkflowRunListItem:
         agent_run_items = [self.agent_runs._list_item(run) for run in runs]
         workflow_id = self._first_workflow_id(agent_run_items)

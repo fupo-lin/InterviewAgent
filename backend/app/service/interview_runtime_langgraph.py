@@ -16,7 +16,7 @@ except ImportError:  # pragma: no cover - exercised only when langgraph is insta
     START = None
     StateGraph = None
 
-# 定义图的状态，继承了 InterviewRuntimeState，并添加了额外的属性，total=False表示这些属性是可选的
+# 图运行时会临时携带一些 Python 对象；这些对象只在内存中使用，不会写入 workflow_runs.state。
 class InterviewRuntimeGraphState(InterviewRuntimeState, total=False):
     session_obj: Any
     workflow_run_obj: Any
@@ -32,7 +32,7 @@ class InterviewRuntimeGraphState(InterviewRuntimeState, total=False):
 class LangGraphNotAvailable(RuntimeError):
     pass
 
-# 初始化的时候会直接调用 _build_graph 方法来构建图的结构
+
 class InterviewRuntimeLangGraph:
     def __init__(
         self,
@@ -49,7 +49,6 @@ class InterviewRuntimeLangGraph:
         self.runtime = runtime
         self.graph = self._build_graph()
 
-# 入口方法 -- 外部调用的接口
     async def resume_with_user_input(
         self,
         session,
@@ -62,7 +61,8 @@ class InterviewRuntimeLangGraph:
             ),
             "session_obj": session,
         }
-        final_state = await self.graph.ainvoke(state) # ainvoke是异步调用图的入口方法，传入初始状态，返回最终状态
+        # ainvoke 是 LangGraph 的异步入口：传入初始状态，返回最终状态。
+        final_state = await self.graph.ainvoke(state)
         assistant_message = final_state["assistant_message_obj"]
         answer_message = final_state["answer_message_obj"]
         public_state = self._public_state(final_state)
@@ -74,7 +74,6 @@ class InterviewRuntimeLangGraph:
             assistant_message_id=assistant_message.id,
         )
 
-# 构建图的结构，这是面试Runtime的标准作业程序
     def _build_graph(self):
         builder = StateGraph(InterviewRuntimeGraphState)
         builder.add_node("start", self._start_node)
