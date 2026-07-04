@@ -109,6 +109,24 @@ class InterviewMessageRepository:
         )
         return list(self.db.scalars(statement).all())
 
+    def get_by_round(
+        self,
+        session_id: int,
+        round_no: int,
+        role_type: str,
+        message_type: str | None = None,
+    ) -> InterviewMessage | None:
+        statement = select(InterviewMessage).where(
+            InterviewMessage.session_id == session_id,
+            InterviewMessage.round_no == round_no,
+            InterviewMessage.role_type == role_type,
+            InterviewMessage.status != "deleted",
+        )
+        if message_type:
+            statement = statement.where(InterviewMessage.message_type == message_type)
+        statement = statement.order_by(InterviewMessage.id.desc())
+        return self.db.scalars(statement).first()
+
     def next_answer_round_no(self, session_id: int) -> int:
         messages = self.list_by_session_id(session_id)
         user_rounds = [message.round_no for message in messages if message.role_type == "user"]
@@ -262,6 +280,26 @@ class InterviewSummaryRepository:
                 InterviewSummary.status != "deleted",
             )
             .order_by(InterviewSummary.to_round_no.desc(), InterviewSummary.id.desc())
+        )
+        return self.db.scalars(statement).first()
+
+    def get_by_range(
+        self,
+        session_id: int,
+        summary_type: str,
+        from_round_no: int,
+        to_round_no: int,
+    ) -> InterviewSummary | None:
+        statement = (
+            select(InterviewSummary)
+            .where(
+                InterviewSummary.session_id == session_id,
+                InterviewSummary.summary_type == summary_type,
+                InterviewSummary.from_round_no == from_round_no,
+                InterviewSummary.to_round_no == to_round_no,
+                InterviewSummary.status != "deleted",
+            )
+            .order_by(InterviewSummary.id.desc())
         )
         return self.db.scalars(statement).first()
 

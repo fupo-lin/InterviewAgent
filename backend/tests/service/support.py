@@ -51,6 +51,17 @@ def _install_model_stubs() -> None:
     setattr(sys.modules["app.models"], "AgentRun", AgentRun)
     setattr(sys.modules["app.models"], "AgentEvidenceItem", AgentEvidenceItem)
 
+    workflow_module = ModuleType("app.models.workflow")
+
+    class WorkflowRun:
+        def __init__(self, **kwargs):
+            for key, value in kwargs.items():
+                setattr(self, key, value)
+
+    workflow_module.WorkflowRun = WorkflowRun
+    sys.modules["app.models.workflow"] = workflow_module
+    setattr(sys.modules["app.models"], "WorkflowRun", WorkflowRun)
+
     interview_module = ModuleType("app.models.interview")
 
     class InterviewMessage:

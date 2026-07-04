@@ -201,6 +201,7 @@ class RuntimeAgentTest(unittest.IsolatedAsyncioTestCase):
                 candidate_profile_id=201,
                 conversation_summary_id=202,
                 execution=execution,
+                workflow_run_id="interview_runtime_live_1",
             )
         )
 
@@ -227,6 +228,10 @@ class RuntimeAgentTest(unittest.IsolatedAsyncioTestCase):
             success["input_snapshot"]["workflow_context"]["step_id"],
             "followup",
         )
+        self.assertEqual(
+            success["input_snapshot"]["workflow_context"]["workflow_run_id"],
+            "interview_runtime_live_1",
+        )
         self.assert_contract_ok(success, "InterviewExecutorInputV1", "InterviewQuestionOutputV1")
 
     async def test_session_memory_agent_generates_candidate_profile_memory(self):
@@ -242,6 +247,7 @@ class RuntimeAgentTest(unittest.IsolatedAsyncioTestCase):
                 previous_content="old candidate memory",
                 profile_messages=messages,
                 previous_summary_id=201,
+                workflow_run_id="interview_runtime_live_1",
             )
         )
 
@@ -259,6 +265,10 @@ class RuntimeAgentTest(unittest.IsolatedAsyncioTestCase):
         success = self.recorder.success_calls[0]
         self.assertEqual(success["definition"].owner_agent, "SessionMemoryAgent")
         self.assertEqual(success["context_refs"]["previous_summary_id"], 201)
+        self.assertEqual(
+            success["input_snapshot"]["workflow_context"]["workflow_run_id"],
+            "interview_runtime_live_1",
+        )
         self.assert_contract_ok(success, "SessionMemoryInputV1", "SessionMemoryOutputV1")
 
     async def test_session_memory_agent_generates_conversation_summary(self):
@@ -322,6 +332,7 @@ class RuntimeAgentTest(unittest.IsolatedAsyncioTestCase):
                 current_section=current_section,
                 answer_message=answer_message,
                 recent_history=[answer_message],
+                workflow_run_id="interview_runtime_live_1",
             )
         )
 
@@ -341,6 +352,10 @@ class RuntimeAgentTest(unittest.IsolatedAsyncioTestCase):
         success = self.recorder.success_calls[0]
         self.assertEqual(success["definition"].owner_agent, "TopicJudgeAgent")
         self.assertEqual(success["context_refs"]["execution_id"], 30)
+        self.assertEqual(
+            success["input_snapshot"]["workflow_context"]["workflow_run_id"],
+            "interview_runtime_live_1",
+        )
         self.assert_contract_ok(success, "TopicJudgeInputV1", "TopicJudgeResultV1")
 
     async def test_followup_agent_records_input_contract_errors(self):

@@ -24,6 +24,10 @@ class Settings(BaseSettings):
     glm_api_key: str = ""
     glm_api_base: str = "https://open.bigmodel.cn/api/paas/v4"
     glm_model: str = "glm-4"
+    use_langgraph_interview_runtime: bool = Field(
+        default=False,
+        alias="USE_LANGGRAPH_INTERVIEW_RUNTIME",
+    )
 
     @property
     def cors_origins(self) -> list[str]:
