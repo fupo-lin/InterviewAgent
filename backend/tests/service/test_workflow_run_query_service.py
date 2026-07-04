@@ -9,6 +9,7 @@ from service.support import configure_backend_imports
 configure_backend_imports()
 
 from fastapi import HTTPException
+from pydantic import ValidationError
 
 
 repository_module = ModuleType("app.repository.agent_run_repository")
@@ -31,6 +32,7 @@ workflow_repository_module.WorkflowRunRepository = PlaceholderWorkflowRunReposit
 sys.modules["app.repository.workflow_run_repository"] = workflow_repository_module
 
 from app.service.workflow_run_query_service import WorkflowRunQueryService
+from app.schemas.workflow_run import WorkflowRunListQuery
 
 
 def agent_run(
@@ -201,6 +203,95 @@ class WorkflowRunQueryServiceTest(unittest.TestCase):
         self.assertEqual(item.latest_agent_run_id, 2)
         self.assertEqual(self.repo.list_calls[0]["project_id"], 1)
         self.assertEqual(self.repo.list_calls[0]["limit"], 1000)
+
+    def test_list_runs_accepts_fixed_query_schema(self):
+        self.repo.runs = [
+            agent_run(1, step_id="resume_authenticity"),
+            agent_run(2, step_id="resume_rewrite"),
+        ]
+        query = WorkflowRunListQuery(
+            workflowId="resume_optimization",
+            projectId=1,
+            status="success",
+            limit=20,
+        )
+
+        response = self.service.list_runs(query)
+
+        self.assertEqual(response.total, 1)
+        self.assertEqual(response.items[0].workflow_run_id, "project_1_resume_optimization")
+        self.assertEqual(self.workflow_repo.list_calls[0]["workflow_id"], "resume_optimization")
+        self.assertEqual(self.workflow_repo.list_calls[0]["project_id"], 1)
+        self.assertEqual(self.workflow_repo.list_calls[0]["status"], "success")
+        self.assertEqual(self.workflow_repo.list_calls[0]["limit"], 20)
+
+    def test_query_schema_rejects_unstable_status_values(self):
+        with self.assertRaises(ValidationError):
+            WorkflowRunListQuery(status="paused")
+
+    def test_list_response_schema_uses_fixed_aliases(self):
+        self.workflow_repo.runs = [workflow_run()]
+
+        response = self.service.list_runs(workflow_id="interview_runtime", session_id=10)
+        payload = response.model_dump(by_alias=True)
+
+        self.assertEqual(payload["total"], 1)
+        item = payload["items"][0]
+        self.assertIn("workflowRunId", item)
+        self.assertIn("workflowId", item)
+        self.assertIn("threadId", item)
+        self.assertIn("currentStep", item)
+        self.assertIn("activeStep", item)
+        self.assertIn("resumeReason", item)
+        self.assertIn("resumeFromStep", item)
+        self.assertIn("completedSteps", item)
+        self.assertIn("failedSteps", item)
+        self.assertIn("missingRequiredSteps", item)
+        self.assertIn("errorMessage", item)
+        self.assertIn("agentRunCount", item)
+        self.assertIn("latestAgentRunId", item)
+        self.assertIn("createTime", item)
+        self.assertIn("updateTime", item)
+        self.assertNotIn("workflow_run_id", item)
+        self.assertNotIn("current_step", item)
+
+    def test_detail_response_schema_uses_fixed_aliases(self):
+        self.workflow_repo.runs = [
+            workflow_run(
+                last_error={
+                    "step_id": "generate_followup",
+                    "message": "followup unavailable",
+                },
+            )
+        ]
+        self.repo.runs = [
+            agent_run(
+                1,
+                workflow_id="interview_runtime",
+                workflow_run_id="session_10_interview_runtime",
+                step_id="topic_completion_judge",
+                session_id=10,
+            )
+        ]
+
+        response = self.service.get_detail("session_10_interview_runtime")
+        payload = response.model_dump(by_alias=True)
+
+        self.assertIn("workflowRunId", payload)
+        self.assertIn("currentStep", payload)
+        self.assertIn("agentRuns", payload)
+        self.assertIn("lastError", payload)
+        self.assertIn("state", payload)
+        self.assertIn("steps", payload)
+        self.assertIn("stepId", payload["steps"][0])
+        self.assertIn("agentRunIds", payload["steps"][0])
+        self.assertIn("latestAgentRunId", payload["steps"][0])
+        self.assertIn("runCount", payload["steps"][0])
+        self.assertIn("agentName", payload["agentRuns"][0])
+        self.assertIn("workflowRunId", payload["agentRuns"][0]["workflow"])
+        self.assertNotIn("workflow_run_id", payload)
+        self.assertNotIn("agent_runs", payload)
+        self.assertNotIn("last_error", payload)
 
     def test_list_runs_prefers_persisted_workflow_runs(self):
         self.workflow_repo.runs = [workflow_run()]

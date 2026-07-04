@@ -789,6 +789,8 @@ errorMessage
 8. workflow_run_id 可以串起 workflow_runs 和 AgentRun。
 9. `/workflow-runs/{id}` 可以看到 status/currentStep/activeStep/resumeReason/errorMessage。
 10. sequential runtime 和 LangGraph runtime 共享同一套 Node 语义。
+11. LangGraph normal path 测试可以验证 waiting_user 和真实 workflow_run_id 传递。
+12. LangGraph failed retry 测试可以验证旧 incoming_user_input 被复用。
 ```
 
 已覆盖测试：
@@ -807,6 +809,19 @@ backend/tests/service/test_interview_agent_spec_builder.py
 backend/tests/service/test_workflow_runtime.py
 ```
 
+重点 LangGraph 覆盖：
+
+```text
+test_runtime_workflow_can_enable_langgraph_path
+  验证 LangGraph path 正常完成一轮 chat，最终进入 waiting_user。
+  验证 topic_judge / followup AgentRun input 使用真实 workflow_run_id。
+
+test_langgraph_path_retries_failed_turn_from_persisted_state_when_available
+  验证 failed workflow 下一次请求进入 failed_retry。
+  验证 retry 使用旧 incoming_user_input，而不是新请求 message。
+  验证 save_user_answer / advance_execution 通过幂等逻辑复用旧副作用。
+```
+
 ---
 
 ## 14. 下一步
@@ -814,13 +829,12 @@ backend/tests/service/test_workflow_runtime.py
 建议继续按下面顺序推进：
 
 ```text
-1. 清理旧文档编码乱码，保留本文件作为 Interview Runtime 当前态设计。
-2. 在前端或调试页展示 workflow run 的 activeStep / resumeReason / errorMessage。
-3. 为 LangGraph path 增加更完整的 failed retry 测试。
-4. 评估是否引入 LangGraph checkpointer，但仍以 DB artifact 对账为准。
-5. 增加 conditional edge：wrap_up_interview / continue_current_topic。
-6. 再考虑迁移 start_with_project。
-7. 最后迁移 end/evaluation 到 post_interview_assessment workflow。
+1. 进入 Phase 5：在前端或调试页展示 workflow run 的 activeStep / resumeReason / errorMessage。
+2. 前端展示 state / steps / error / AgentRuns，形成可用的 workflow 调试页。
+3. 评估是否引入 LangGraph checkpointer，但仍以 DB artifact 对账为准。
+4. 增加 conditional edge：wrap_up_interview / continue_current_topic。
+5. 再考虑迁移 start_with_project。
+6. 最后迁移 end/evaluation 到 post_interview_assessment workflow。
 ```
 
 核心原则：
@@ -828,4 +842,11 @@ backend/tests/service/test_workflow_runtime.py
 ```text
 先稳定业务恢复语义，再扩大 LangGraph 使用面。
 先让状态可见、失败可定位、重试可幂等，再追求更复杂的图编排。
+```
+
+相关文档：
+
+```text
+docs/phase5_workflow_runtime_design.md
+docs/project_build_knowledge_map.md
 ```

@@ -1,14 +1,31 @@
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
 from app.schemas.agent_run import AgentRunListItem
 
 
+WorkflowRunStatus = Literal["running", "waiting_user", "failed", "success", "partial"]
+WorkflowRunResumeReason = Literal["new_user_input", "unfinished_turn", "failed_retry"]
+WorkflowRunStepStatus = Literal["missing", "running", "waiting_user", "failed", "success"]
+
+
+class WorkflowRunListQuery(BaseModel):
+    workflow_id: str | None = Field(default=None, alias="workflowId")
+    project_id: int | None = Field(default=None, alias="projectId")
+    session_id: int | None = Field(default=None, alias="sessionId")
+    status: WorkflowRunStatus | None = None
+    limit: int = Field(default=50, ge=1, le=200)
+
+    class Config:
+        populate_by_name = True
+
+
 class WorkflowRunStepSummary(BaseModel):
     step_id: str = Field(alias="stepId")
     required: bool
-    status: str
+    status: WorkflowRunStepStatus
     agent_run_ids: list[int] = Field(default_factory=list, alias="agentRunIds")
     latest_agent_run_id: int | None = Field(default=None, alias="latestAgentRunId")
     latest_status: str | None = Field(default=None, alias="latestStatus")
@@ -25,10 +42,10 @@ class WorkflowRunListItem(BaseModel):
     thread_id: str | None = Field(default=None, alias="threadId")
     project_id: int | None = Field(default=None, alias="projectId")
     session_id: int | None = Field(default=None, alias="sessionId")
-    status: str
+    status: WorkflowRunStatus
     current_step: str | None = Field(default=None, alias="currentStep")
     active_step: str | None = Field(default=None, alias="activeStep")
-    resume_reason: str | None = Field(default=None, alias="resumeReason")
+    resume_reason: WorkflowRunResumeReason | None = Field(default=None, alias="resumeReason")
     resume_from_step: str | None = Field(default=None, alias="resumeFromStep")
     completed_steps: list[str] = Field(default_factory=list, alias="completedSteps")
     failed_steps: list[str] = Field(default_factory=list, alias="failedSteps")
