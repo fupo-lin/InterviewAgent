@@ -120,6 +120,7 @@ class InterviewService:
             message_repo=self.message_repo,
             summary_repo=self.summary_repo,
             execution_repo=self.execution_repo,
+            session_repo=self.session_repo,
             plan_repo=self.plan_repo,
             execution_service=self.execution_service,
             topic_judge_agent=self.topic_judge_agent,

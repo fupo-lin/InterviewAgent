@@ -95,6 +95,23 @@ class InterviewRuntimeWorkflow:
             )
             self._record_route_after_advance(state, execution)
             self._save(workflow_run, state, "advance_execution", "running")
+            if state.get("route_after_advance") == InterviewRuntimeRouter.FINISHED:
+                state["active_step"] = "finalize_interview"
+                assistant_message = self.nodes.finalize_interview_node(
+                    state=state,
+                    session=session,
+                    answer_message=answer_message,
+                    execution=execution,
+                )
+                self._save(workflow_run, state, "complete", "finished")
+                return InterviewRuntimeWorkflowResult(
+                    reply=assistant_message.content,
+                    round_no=assistant_message.round_no,
+                    state=state,
+                    answer_message_id=answer_message.id,
+                    assistant_message_id=assistant_message.id,
+                )
+
             state["active_step"] = "refresh_memory"
             await self.nodes.refresh_memory_node(
                 state=state,
@@ -109,6 +126,33 @@ class InterviewRuntimeWorkflow:
                 execution=execution,
             )
             self._save(workflow_run, state, "reload_followup_context", "running")
+            if state.get("route_after_advance") == InterviewRuntimeRouter.WRAP_UP:
+                state["active_step"] = "generate_wrap_up_question"
+                message_fields = await self.nodes.generate_wrap_up_question_node(
+                    state=state,
+                    session=session,
+                    answer_message=answer_message,
+                    context=followup_context,
+                )
+                self._save(workflow_run, state, "generate_wrap_up_question", "running")
+                state["active_step"] = "save_wrap_up_message"
+                assistant_message = self.nodes.save_wrap_up_message_node(
+                    state=state,
+                    session=session,
+                    round_no=answer_message.round_no + 1,
+                    message_fields=message_fields,
+                    execution=execution,
+                )
+                state["active_step"] = None
+                self._save(workflow_run, state, "wait_user_answer", "waiting_user")
+                return InterviewRuntimeWorkflowResult(
+                    reply=assistant_message.content,
+                    round_no=assistant_message.round_no,
+                    state=state,
+                    answer_message_id=answer_message.id,
+                    assistant_message_id=assistant_message.id,
+                )
+
             state["active_step"] = "generate_followup"
             message_fields = await self.nodes.generate_followup_node(
                 state=state,

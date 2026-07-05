@@ -18,6 +18,7 @@ class InterviewRuntimeNodes:
         message_repo,
         summary_repo,
         execution_repo,
+        session_repo=None,
         plan_repo,
         execution_service,
         topic_judge_agent,
@@ -29,6 +30,7 @@ class InterviewRuntimeNodes:
         self.message_repo = message_repo
         self.summary_repo = summary_repo
         self.execution_repo = execution_repo
+        self.session_repo = session_repo
         self.plan_repo = plan_repo
         self.execution_service = execution_service
         self.agent_run_repo = agent_run_repo
@@ -401,6 +403,56 @@ class InterviewRuntimeNodes:
         self._complete(state, "generate_followup")
         return run_result.message_fields()
 
+    async def generate_wrap_up_question_node(
+        self,
+        state: InterviewRuntimeState,
+        session,
+        answer_message,
+        context: RuntimeContext,
+    ):
+        existing = self._get_agent_run_by_context(
+            session_id=session.id,
+            prompt_id="followup",
+            context_refs={"answer_message_id": answer_message.id},
+        )
+        if existing:
+            state["last_followup_agent_run_id"] = existing.id
+            state["last_agent_run_id"] = existing.id
+            self._complete(state, "generate_wrap_up_question_reused")
+            return self._agent_run_message_fields(existing)
+
+        run_result = await self.interview_executor_agent.run(
+            FollowupAgentInput(
+                session=session,
+                answer_message=answer_message,
+                recent_history=context.recent_history,
+                candidate_profile=(
+                    context.candidate_profile.content if context.candidate_profile else None
+                ),
+                conversation_summary=(
+                    context.conversation_summary.content
+                    if context.conversation_summary
+                    else None
+                ),
+                plan_context=context.plan_context,
+                execution_context=context.execution_context,
+                candidate_profile_id=(
+                    context.candidate_profile.id if context.candidate_profile else None
+                ),
+                conversation_summary_id=(
+                    context.conversation_summary.id
+                    if context.conversation_summary
+                    else None
+                ),
+                execution=context.execution,
+                workflow_run_id=state.get("workflow_run_id"),
+            )
+        )
+        state["last_followup_agent_run_id"] = run_result.agent_run.id
+        state["last_agent_run_id"] = run_result.agent_run.id
+        self._complete(state, "generate_wrap_up_question")
+        return run_result.message_fields()
+
     def save_assistant_message_node(
         self,
         state: InterviewRuntimeState,
@@ -438,6 +490,110 @@ class InterviewRuntimeNodes:
         state["last_assistant_message_id"] = message.id
         state["status"] = "waiting_user"
         self._complete(state, "save_assistant_message")
+        return message
+
+    def save_wrap_up_message_node(
+        self,
+        state: InterviewRuntimeState,
+        session,
+        round_no: int,
+        message_fields: dict,
+        execution,
+    ):
+        existing = self._get_message_by_round(
+            session_id=session.id,
+            round_no=round_no,
+            role_type="assistant",
+            message_type="wrap_up",
+        )
+        if existing:
+            state["last_assistant_message_id"] = existing.id
+            state["status"] = "waiting_user"
+            self._complete(state, "save_wrap_up_message_reused")
+            return existing
+
+        message = self.message_repo.create(
+            session_id=session.id,
+            role_type="assistant",
+            message_type="wrap_up",
+            round_no=round_no,
+            **{
+                **message_fields,
+                "raw_response": {
+                    **(message_fields.get("raw_response") or {}),
+                    "source": "interview_runtime_wrap_up",
+                    "route_after_advance": state.get("route_after_advance"),
+                    "route_after_advance_reason": state.get("route_after_advance_reason"),
+                    "execution": self.execution_service.response(execution)
+                    if execution
+                    else None,
+                },
+            },
+        )
+        state["last_assistant_message_id"] = message.id
+        state["status"] = "waiting_user"
+        self._complete(state, "save_wrap_up_message")
+        return message
+
+    def finalize_interview_node(
+        self,
+        state: InterviewRuntimeState,
+        session,
+        answer_message,
+        execution,
+    ):
+        round_no = answer_message.round_no + 1
+        existing = self._get_message_by_round(
+            session_id=session.id,
+            round_no=round_no,
+            role_type="assistant",
+            message_type="summary",
+        )
+        if existing:
+            message = existing
+            self._complete(state, "finalize_interview_reused")
+        else:
+            message = self.message_repo.create(
+                session_id=session.id,
+                role_type="assistant",
+                message_type="summary",
+                round_no=round_no,
+                content=self._final_message(),
+                raw_response={
+                    "source": "interview_runtime_finalize",
+                    "route_after_advance": state.get("route_after_advance"),
+                    "route_after_advance_reason": state.get("route_after_advance_reason"),
+                    "execution": self.execution_service.response(execution)
+                    if execution
+                    else None,
+                },
+                agent_run_id=None,
+                schema_version=None,
+                evidence_refs=[],
+            )
+            self._complete(state, "finalize_interview")
+
+        if execution:
+            execution.status = "finished"
+            execution_state = execution.state or {}
+            execution_state["next_action"] = {
+                "type": "finished",
+                "reason": "interview_runtime_finalized",
+            }
+            execution.state = execution_state
+            self.execution_repo.save(execution)
+            self._sync_execution_state(state, execution)
+
+        if self.session_repo:
+            marker = getattr(self.session_repo, "mark_finished", None)
+            if marker:
+                marker(session)
+        else:
+            session.status = "finished"
+
+        state["last_assistant_message_id"] = message.id
+        state["status"] = "finished"
+        state["active_step"] = None
         return message
 
     def _get_agent_run_by_context(
@@ -638,3 +794,9 @@ class InterviewRuntimeNodes:
             return
         runs = state.setdefault("last_memory_agent_run_ids", [])
         runs.append(agent_run_id)
+
+    def _final_message(self) -> str:
+        return (
+            "本次模拟面试已经完成。接下来我会基于你的回答生成评估结果，"
+            "你也可以查看面试记录并继续完善项目和简历材料。"
+        )

@@ -131,6 +131,22 @@ class InterviewRuntimeLangGraphConfigTest(unittest.IsolatedAsyncioTestCase):
             "next_action_wrap_up_interview",
         )
 
+    async def test_route_after_refresh_memory_splits_wrap_up_from_default(self):
+        runtime = InterviewRuntimeLangGraph.__new__(InterviewRuntimeLangGraph)
+
+        self.assertEqual(
+            runtime._route_after_refresh_memory(
+                {"route_after_advance": InterviewRuntimeRouter.WRAP_UP}
+            ),
+            InterviewRuntimeRouter.WRAP_UP,
+        )
+        self.assertEqual(
+            runtime._route_after_refresh_memory(
+                {"route_after_advance": InterviewRuntimeRouter.CONTINUE_TOPIC}
+            ),
+            "default",
+        )
+
 
 @unittest.skipIf(StateGraph is None, "langgraph is not installed")
 class InterviewRuntimeLangGraphCheckpointTest(unittest.IsolatedAsyncioTestCase):

@@ -93,6 +93,16 @@ class FakeExecutionRepo:
         return execution
 
 
+class FakeSessionRepo:
+    def __init__(self) -> None:
+        self.finished = []
+
+    def mark_finished(self, session):
+        session.status = "finished"
+        self.finished.append(session)
+        return session
+
+
 class FakePlanRepo:
     def get_by_id(self, plan_id):
         return SimpleNamespace(
@@ -172,7 +182,8 @@ class FakeExecutionService:
         return "execution context"
 
     def response(self, execution):
-        return {"nextAction": "continue_current_topic"}
+        next_action = ((execution.state or {}).get("next_action") or {}).get("type")
+        return {"nextAction": next_action or "continue_current_topic"}
 
 
 class FakeTopicJudgeAgent:
@@ -257,9 +268,11 @@ class InterviewRuntimeNodesTest(unittest.IsolatedAsyncioTestCase):
             current_section_index=0,
             current_section_round_no=0,
             total_completed_round_no=0,
+            status="active",
             state={"next_action": {"type": "continue_current_topic"}},
         )
         self.message_repo = FakeMessageRepo()
+        self.session_repo = FakeSessionRepo()
         self.execution_service = FakeExecutionService()
         self.agent_run_repo = FakeAgentRunRepo()
         self.topic_judge_agent = FakeTopicJudgeAgent()
@@ -269,6 +282,7 @@ class InterviewRuntimeNodesTest(unittest.IsolatedAsyncioTestCase):
             message_repo=self.message_repo,
             summary_repo=FakeSummaryRepo(),
             execution_repo=FakeExecutionRepo(self.execution),
+            session_repo=self.session_repo,
             plan_repo=FakePlanRepo(),
             execution_service=self.execution_service,
             topic_judge_agent=self.topic_judge_agent,
@@ -408,6 +422,31 @@ class InterviewRuntimeNodesTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("save_assistant_message_reused", state["completed_steps"])
         self.assertEqual(self.message_repo.created, [])
 
+    async def test_finalize_interview_node_marks_session_and_execution_finished(self):
+        answer = message(777, "final answer", round_no=3)
+        state = self.nodes.initial_chat_state(self.session, "final answer")
+        state["route_after_advance"] = InterviewRuntimeRouter.FINISHED
+        state["route_after_advance_reason"] = "next_action_finished"
+
+        assistant = self.nodes.finalize_interview_node(
+            state=state,
+            session=self.session,
+            answer_message=answer,
+            execution=self.execution,
+        )
+
+        self.assertEqual(assistant.role_type, "assistant")
+        self.assertEqual(assistant.message_type, "summary")
+        self.assertEqual(assistant.round_no, 4)
+        self.assertEqual(self.session.status, "finished")
+        self.assertEqual(self.execution.status, "finished")
+        self.assertEqual(self.execution.state["next_action"]["type"], "finished")
+        self.assertEqual(state["status"], "finished")
+        self.assertEqual(state["active_step"], None)
+        self.assertEqual(state["last_assistant_message_id"], assistant.id)
+        self.assertIn("finalize_interview", state["completed_steps"])
+        self.assertEqual(self.session_repo.finished, [self.session])
+
     async def test_advance_execution_reuses_existing_answer_marker(self):
         answer = message(777, "candidate answer", round_no=3)
         self.execution.state = {
@@ -496,6 +535,39 @@ class InterviewRuntimeNodesTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.interview_executor_agent.calls, [])
         self.assertIn("generate_followup_reused", state["completed_steps"])
 
+    async def test_wrap_up_nodes_generate_and_save_wrap_up_message(self):
+        answer = message(888, "candidate answer", round_no=3)
+        state = self.nodes.initial_chat_state(self.session, "candidate answer")
+        state["route_after_advance"] = InterviewRuntimeRouter.WRAP_UP
+        state["route_after_advance_reason"] = "next_action_wrap_up_interview"
+        context = self.nodes.reload_followup_context_node(state, self.session, self.execution)
+
+        fields = await self.nodes.generate_wrap_up_question_node(
+            state,
+            self.session,
+            answer,
+            context,
+        )
+        assistant = self.nodes.save_wrap_up_message_node(
+            state,
+            self.session,
+            4,
+            fields,
+            self.execution,
+        )
+
+        self.assertEqual(fields["content"], "followup question")
+        self.assertEqual(assistant.message_type, "wrap_up")
+        self.assertEqual(assistant.raw_response["source"], "interview_runtime_wrap_up")
+        self.assertEqual(
+            assistant.raw_response["route_after_advance"],
+            InterviewRuntimeRouter.WRAP_UP,
+        )
+        self.assertIn("generate_wrap_up_question", state["completed_steps"])
+        self.assertIn("save_wrap_up_message", state["completed_steps"])
+        self.assertNotIn("generate_followup", state["completed_steps"])
+        self.assertNotIn("save_assistant_message", state["completed_steps"])
+
     async def test_runtime_workflow_wraps_chat_loop(self):
         self.execution.state = {
             "sections": [{"section_key": "system_design", "evidence": []}],
@@ -579,6 +651,63 @@ class InterviewRuntimeNodesTest(unittest.IsolatedAsyncioTestCase):
             result.state["route_after_advance_reason"],
             "next_action_move_next_section",
         )
+
+    async def test_runtime_workflow_finished_route_finalizes_without_followup(self):
+        self.execution_service.next_action = "finished"
+        self.execution_service.execution_status_after_advance = "finished"
+        self.execution.state = {
+            "sections": [{"section_key": "system_design", "evidence": []}],
+            "next_action": {"type": "continue_current_topic"},
+        }
+        runtime = FakeWorkflowRuntime()
+        workflow = InterviewRuntimeWorkflow(self.nodes, runtime=runtime)
+
+        result = await workflow.resume_with_user_input(
+            session=self.session,
+            message="final candidate answer",
+        )
+
+        self.assertEqual(result.round_no, 4)
+        self.assertEqual(result.state["status"], "finished")
+        self.assertEqual(
+            result.state["route_after_advance"],
+            InterviewRuntimeRouter.FINISHED,
+        )
+        self.assertIn("finalize_interview", result.state["completed_steps"])
+        self.assertNotIn("generate_followup", result.state["completed_steps"])
+        self.assertEqual(self.interview_executor_agent.calls, [])
+        self.assertEqual(self.message_repo.created[-1].message_type, "summary")
+        self.assertEqual(runtime.saved[-1][1]["current_step"], "complete")
+        self.assertEqual(runtime.saved[-1][1]["status"], "finished")
+        self.assertEqual(self.session.status, "finished")
+
+    async def test_runtime_workflow_wrap_up_route_uses_wrap_up_steps(self):
+        self.execution_service.next_action = "wrap_up_interview"
+        self.execution.state = {
+            "sections": [{"section_key": "system_design", "evidence": []}],
+            "next_action": {"type": "continue_current_topic"},
+        }
+        runtime = FakeWorkflowRuntime()
+        workflow = InterviewRuntimeWorkflow(self.nodes, runtime=runtime)
+
+        result = await workflow.resume_with_user_input(
+            session=self.session,
+            message="candidate answer",
+        )
+
+        self.assertEqual(result.reply, "followup question")
+        self.assertEqual(result.state["status"], "waiting_user")
+        self.assertEqual(
+            result.state["route_after_advance"],
+            InterviewRuntimeRouter.WRAP_UP,
+        )
+        self.assertIn("generate_wrap_up_question", result.state["completed_steps"])
+        self.assertIn("save_wrap_up_message", result.state["completed_steps"])
+        self.assertNotIn("generate_followup", result.state["completed_steps"])
+        self.assertNotIn("save_assistant_message", result.state["completed_steps"])
+        self.assertEqual(self.message_repo.created[-1].message_type, "wrap_up")
+        self.assertEqual(runtime.saved[-1][1]["current_step"], "wait_user_answer")
+        self.assertEqual(runtime.saved[-1][1]["status"], "waiting_user")
 
     async def test_runtime_workflow_resumes_from_persisted_state_for_new_turn(self):
         self.execution.state = {
@@ -828,6 +957,73 @@ class InterviewRuntimeNodesTest(unittest.IsolatedAsyncioTestCase):
             events.index("followup_llm"),
         )
         self.assertIn("commit:wait_user_answer", events)
+
+    async def test_langgraph_finished_route_finalizes_without_followup_when_available(self):
+        if StateGraph is None:
+            return
+
+        self.execution_service.next_action = "finished"
+        self.execution_service.execution_status_after_advance = "finished"
+        self.execution.state = {
+            "sections": [{"section_key": "system_design", "evidence": []}],
+            "next_action": {"type": "continue_current_topic"},
+        }
+        runtime = FakeWorkflowRuntime()
+        workflow = InterviewRuntimeWorkflow(
+            self.nodes,
+            runtime=runtime,
+            use_langgraph=True,
+        )
+
+        result = await workflow.resume_with_user_input(
+            session=self.session,
+            message="final candidate answer",
+        )
+
+        self.assertEqual(result.state["status"], "finished")
+        self.assertEqual(
+            result.state["route_after_advance"],
+            InterviewRuntimeRouter.FINISHED,
+        )
+        self.assertIn("finalize_interview", result.state["completed_steps"])
+        self.assertNotIn("generate_followup", result.state["completed_steps"])
+        self.assertEqual(self.interview_executor_agent.calls, [])
+        self.assertEqual(self.message_repo.created[-1].message_type, "summary")
+        self.assertEqual(runtime.saved[-1][1]["current_step"], "complete")
+        self.assertEqual(runtime.saved[-1][1]["status"], "finished")
+
+    async def test_langgraph_wrap_up_route_uses_wrap_up_steps_when_available(self):
+        if StateGraph is None:
+            return
+
+        self.execution_service.next_action = "wrap_up_interview"
+        self.execution.state = {
+            "sections": [{"section_key": "system_design", "evidence": []}],
+            "next_action": {"type": "continue_current_topic"},
+        }
+        runtime = FakeWorkflowRuntime()
+        workflow = InterviewRuntimeWorkflow(
+            self.nodes,
+            runtime=runtime,
+            use_langgraph=True,
+        )
+
+        result = await workflow.resume_with_user_input(
+            session=self.session,
+            message="candidate answer",
+        )
+
+        self.assertEqual(result.state["status"], "waiting_user")
+        self.assertEqual(
+            result.state["route_after_advance"],
+            InterviewRuntimeRouter.WRAP_UP,
+        )
+        self.assertIn("generate_wrap_up_question", result.state["completed_steps"])
+        self.assertIn("save_wrap_up_message", result.state["completed_steps"])
+        self.assertNotIn("generate_followup", result.state["completed_steps"])
+        self.assertNotIn("save_assistant_message", result.state["completed_steps"])
+        self.assertEqual(self.message_repo.created[-1].message_type, "wrap_up")
+        self.assertEqual(runtime.saved[-1][1]["current_step"], "wait_user_answer")
 
     async def test_langgraph_path_resumes_from_persisted_state_when_available(self):
         if StateGraph is None:

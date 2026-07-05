@@ -93,8 +93,12 @@ class InterviewRuntimeLangGraph:
         builder.add_node("advance_execution", self._advance_execution_node)
         builder.add_node("refresh_memory", self._refresh_memory_node)
         builder.add_node("reload_followup_context", self._reload_followup_context_node)
+        builder.add_node("reload_wrap_up_context", self._reload_wrap_up_context_node)
         builder.add_node("generate_followup", self._generate_followup_node)
+        builder.add_node("generate_wrap_up_question", self._generate_wrap_up_question_node)
         builder.add_node("save_assistant_message", self._save_assistant_message_node)
+        builder.add_node("save_wrap_up_message", self._save_wrap_up_message_node)
+        builder.add_node("finalize_interview", self._finalize_interview_node)
 
         builder.add_edge(START, "start")
         builder.add_edge("start", "save_user_answer")
@@ -109,13 +113,24 @@ class InterviewRuntimeLangGraph:
                 InterviewRuntimeRouter.SWITCH_TOPIC: "refresh_memory",
                 InterviewRuntimeRouter.MOVE_NEXT_SECTION: "refresh_memory",
                 InterviewRuntimeRouter.WRAP_UP: "refresh_memory",
-                InterviewRuntimeRouter.FINISHED: "refresh_memory",
+                InterviewRuntimeRouter.FINISHED: "finalize_interview",
             },
         )
-        builder.add_edge("refresh_memory", "reload_followup_context")
+        builder.add_conditional_edges(
+            "refresh_memory",
+            self._route_after_refresh_memory,
+            {
+                InterviewRuntimeRouter.WRAP_UP: "reload_wrap_up_context",
+                "default": "reload_followup_context",
+            },
+        )
         builder.add_edge("reload_followup_context", "generate_followup")
         builder.add_edge("generate_followup", "save_assistant_message")
         builder.add_edge("save_assistant_message", END)
+        builder.add_edge("reload_wrap_up_context", "generate_wrap_up_question")
+        builder.add_edge("generate_wrap_up_question", "save_wrap_up_message")
+        builder.add_edge("save_wrap_up_message", END)
+        builder.add_edge("finalize_interview", END)
         return builder.compile(checkpointer=self.checkpointer)
 
     async def _start_node(self, state: InterviewRuntimeGraphState) -> dict:
@@ -237,6 +252,11 @@ class InterviewRuntimeLangGraph:
         state["route_after_advance_reason"] = decision.reason
         return decision.route
 
+    def _route_after_refresh_memory(self, state: InterviewRuntimeGraphState) -> str:
+        if state.get("route_after_advance") == InterviewRuntimeRouter.WRAP_UP:
+            return InterviewRuntimeRouter.WRAP_UP
+        return "default"
+
     async def _refresh_memory_node(self, state: InterviewRuntimeGraphState) -> dict:
         async def run() -> dict:
             context = state["runtime_context_obj"]
@@ -274,6 +294,23 @@ class InterviewRuntimeLangGraph:
 
         return await self._run_node(state, "reload_followup_context", run)
 
+    async def _reload_wrap_up_context_node(self, state: InterviewRuntimeGraphState) -> dict:
+        async def run() -> dict:
+            context = self.nodes.reload_followup_context_node(
+                state=state,
+                session=state["session_obj"],
+                execution=state.get("execution_obj"),
+            )
+            self._save(state.get("workflow_run_obj"), state, "reload_wrap_up_context", "running")
+            return {
+                "followup_context_obj": context,
+                "latest_candidate_memory_id": state.get("latest_candidate_memory_id"),
+                "latest_conversation_summary_id": state.get("latest_conversation_summary_id"),
+                "completed_steps": state.get("completed_steps", []),
+            }
+
+        return await self._run_node(state, "reload_wrap_up_context", run)
+
     async def _generate_followup_node(self, state: InterviewRuntimeGraphState) -> dict:
         async def run() -> dict:
             message_fields = await self.nodes.generate_followup_node(
@@ -291,6 +328,24 @@ class InterviewRuntimeLangGraph:
             }
 
         return await self._run_node(state, "generate_followup", run)
+
+    async def _generate_wrap_up_question_node(self, state: InterviewRuntimeGraphState) -> dict:
+        async def run() -> dict:
+            message_fields = await self.nodes.generate_wrap_up_question_node(
+                state=state,
+                session=state["session_obj"],
+                answer_message=state["answer_message_obj"],
+                context=state["followup_context_obj"],
+            )
+            self._save(state.get("workflow_run_obj"), state, "generate_wrap_up_question", "running")
+            return {
+                "message_fields_obj": message_fields,
+                "last_followup_agent_run_id": state.get("last_followup_agent_run_id"),
+                "last_agent_run_id": state.get("last_agent_run_id"),
+                "completed_steps": state.get("completed_steps", []),
+            }
+
+        return await self._run_node(state, "generate_wrap_up_question", run)
 
     async def _save_assistant_message_node(self, state: InterviewRuntimeGraphState) -> dict:
         async def run() -> dict:
@@ -313,6 +368,47 @@ class InterviewRuntimeLangGraph:
             }
 
         return await self._run_node(state, "save_assistant_message", run)
+
+    async def _save_wrap_up_message_node(self, state: InterviewRuntimeGraphState) -> dict:
+        async def run() -> dict:
+            answer_message = state["answer_message_obj"]
+            assistant_message = self.nodes.save_wrap_up_message_node(
+                state=state,
+                session=state["session_obj"],
+                round_no=answer_message.round_no + 1,
+                message_fields=state["message_fields_obj"],
+                execution=state.get("execution_obj"),
+            )
+            state["active_step"] = None
+            self._save(state.get("workflow_run_obj"), state, "wait_user_answer", "waiting_user")
+            return {
+                "assistant_message_obj": assistant_message,
+                "last_assistant_message_id": assistant_message.id,
+                "status": state.get("status"),
+                "active_step": None,
+                "completed_steps": state.get("completed_steps", []),
+            }
+
+        return await self._run_node(state, "save_wrap_up_message", run)
+
+    async def _finalize_interview_node(self, state: InterviewRuntimeGraphState) -> dict:
+        async def run() -> dict:
+            assistant_message = self.nodes.finalize_interview_node(
+                state=state,
+                session=state["session_obj"],
+                answer_message=state["answer_message_obj"],
+                execution=state.get("execution_obj"),
+            )
+            self._save(state.get("workflow_run_obj"), state, "complete", "finished")
+            return {
+                "assistant_message_obj": assistant_message,
+                "last_assistant_message_id": assistant_message.id,
+                "status": state.get("status"),
+                "active_step": None,
+                "completed_steps": state.get("completed_steps", []),
+            }
+
+        return await self._run_node(state, "finalize_interview", run)
 
     def _load_or_create_workflow_run(self, session, state: InterviewRuntimeState):
         if not self.runtime:

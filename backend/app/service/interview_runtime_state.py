@@ -21,6 +21,8 @@ class InterviewRuntimeState(TypedDict, total=False):
     current_section_round_no: int
     total_completed_round_no: int
     next_action: str | None
+    route_after_advance: str | None
+    route_after_advance_reason: str | None
     incoming_user_input: str | None
     expected_user_round_no: int | None
     last_user_message_id: int | None

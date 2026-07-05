@@ -3,7 +3,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, ValidationError, model_validator
 
 
-WorkflowStatus = Literal["running", "waiting_user", "failed", "success", "partial"]
+WorkflowStatus = Literal["running", "waiting_user", "failed", "success", "partial", "finished"]
 
 
 class WorkflowStateContractError(ValueError):
@@ -44,6 +44,8 @@ class InterviewRuntimeStateContract(WorkflowStateBase):
     current_section_index: StrictInt = Field(ge=0)
     current_section_round_no: StrictInt = Field(ge=0)
     total_completed_round_no: StrictInt = Field(ge=0)
+    route_after_advance: str | None = None
+    route_after_advance_reason: str | None = None
     incoming_user_input: str | None = None
     expected_user_round_no: StrictInt | None = Field(default=None, ge=0)
     last_memory_agent_run_ids: list[StrictInt] = Field(default_factory=list)
