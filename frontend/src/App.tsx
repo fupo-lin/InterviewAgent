@@ -334,9 +334,18 @@ const WORKFLOW_STATUS_OPTIONS: Array<WorkflowRunStatus | ""> = [
   "partial",
 ];
 
+const WORKFLOW_ID_OPTIONS = [
+  "",
+  "interview_runtime",
+  "post_interview_assessment",
+  "preparation",
+  "resume_optimization",
+];
+
 function WorkflowRunsView() {
   const [runs, setRuns] = useState<WorkflowRunListItem[]>([]);
   const [statusFilter, setStatusFilter] = useState<WorkflowRunStatus | "">("");
+  const [workflowFilter, setWorkflowFilter] = useState("");
   const [selectedWorkflowRunId, setSelectedWorkflowRunId] = useState("");
   const [detail, setDetail] = useState<WorkflowRunDetailResponse | null>(null);
   const [reconciliation, setReconciliation] = useState<WorkflowRunReconciliationResponse | null>(null);
@@ -347,11 +356,14 @@ function WorkflowRunsView() {
   const [reconciliationError, setReconciliationError] = useState("");
   const [copyMessage, setCopyMessage] = useState("");
 
-  async function loadRuns(nextStatus = statusFilter) {
+  async function loadRuns(nextStatus = statusFilter, nextWorkflowId = workflowFilter) {
     setLoadingRuns(true);
     setError("");
     try {
-      const result = await listWorkflowRuns(nextStatus);
+      const result = await listWorkflowRuns({
+        status: nextStatus,
+        workflowId: nextWorkflowId,
+      });
       setRuns(result.items);
       if (
         selectedWorkflowRunId &&
@@ -398,11 +410,16 @@ function WorkflowRunsView() {
 
   function handleStatusChange(nextStatus: WorkflowRunStatus | "") {
     setStatusFilter(nextStatus);
-    void loadRuns(nextStatus);
+    void loadRuns(nextStatus, workflowFilter);
+  }
+
+  function handleWorkflowChange(nextWorkflowId: string) {
+    setWorkflowFilter(nextWorkflowId);
+    void loadRuns(statusFilter, nextWorkflowId);
   }
 
   function handleRefresh() {
-    void loadRuns();
+    void loadRuns(statusFilter, workflowFilter);
     if (selectedWorkflowRunId) {
       void loadDetail(selectedWorkflowRunId);
     }
@@ -426,6 +443,17 @@ function WorkflowRunsView() {
           <h2>Workflow Runs</h2>
         </div>
         <div className="workflow-actions">
+          <select
+            aria-label="Workflow id filter"
+            value={workflowFilter}
+            onChange={(event) => handleWorkflowChange(event.target.value)}
+          >
+            {WORKFLOW_ID_OPTIONS.map((item) => (
+              <option key={item || "all"} value={item}>
+                {item || "all workflows"}
+              </option>
+            ))}
+          </select>
           <select
             aria-label="Workflow status filter"
             value={statusFilter}
@@ -643,6 +671,8 @@ function WorkflowRunDetailPanel({
         <DetailField label="Active Step" value={detail.activeStep || "-"} />
         <DetailField label="Resume Reason" value={detail.resumeReason || "-"} />
         <DetailField label="Resume From" value={detail.resumeFromStep || "-"} />
+        <DetailField label="Branch" value={stringStateValue(detail.state?.branch)} />
+        <DetailField label="Branch Reason" value={stringStateValue(detail.state?.branch_reason)} />
         <DetailField label="AgentRuns" value={detail.agentRunCount.toString()} />
         <DetailField label="Updated" value={formatDateTime(detail.updateTime || detail.createTime)} />
       </div>
@@ -792,6 +822,12 @@ function JsonBlock({ label, value }: { label: string; value: unknown }) {
 
 function countByStatus(items: WorkflowRunListItem[], status: WorkflowRunStatus) {
   return items.filter((item) => item.status === status).length;
+}
+
+function stringStateValue(value: unknown) {
+  if (typeof value === "string" && value.length > 0) return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return "-";
 }
 
 function formatDateTime(value?: string | null) {

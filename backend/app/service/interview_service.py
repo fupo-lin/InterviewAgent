@@ -16,12 +16,14 @@ from app.repository.workflow_run_repository import WorkflowRunRepository
 from app.repository.preparation_repository import InterviewPlanRepository, PreparationProjectRepository
 from app.service.agent_run_service import AgentRunExecutor, AgentRunRecorder
 from app.service.agent_runtime import AgentRuntimeConfig
-from app.service.assessment_agents import EvaluationAgent, EvaluationAgentInput
+from app.service.assessment_agents import EvaluationAgent
 from app.service.evidence_service import EvidencePacketBuilder
 from app.service.interview_agent_spec_builder import InterviewAgentSpecBuilder
 from app.service.interview_execution_service import InterviewExecutionService
 from app.service.interview_runtime_nodes import InterviewRuntimeNodes
 from app.service.interview_runtime_workflow import InterviewRuntimeWorkflow
+from app.service.post_interview_assessment_nodes import PostInterviewAssessmentNodes
+from app.service.post_interview_assessment_workflow import PostInterviewAssessmentWorkflow
 from app.service.preparation_service import PreparationService
 from app.service.workflow_runtime import WorkflowRuntime
 from app.service.runtime_agents import (
@@ -100,6 +102,20 @@ class InterviewService:
         self.workflow_runtime = WorkflowRuntime(self.workflow_run_repo)
         self.runtime_workflow = InterviewRuntimeWorkflow(
             self.runtime_nodes,
+            runtime=self.workflow_runtime,
+        )
+        self.assessment_nodes = PostInterviewAssessmentNodes(
+            message_repo=self.message_repo,
+            evaluation_repo=self.evaluation_repo,
+            summary_repo=self.summary_repo,
+            execution_repo=self.execution_repo,
+            plan_repo=self.plan_repo,
+            session_repo=self.session_repo,
+            execution_service=self.execution_service,
+            evaluation_agent=self.evaluation_agent,
+        )
+        self.assessment_workflow = PostInterviewAssessmentWorkflow(
+            self.assessment_nodes,
             runtime=self.workflow_runtime,
         )
 
@@ -183,47 +199,17 @@ class InterviewService:
 
     async def end(self, session_uid: str) -> EvaluationResponse:
         session = self._get_session(session_uid)
-        existing = self.evaluation_repo.get_latest_by_session_id(session.id)
-        if existing:
-            self.session_repo.mark_finished(session)
-            self.execution_service.mark_finished(session.id)
-            await self._generate_project_outputs_if_needed(session, existing)
+        result = await self.assessment_workflow.run(session)
+        saved = result.evaluation
+        if saved is None:
             self.db.commit()
-            return self._evaluation_to_response(existing)
-
-        history = self._evaluation_context(session.id)
-        full_history = self.message_repo.list_by_session_id(session.id)
-        execution = self.execution_repo.get_latest_by_session_id(session.id)
-        candidate_profile = self.summary_repo.get_latest_by_session_id(session.id, "candidate_profile")
-        conversation_summary = self.summary_repo.get_latest_by_session_id(session.id, "conversation")
-        run_result = await self.evaluation_agent.run(
-            EvaluationAgentInput(
-                session=session,
-                history=history,
-                full_history=full_history,
-                execution=execution,
-                candidate_profile=candidate_profile,
-                conversation_summary=conversation_summary,
-                plan_context=self._session_plan_context(session),
-            )
+            return self._empty_evaluation_response()
+        output_ids = await self._generate_project_outputs_if_needed(session, saved)
+        self.assessment_workflow.record_project_outputs(
+            result,
+            project_candidate_profile_id=output_ids.get("project_candidate_profile_id"),
+            resume_authenticity_report_id=output_ids.get("resume_authenticity_report_id"),
         )
-        saved = self.evaluation_repo.create(
-            session_id=session.id,
-            strengths=run_result.output["strengths"],
-            weaknesses=run_result.output["weaknesses"],
-            suggestions=run_result.output["suggestions"],
-            summary=run_result.output.get("summary"),
-            technical_ability=run_result.output.get("technical_ability"),
-            project_experience=run_result.output.get("project_experience"),
-            communication=run_result.output.get("communication"),
-            improvement_suggestions=run_result.output.get("improvement_suggestions"),
-            agent_run_id=run_result.agent_run.id,
-            schema_version=run_result.output_schema,
-            evidence_refs=run_result.evidence_refs,
-        )
-        self.session_repo.mark_finished(session)
-        self.execution_service.mark_finished(session.id)
-        await self._generate_project_outputs_if_needed(session, saved)
         self.db.commit()
         return self._evaluation_to_response(saved)
 
@@ -517,9 +503,22 @@ class InterviewService:
             summary=evaluation.summary,
         )
 
-    async def _generate_project_outputs_if_needed(self, session, evaluation) -> None:
+    def _empty_evaluation_response(self) -> EvaluationResponse:
+        return EvaluationResponse(
+            strengths="",
+            weaknesses="",
+            suggestions="",
+            technicalAbility="",
+            projectExperience="",
+            communication="",
+            improvementSuggestions="",
+            summary=None,
+        )
+
+    async def _generate_project_outputs_if_needed(self, session, evaluation) -> dict[str, int]:
+        output_ids: dict[str, int] = {}
         if not session.project_id:
-            return
+            return output_ids
 
         execution = self.execution_repo.get_latest_by_session_id(session.id)
         messages = self.message_repo.list_by_session_id(session.id)
@@ -535,7 +534,7 @@ class InterviewService:
         }
         service = PreparationService(self.db)
         try:
-            await service.generate_candidate_profile_for_project(
+            candidate_profile = await service.generate_candidate_profile_for_project(
                 project_id=session.project_id,
                 target_role=session.role_name,
                 source_session_id=session.id,
@@ -543,12 +542,16 @@ class InterviewService:
                 evaluation=evaluation_payload,
                 transcript_messages=messages,
             )
-            await service.generate_resume_authenticity_for_latest_resume(
+            output_ids["project_candidate_profile_id"] = candidate_profile.id
+            resume_authenticity = await service.generate_resume_authenticity_for_latest_resume(
                 project_id=session.project_id,
                 session_id=session.id,
                 execution_state=execution.state if execution else None,
                 evaluation=evaluation_payload,
                 transcript_messages=messages,
             )
+            if resume_authenticity:
+                output_ids["resume_authenticity_report_id"] = resume_authenticity.id
         except Exception:
             logger.warning("Failed to generate project outputs", exc_info=True)
+        return output_ids

@@ -30,7 +30,13 @@ export type HistoryResponse = {
 
 export type WorkflowRunStatus = "running" | "waiting_user" | "failed" | "success" | "partial";
 
-export type WorkflowRunResumeReason = "new_user_input" | "unfinished_turn" | "failed_retry";
+export type WorkflowRunResumeReason =
+  | "new_user_input"
+  | "unfinished_turn"
+  | "failed_retry"
+  | "new_trigger"
+  | "unfinished_run"
+  | "already_completed";
 
 export type WorkflowRunListItem = {
   workflowRunId: string;
@@ -62,7 +68,7 @@ export type WorkflowRunListResponse = {
 export type WorkflowRunStepSummary = {
   stepId: string;
   required: boolean;
-  status: "missing" | "running" | "waiting_user" | "failed" | "success";
+  status: "missing" | "running" | "waiting_user" | "failed" | "success" | "skipped";
   agentRunIds: number[];
   latestAgentRunId?: number | null;
   latestStatus?: string | null;
@@ -164,8 +170,18 @@ export async function deleteInterview(sessionId: string) {
   });
 }
 
-export async function listWorkflowRuns(status?: WorkflowRunStatus | "") {
-  const query = status ? `?status=${encodeURIComponent(status)}` : "";
+export async function listWorkflowRuns(filters?: {
+  status?: WorkflowRunStatus | "";
+  workflowId?: string;
+}) {
+  const params = new URLSearchParams();
+  if (filters?.status) {
+    params.set("status", filters.status);
+  }
+  if (filters?.workflowId) {
+    params.set("workflowId", filters.workflowId);
+  }
+  const query = params.toString() ? `?${params.toString()}` : "";
   return request<WorkflowRunListResponse>(`/workflow-runs${query}`);
 }
 
