@@ -24,6 +24,7 @@ class EvaluationAgentInput:
     candidate_profile: object | None
     conversation_summary: object | None
     plan_context: str | None = None
+    workflow_run_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -85,6 +86,7 @@ class EvaluationAgent(BaseAgent[EvaluationAgentInput]):
             execution=agent_input.execution,
             candidate_profile=agent_input.candidate_profile,
             conversation_summary=agent_input.conversation_summary,
+            workflow_run_id=agent_input.workflow_run_id,
         )
 
     async def call_model(

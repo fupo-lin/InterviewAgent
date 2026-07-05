@@ -221,6 +221,7 @@ class WorkflowRunQueryService:
         state = (workflow_run.state or {}) if workflow_run else {}
         completed_steps = set(state.get("completed_steps") or [])
         failed_steps = set(state.get("failed_steps") or [])
+        skipped_steps = set(state.get("skipped_steps") or [])
         current_step = workflow_run.current_step if workflow_run else None
         for step in definition.steps:
             step_runs = sorted(runs_by_step.get(step.step_id, []), key=lambda item: item.id)
@@ -228,6 +229,8 @@ class WorkflowRunQueryService:
             status = self._step_status(step_runs)
             if step.step_id in failed_steps:
                 status = "failed"
+            elif step.step_id in skipped_steps:
+                status = "skipped"
             elif step.step_id in completed_steps:
                 status = "success"
             elif step.step_id == current_step:

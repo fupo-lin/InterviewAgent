@@ -421,6 +421,132 @@ class WorkflowRunQueryServiceTest(unittest.TestCase):
         self.assertEqual(response.failed_steps, ["generate_followup"])
         self.assertEqual(response.last_error["step_id"], "generate_followup")
 
+    def test_list_runs_can_filter_post_interview_assessment_workflow(self):
+        self.workflow_repo.runs = [
+            workflow_run(
+                workflow_run_id="assessment_1",
+                workflow_id="post_interview_assessment",
+                thread_id="assessment:session-uid",
+                status="success",
+                current_step="complete",
+                state={
+                    "active_step": None,
+                    "resume_reason": "new_trigger",
+                    "resume_from_step": None,
+                    "completed_steps": [
+                        "load_assessment_context",
+                        "evaluation",
+                        "ensure_evaluation",
+                        "complete",
+                    ],
+                    "failed_steps": [],
+                    "evaluation_id": 900,
+                    "branch": "generated_evaluation",
+                    "output_contract_version": "PostInterviewAssessmentOutput.v1",
+                    "outputs": {
+                        "contract_version": "PostInterviewAssessmentOutput.v1",
+                        "artifacts": [
+                            {
+                                "name": "evaluation",
+                                "artifact_kind": "interview_evaluation",
+                                "artifact_id": 900,
+                                "source": "generated_by_workflow",
+                                "required": True,
+                                "status": "available",
+                                "reason": None,
+                            }
+                        ],
+                        "next_actions": [],
+                    },
+                },
+            ),
+            workflow_run(
+                workflow_run_id="runtime_1",
+                workflow_id="interview_runtime",
+                thread_id="interview:session-uid",
+            ),
+        ]
+
+        response = self.service.list_runs(workflow_id="post_interview_assessment")
+
+        self.assertEqual(response.total, 1)
+        item = response.items[0]
+        self.assertEqual(item.workflow_run_id, "assessment_1")
+        self.assertEqual(item.workflow_id, "post_interview_assessment")
+        self.assertEqual(item.thread_id, "assessment:session-uid")
+        self.assertEqual(item.status, "success")
+        self.assertEqual(item.current_step, "complete")
+        self.assertEqual(item.resume_reason, "new_trigger")
+        self.assertEqual(
+            item.completed_steps,
+            ["load_assessment_context", "evaluation", "ensure_evaluation", "complete"],
+        )
+        self.assertEqual(self.workflow_repo.list_calls[0]["workflow_id"], "post_interview_assessment")
+
+        detail = self.service.get_detail("assessment_1")
+
+        self.assertEqual(
+            detail.state["outputs"]["artifacts"][0],
+            {
+                "name": "evaluation",
+                "artifact_kind": "interview_evaluation",
+                "artifact_id": 900,
+                "source": "generated_by_workflow",
+                "required": True,
+                "status": "available",
+                "reason": None,
+            },
+        )
+
+    def test_detail_marks_skipped_assessment_steps(self):
+        self.workflow_repo.runs = [
+            workflow_run(
+                workflow_run_id="assessment_partial",
+                workflow_id="post_interview_assessment",
+                thread_id="assessment:session-uid",
+                status="partial",
+                current_step="complete",
+                state={
+                    "active_step": None,
+                    "resume_reason": "new_trigger",
+                    "completed_steps": [
+                        "load_assessment_context",
+                        "complete",
+                    ],
+                    "skipped_steps": [
+                        "evaluation",
+                        "ensure_evaluation",
+                    ],
+                    "failed_steps": [],
+                    "partial_reason": "insufficient_transcript",
+                    "branch": "skip_evaluation_insufficient_transcript",
+                    "outputs": {
+                        "contract_version": "PostInterviewAssessmentOutput.v1",
+                        "artifacts": [
+                            {
+                                "name": "evaluation",
+                                "artifact_kind": "interview_evaluation",
+                                "artifact_id": None,
+                                "source": "skipped_by_workflow",
+                                "required": True,
+                                "status": "skipped",
+                                "reason": "insufficient_transcript",
+                            }
+                        ],
+                        "next_actions": [],
+                    },
+                },
+            ),
+        ]
+
+        response = self.service.get_detail("assessment_partial")
+
+        self.assertEqual(response.status, "partial")
+        evaluation_step = next(item for item in response.steps if item.step_id == "evaluation")
+        self.assertEqual(evaluation_step.status, "skipped")
+        self.assertEqual(response.state["partial_reason"], "insufficient_transcript")
+        self.assertEqual(response.state["outputs"]["artifacts"][0]["status"], "skipped")
+
     def test_get_detail_links_persisted_runtime_run_with_real_workflow_run_id(self):
         runtime_workflow_run_id = "interview_runtime_abc123"
         self.workflow_repo.runs = [

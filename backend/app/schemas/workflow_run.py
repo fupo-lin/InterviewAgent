@@ -7,8 +7,22 @@ from app.schemas.agent_run import AgentRunListItem
 
 
 WorkflowRunStatus = Literal["running", "waiting_user", "failed", "success", "partial"]
-WorkflowRunResumeReason = Literal["new_user_input", "unfinished_turn", "failed_retry"]
-WorkflowRunStepStatus = Literal["missing", "running", "waiting_user", "failed", "success"]
+WorkflowRunResumeReason = Literal[
+    "new_user_input",
+    "unfinished_turn",
+    "failed_retry",
+    "new_trigger",
+    "unfinished_run",
+    "already_completed",
+]
+WorkflowRunStepStatus = Literal[
+    "missing",
+    "running",
+    "waiting_user",
+    "failed",
+    "success",
+    "skipped",
+]
 
 
 class WorkflowRunListQuery(BaseModel):

@@ -728,6 +728,10 @@ textarea:focus {
   border-color: #a8cfa8;
 }
 
+.step-item-skipped {
+  border-color: #b9c5d0;
+}
+
 .agent-run-list {
   display: grid;
   gap: 10px;
@@ -771,6 +775,11 @@ textarea:focus {
 }
 
 .status-text-missing {
+  background: #edf1f4;
+  color: #51606f;
+}
+
+.status-text-skipped {
   background: #edf1f4;
   color: #51606f;
 }

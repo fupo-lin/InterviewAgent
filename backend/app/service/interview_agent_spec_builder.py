@@ -19,6 +19,7 @@ class InterviewAgentSpecBuilder:
         execution,
         candidate_profile,
         conversation_summary,
+        workflow_run_id: str | None = None,
     ) -> AgentSpec:
         evidence_packet = self.evidence_builder.build_evaluation_packet(
             session_id=session.id,
@@ -48,6 +49,7 @@ class InterviewAgentSpecBuilder:
                 workflow_id="post_interview_assessment",
                 step_id="evaluation",
                 session_id=session.id,
+                workflow_run_id=workflow_run_id,
             ),
         )
 
