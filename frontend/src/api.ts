@@ -28,6 +28,16 @@ export type HistoryResponse = {
   evaluation: Evaluation | null;
 };
 
+export type GrowthReportResponse = {
+  sessionId: string;
+  status: "not_found" | "success" | "failed" | "partial" | "generating";
+  workflowRunId?: string | null;
+  reportId?: number | null;
+  reportUid?: string | null;
+  report?: Record<string, unknown> | null;
+  errorMessage?: string | null;
+};
+
 export type WorkflowRunStatus = "running" | "waiting_user" | "failed" | "success" | "partial";
 
 export type WorkflowRunResumeReason =
@@ -168,6 +178,19 @@ export async function deleteInterview(sessionId: string) {
   return request<{ success: boolean }>(`/interview/delete/${sessionId}`, {
     method: "DELETE",
   });
+}
+
+export async function getGrowthReport(sessionId: string) {
+  return request<GrowthReportResponse>(`/interview/${encodeURIComponent(sessionId)}/growth-report`);
+}
+
+export async function generateGrowthReport(sessionId: string) {
+  return request<GrowthReportResponse>(
+    `/interview/${encodeURIComponent(sessionId)}/growth-report/generate`,
+    {
+      method: "POST",
+    },
+  );
 }
 
 export async function listWorkflowRuns(filters?: {

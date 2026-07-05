@@ -262,3 +262,46 @@ class ResumeRewriteResultV1(BaseModel):
     risk_warnings: list[str] = Field(default_factory=list)
     ats_keywords: list[Any] = Field(default_factory=list)
     final_suggestions: list[str] = Field(default_factory=list)
+
+
+class GrowthReportContextRefs(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    evaluation_id: int | None = None
+    execution_id: int | None = None
+    jd_analysis_id: int | None = None
+    resume_profile_id: int | None = None
+    gap_analysis_id: int | None = None
+    project_candidate_profile_id: int | None = None
+    resume_authenticity_report_id: int | None = None
+
+
+class CandidateGrowthReportInputV1(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    session_id: int = Field(gt=0)
+    project_id: int | None = Field(default=None, gt=0)
+    role_name: str = Field(min_length=1)
+    transcript_message_count: int = Field(ge=0)
+    user_answer_count: int = Field(ge=0)
+    has_evaluation: bool = False
+    has_jd_analysis: bool = False
+    has_resume_profile: bool = False
+    has_gap_analysis: bool = False
+    has_project_candidate_profile: bool = False
+    has_resume_authenticity: bool = False
+    context_refs: GrowthReportContextRefs = Field(default_factory=GrowthReportContextRefs)
+
+
+class CandidateGrowthReportV1(BaseModel):
+    report_version: str = "v1"
+    overall_summary: dict[str, Any] = Field(default_factory=dict)
+    job_match: dict[str, Any] = Field(default_factory=dict)
+    technical_strengths: list[Any] = Field(default_factory=list)
+    technical_gaps: list[Any] = Field(default_factory=list)
+    project_storytelling: dict[str, Any] = Field(default_factory=dict)
+    authenticity_risks: list[Any] = Field(default_factory=list)
+    resume_suggestions: list[Any] = Field(default_factory=list)
+    next_interview_focus: list[Any] = Field(default_factory=list)
+    learning_plan: list[Any] = Field(default_factory=list)
+    evidence_references: list[Any] = Field(default_factory=list)

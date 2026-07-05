@@ -14,9 +14,19 @@ from app.repository.interview_repository import (
 from app.repository.agent_run_repository import AgentRunRepository
 from app.repository.workflow_run_repository import WorkflowRunRepository
 from app.repository.preparation_repository import InterviewPlanRepository, PreparationProjectRepository
+from app.repository.preparation_repository import (
+    CandidateGrowthReportRepository,
+    GapAnalysisRepository,
+    JDAnalysisRepository,
+    ProjectCandidateProfileRepository,
+    ResumeAuthenticityReportRepository,
+    ResumeProfileRepository,
+)
 from app.service.agent_run_service import AgentRunExecutor, AgentRunRecorder
 from app.service.agent_runtime import AgentRuntimeConfig
-from app.service.assessment_agents import EvaluationAgent
+from app.service.assessment_agents import EvaluationAgent, GrowthReportAgent
+from app.service.candidate_growth_report_nodes import CandidateGrowthReportNodes
+from app.service.candidate_growth_report_workflow import CandidateGrowthReportWorkflow
 from app.service.evidence_service import EvidencePacketBuilder
 from app.service.interview_agent_spec_builder import InterviewAgentSpecBuilder
 from app.service.interview_execution_service import InterviewExecutionService
@@ -35,7 +45,13 @@ from app.service.runtime_agents import (
     TopicJudgeAgent,
     TopicJudgeAgentInput,
 )
-from app.schemas.interview import DeleteResponse, EvaluationResponse, HistoryResponse, MessageResponse
+from app.schemas.interview import (
+    DeleteResponse,
+    EvaluationResponse,
+    GrowthReportResponse,
+    HistoryResponse,
+    MessageResponse,
+)
 from app.service.llm_service import LLMService
 
 
@@ -55,6 +71,12 @@ class InterviewService:
         self.execution_service = InterviewExecutionService(self.execution_repo)
         self.project_repo = PreparationProjectRepository(db)
         self.plan_repo = InterviewPlanRepository(db)
+        self.growth_report_repo = CandidateGrowthReportRepository(db)
+        self.jd_analysis_repo = JDAnalysisRepository(db)
+        self.resume_profile_repo = ResumeProfileRepository(db)
+        self.gap_analysis_repo = GapAnalysisRepository(db)
+        self.project_candidate_profile_repo = ProjectCandidateProfileRepository(db)
+        self.resume_authenticity_repo = ResumeAuthenticityReportRepository(db)
         self.llm = LLMService()
         self.evidence_builder = EvidencePacketBuilder()
         self.agent_run_recorder = AgentRunRecorder(db)
@@ -64,6 +86,12 @@ class InterviewService:
             evidence_builder=self.evidence_builder,
         )
         self.evaluation_agent = EvaluationAgent(
+            agent_run_executor=self.agent_run_executor,
+            evidence_builder=self.evidence_builder,
+            llm=self.llm,
+            config=AgentRuntimeConfig(model_name=self.llm.model),
+        )
+        self.growth_report_agent = GrowthReportAgent(
             agent_run_executor=self.agent_run_executor,
             evidence_builder=self.evidence_builder,
             llm=self.llm,
@@ -116,6 +144,23 @@ class InterviewService:
         )
         self.assessment_workflow = PostInterviewAssessmentWorkflow(
             self.assessment_nodes,
+            runtime=self.workflow_runtime,
+        )
+        self.growth_report_nodes = CandidateGrowthReportNodes(
+            message_repo=self.message_repo,
+            execution_repo=self.execution_repo,
+            evaluation_repo=self.evaluation_repo,
+            growth_report_repo=self.growth_report_repo,
+            jd_analysis_repo=self.jd_analysis_repo,
+            resume_profile_repo=self.resume_profile_repo,
+            gap_analysis_repo=self.gap_analysis_repo,
+            project_candidate_profile_repo=self.project_candidate_profile_repo,
+            resume_authenticity_repo=self.resume_authenticity_repo,
+            evidence_builder=self.evidence_builder,
+            growth_report_agent=self.growth_report_agent,
+        )
+        self.growth_report_workflow = CandidateGrowthReportWorkflow(
+            self.growth_report_nodes,
             runtime=self.workflow_runtime,
         )
 
@@ -264,6 +309,54 @@ class InterviewService:
         session = self._get_session(session_uid)
         execution = self.execution_service.get_latest(session.id)
         return self.execution_service.response(execution)
+
+    def growth_report(self, session_uid: str) -> GrowthReportResponse:
+        session = self._get_session(session_uid)
+        report = self.growth_report_repo.get_latest_by_session_id(session.id)
+        if not report:
+            return GrowthReportResponse(
+                sessionId=session.session_uid,
+                status="not_found",
+                workflowRunId=None,
+                reportId=None,
+                reportUid=None,
+                report=None,
+                errorMessage=None,
+            )
+        return self._growth_report_response(session, report, status="success")
+
+    async def generate_growth_report(self, session_uid: str) -> GrowthReportResponse:
+        session = self._get_session(session_uid)
+        try:
+            result = await self.growth_report_workflow.run(session)
+        except Exception as exc:
+            self.db.commit()
+            return GrowthReportResponse(
+                sessionId=session.session_uid,
+                status="failed",
+                workflowRunId=None,
+                reportId=None,
+                reportUid=None,
+                report=None,
+                errorMessage=str(exc),
+            )
+        self.db.commit()
+        if result.report:
+            return self._growth_report_response(
+                session,
+                result.report,
+                status=result.state.get("status") or "success",
+                workflow_run_id=result.state.get("workflow_run_id"),
+            )
+        return GrowthReportResponse(
+            sessionId=session.session_uid,
+            status=result.state.get("status") or "partial",
+            workflowRunId=result.state.get("workflow_run_id"),
+            reportId=None,
+            reportUid=None,
+            report=None,
+            errorMessage=result.state.get("partial_reason"),
+        )
 
     async def _generate_first_question_with_run(
         self,
@@ -513,6 +606,23 @@ class InterviewService:
             communication="",
             improvementSuggestions="",
             summary=None,
+        )
+
+    def _growth_report_response(
+        self,
+        session,
+        report,
+        status: str,
+        workflow_run_id: str | None = None,
+    ) -> GrowthReportResponse:
+        return GrowthReportResponse(
+            sessionId=session.session_uid,
+            status=status,
+            workflowRunId=workflow_run_id or getattr(report, "workflow_run_id", None),
+            reportId=report.id,
+            reportUid=report.report_uid,
+            report=report.content,
+            errorMessage=None,
         )
 
     async def _generate_project_outputs_if_needed(self, session, evaluation) -> dict[str, int]:

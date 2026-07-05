@@ -1,6 +1,9 @@
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, ReactNode, useEffect, useMemo, useState } from "react";
 import {
+  AlertTriangle,
+  BookOpen,
   Copy,
+  FileText,
   History,
   Loader2,
   MessageCircle,
@@ -9,18 +12,22 @@ import {
   Route,
   Send,
   Square,
+  Target,
   Trash2,
 } from "lucide-react";
 
 import {
   ChatMessage,
   Evaluation,
+  GrowthReportResponse,
   WorkflowRunDetailResponse,
   WorkflowRunListItem,
   WorkflowRunReconciliationResponse,
   WorkflowRunStatus,
   deleteInterview,
   endInterview,
+  generateGrowthReport,
+  getGrowthReport,
   getWorkflowRunDetail,
   getWorkflowRunReconciliation,
   getHistory,
@@ -34,6 +41,7 @@ const ROLE_OPTIONS = ["Java后端", "测试开发", "AI应用开发", "前端开
 
 function App() {
   const [activeView, setActiveView] = useState<"interview" | "workflowRuns">("interview");
+  const [initialWorkflowFilter, setInitialWorkflowFilter] = useState("");
   // 定义各种状态，当前选中的岗位，默认是数组第一个"Java后端"。setRoleName 是用来修改它的工具
   //  evaluation面试结束后的评价报告。`Evaluation | null` 表示“要么是评价数据，要么是空(null)”
   const [roleName, setRoleName] = useState(ROLE_OPTIONS[0]);
@@ -42,6 +50,9 @@ function App() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [evaluation, setEvaluation] = useState<Evaluation | null>(null);
+  const [growthReport, setGrowthReport] = useState<GrowthReportResponse | null>(null);
+  const [growthReportLoading, setGrowthReportLoading] = useState(false);
+  const [growthReportError, setGrowthReportError] = useState("");
   const [status, setStatus] = useState<"idle" | "active" | "finished">("idle");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -61,6 +72,8 @@ function App() {
     setLoading(true);
     setError("");
     setEvaluation(null); // 清空之前的评价
+    setGrowthReport(null);
+    setGrowthReportError("");
     try {
       const result = await startInterview(roleName);
       setSessionId(result.sessionId);
@@ -127,6 +140,7 @@ function App() {
       const result = await endInterview(sessionId);
       setEvaluation(result.evaluation);
       setStatus("finished");
+      await loadGrowthReport(sessionId);
     } catch (err) {
       setError(err instanceof Error ? err.message : "生成评价失败");
     } finally {
@@ -145,7 +159,12 @@ function App() {
       setRoleName(result.roleName);
       setMessages(result.messages);
       setEvaluation(result.evaluation);
+      setGrowthReport(null);
+      setGrowthReportError("");
       setStatus(result.status === "finished" ? "finished" : "active");
+      if (result.status === "finished") {
+        await loadGrowthReport(result.sessionId);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "查询历史失败");
     } finally {
@@ -165,12 +184,42 @@ function App() {
       setHistorySessionId("");
       setMessages([]);
       setEvaluation(null);
+      setGrowthReport(null);
+      setGrowthReportError("");
       setStatus("idle");
       setInput("");
     } catch (err) {
       setError(err instanceof Error ? err.message : "删除会话失败");
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function loadGrowthReport(id = sessionId) {
+    if (!id) return;
+    setGrowthReportLoading(true);
+    setGrowthReportError("");
+    try {
+      const result = await getGrowthReport(id);
+      setGrowthReport(result);
+    } catch (err) {
+      setGrowthReportError(err instanceof Error ? err.message : "Load growth report failed");
+    } finally {
+      setGrowthReportLoading(false);
+    }
+  }
+
+  async function handleGenerateGrowthReport() {
+    if (!sessionId) return;
+    setGrowthReportLoading(true);
+    setGrowthReportError("");
+    try {
+      const result = await generateGrowthReport(sessionId);
+      setGrowthReport(result);
+    } catch (err) {
+      setGrowthReportError(err instanceof Error ? err.message : "Generate growth report failed");
+    } finally {
+      setGrowthReportLoading(false);
     }
   }
 
@@ -299,6 +348,20 @@ function App() {
           </section>
         )}
 
+        {status === "finished" && (
+          <GrowthReportPanel
+            error={growthReportError}
+            loading={growthReportLoading}
+            reportResponse={growthReport}
+            onGenerate={handleGenerateGrowthReport}
+            onRefresh={() => void loadGrowthReport()}
+            onOpenWorkflow={(workflowRunId) => {
+              setInitialWorkflowFilter("candidate_growth_report");
+              setActiveView("workflowRuns");
+            }}
+          />
+        )}
+
         <form className="composer" onSubmit={handleSubmit}>
           <textarea
             value={input}
@@ -319,10 +382,319 @@ function App() {
         </form>
       </section>
       ) : (
-        <WorkflowRunsView />
+        <WorkflowRunsView initialWorkflowId={initialWorkflowFilter} />
       )}
     </main>
   );
+}
+
+type GrowthReportPanelProps = {
+  error: string;
+  loading: boolean;
+  reportResponse: GrowthReportResponse | null;
+  onGenerate: () => void;
+  onRefresh: () => void;
+  onOpenWorkflow: (workflowRunId: string) => void;
+};
+
+function GrowthReportPanel({
+  error,
+  loading,
+  onGenerate,
+  onOpenWorkflow,
+  onRefresh,
+  reportResponse,
+}: GrowthReportPanelProps) {
+  const report = getRecord(reportResponse?.report);
+  const status = reportResponse?.status ?? "not_found";
+  const hasReport = status === "success" && Boolean(report);
+  const summary = getRecord(report?.overall_summary);
+  const jobMatch = getRecord(report?.job_match);
+  const storytelling = getRecord(report?.project_storytelling);
+  const workflowRunId = reportResponse?.workflowRunId || "";
+
+  return (
+    <section className="growth-report">
+      <header className="growth-report-header">
+        <div>
+          <p className="eyebrow">Growth Report</p>
+          <h2>候选人成长报告</h2>
+        </div>
+        <div className="growth-report-actions">
+          {workflowRunId && (
+            <button type="button" onClick={() => onOpenWorkflow(workflowRunId)}>
+              <Route size={18} />
+              Workflow
+            </button>
+          )}
+          {hasReport && (
+            <button type="button" onClick={onRefresh} disabled={loading}>
+              {loading ? <Loader2 className="spin" size={18} /> : <RefreshCw size={18} />}
+              Refresh
+            </button>
+          )}
+          {!hasReport && (
+            <button className="primary-button" type="button" onClick={onGenerate} disabled={loading}>
+              {loading ? <Loader2 className="spin" size={18} /> : <FileText size={18} />}
+              生成报告
+            </button>
+          )}
+        </div>
+      </header>
+
+      {error && <div className="growth-report-error">{error}</div>}
+
+      {loading && !hasReport && (
+        <div className="growth-report-empty">
+          <Loader2 className="spin" size={28} />
+          <p>正在生成成长报告...</p>
+        </div>
+      )}
+
+      {!loading && status === "not_found" && (
+        <div className="growth-report-empty">
+          <FileText size={30} />
+          <p>面试评价已完成，可以生成结构化成长报告。</p>
+        </div>
+      )}
+
+      {!loading && status === "partial" && (
+        <div className="growth-report-error">
+          {reportResponse?.errorMessage || "成长报告缺少必要输入，暂时只能生成部分结果。"}
+        </div>
+      )}
+
+      {!loading && status === "failed" && (
+        <div className="growth-report-error">
+          {reportResponse?.errorMessage || "成长报告生成失败，请重试。"}
+        </div>
+      )}
+
+      {hasReport && report && (
+        <div className="growth-report-body">
+          <section className="growth-summary-grid">
+            <GrowthSummaryCard
+              icon={<Target size={18} />}
+              label="Overall"
+              title={getString(summary?.level, "unknown")}
+              value={getString(summary?.summary, "暂无总结")}
+            />
+            <GrowthSummaryCard
+              icon={<AlertTriangle size={18} />}
+              label="Top Risk"
+              title={getString(summary?.top_risk, "暂无风险")}
+              value={getString(summary?.next_priority, "暂无下一步优先级")}
+            />
+            <GrowthSummaryCard
+              icon={<BookOpen size={18} />}
+              label="Job Match"
+              title={getString(jobMatch?.level, "unknown")}
+              value={growthListPreview(getArray(jobMatch?.matched_points), "暂无岗位匹配点")}
+            />
+          </section>
+
+          <section className="growth-section-grid">
+            <GrowthListSection
+              title="技术优势"
+              items={getArray(report.technical_strengths)}
+              emptyText="暂无技术优势条目"
+              renderItem={(item) => {
+                const record = getRecord(item);
+                return (
+                  <>
+                    <strong>{getString(record?.skill, "未命名能力")}</strong>
+                    <p>{getString(record?.description, "暂无说明")}</p>
+                  </>
+                );
+              }}
+            />
+            <GrowthListSection
+              title="技术短板"
+              items={getArray(report.technical_gaps)}
+              emptyText="暂无技术短板条目"
+              renderItem={(item) => {
+                const record = getRecord(item);
+                return (
+                  <>
+                    <div className="growth-item-title-row">
+                      <strong>{getString(record?.skill, "未命名短板")}</strong>
+                      <span className="priority-pill">{getString(record?.priority, "medium")}</span>
+                    </div>
+                    <p>{getString(record?.gap, "暂无差距说明")}</p>
+                    <small>{getString(record?.improvement_action, "暂无行动建议")}</small>
+                  </>
+                );
+              }}
+            />
+            <GrowthListSection
+              title="简历优化"
+              items={getArray(report.resume_suggestions)}
+              emptyText="暂无简历优化建议"
+              renderItem={(item) => {
+                const record = getRecord(item);
+                return (
+                  <>
+                    <div className="growth-item-title-row">
+                      <strong>{getString(record?.section, "resume")}</strong>
+                      <span className="priority-pill">{getString(record?.priority, "medium")}</span>
+                    </div>
+                    <p>{getString(record?.problem, "暂无问题说明")}</p>
+                    <small>{getString(record?.suggestion, "暂无优化建议")}</small>
+                  </>
+                );
+              }}
+            />
+            <GrowthListSection
+              title="下一轮训练"
+              items={getArray(report.next_interview_focus)}
+              emptyText="暂无下一轮训练重点"
+              renderItem={(item) => {
+                const record = getRecord(item);
+                return (
+                  <>
+                    <strong>{getString(record?.topic, "未命名主题")}</strong>
+                    <p>{getString(record?.reason, "暂无原因")}</p>
+                    <small>{getString(record?.sample_question, "暂无样例问题")}</small>
+                  </>
+                );
+              }}
+            />
+          </section>
+
+          <section className="growth-wide-section">
+            <h3>项目表达</h3>
+            <div className="growth-chip-grid">
+              {getArray(storytelling?.strengths).map((item, index) => (
+                <span className="growth-chip growth-chip-good" key={`story-strength-${index}`}>
+                  {stringifyValue(item)}
+                </span>
+              ))}
+              {getArray(storytelling?.risks).map((item, index) => (
+                <span className="growth-chip growth-chip-risk" key={`story-risk-${index}`}>
+                  {stringifyValue(item)}
+                </span>
+              ))}
+              {getArray(storytelling?.suggestions).map((item, index) => (
+                <span className="growth-chip" key={`story-suggestion-${index}`}>
+                  {stringifyValue(item)}
+                </span>
+              ))}
+            </div>
+          </section>
+
+          <GrowthListSection
+            className="growth-wide-section"
+            title="学习行动计划"
+            items={getArray(report.learning_plan)}
+            emptyText="暂无学习计划"
+            renderItem={(item) => {
+              const record = getRecord(item);
+              return (
+                <>
+                  <div className="growth-item-title-row">
+                    <strong>{getString(record?.day_range, "next")}</strong>
+                    <span>{getString(record?.goal, "暂无目标")}</span>
+                  </div>
+                  <p>{getArray(record?.tasks).map(stringifyValue).join(" / ") || "暂无任务"}</p>
+                  <small>{getString(record?.expected_output, "暂无交付物")}</small>
+                </>
+              );
+            }}
+          />
+        </div>
+      )}
+    </section>
+  );
+}
+
+function GrowthSummaryCard({
+  icon,
+  label,
+  title,
+  value,
+}: {
+  icon: ReactNode;
+  label: string;
+  title: string;
+  value: string;
+}) {
+  return (
+    <article className="growth-summary-card">
+      <div>
+        {icon}
+        <span>{label}</span>
+      </div>
+      <strong>{title}</strong>
+      <p>{value}</p>
+    </article>
+  );
+}
+
+function GrowthListSection({
+  className = "",
+  emptyText,
+  items,
+  renderItem,
+  title,
+}: {
+  className?: string;
+  emptyText: string;
+  items: unknown[];
+  renderItem: (item: unknown, index: number) => ReactNode;
+  title: string;
+}) {
+  return (
+    <section className={`growth-list-section ${className}`}>
+      <h3>{title}</h3>
+      {items.length === 0 ? (
+        <p className="muted">{emptyText}</p>
+      ) : (
+        <div className="growth-list">
+          {items.map((item, index) => (
+            <article className="growth-list-item" key={`${title}-${index}`}>
+              {renderItem(item, index)}
+            </article>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function getRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+}
+
+function getArray(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function getString(value: unknown, fallback = ""): string {
+  if (typeof value === "string" && value.trim()) return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return fallback;
+}
+
+function stringifyValue(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    return getString(record.title) || getString(record.reason) || getString(record.suggestion) || JSON.stringify(value);
+  }
+  return "";
+}
+
+function growthListPreview(items: unknown[], fallback: string): string {
+  const preview = items
+    .slice(0, 2)
+    .map((item) => {
+      const record = getRecord(item);
+      return getString(record?.title) || stringifyValue(item);
+    })
+    .filter(Boolean)
+    .join(" / ");
+  return preview || fallback;
 }
 
 const WORKFLOW_STATUS_OPTIONS: Array<WorkflowRunStatus | ""> = [
@@ -338,14 +710,15 @@ const WORKFLOW_ID_OPTIONS = [
   "",
   "interview_runtime",
   "post_interview_assessment",
+  "candidate_growth_report",
   "preparation",
   "resume_optimization",
 ];
 
-function WorkflowRunsView() {
+function WorkflowRunsView({ initialWorkflowId = "" }: { initialWorkflowId?: string }) {
   const [runs, setRuns] = useState<WorkflowRunListItem[]>([]);
   const [statusFilter, setStatusFilter] = useState<WorkflowRunStatus | "">("");
-  const [workflowFilter, setWorkflowFilter] = useState("");
+  const [workflowFilter, setWorkflowFilter] = useState(initialWorkflowId);
   const [selectedWorkflowRunId, setSelectedWorkflowRunId] = useState("");
   const [detail, setDetail] = useState<WorkflowRunDetailResponse | null>(null);
   const [reconciliation, setReconciliation] = useState<WorkflowRunReconciliationResponse | null>(null);
@@ -405,8 +778,11 @@ function WorkflowRunsView() {
   }
 
   useEffect(() => {
-    void loadRuns("");
-  }, []);
+    if (initialWorkflowId) {
+      setWorkflowFilter(initialWorkflowId);
+    }
+    void loadRuns(statusFilter, initialWorkflowId || workflowFilter);
+  }, [initialWorkflowId]);
 
   function handleStatusChange(nextStatus: WorkflowRunStatus | "") {
     setStatusFilter(nextStatus);

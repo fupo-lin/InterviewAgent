@@ -187,3 +187,22 @@ class ResumeRewriteResult(Base):
     raw_response: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     status: Mapped[str] = mapped_column(String(20), default="normal", nullable=False)
     create_time: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
+
+
+class CandidateGrowthReport(Base):
+    __tablename__ = "candidate_growth_reports"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    report_uid: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    project_id: Mapped[int | None] = mapped_column(ForeignKey("preparation_projects.id"), nullable=True)
+    session_id: Mapped[int] = mapped_column(ForeignKey("interview_sessions.id"), nullable=False)
+    workflow_run_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    agent_run_id: Mapped[int | None] = mapped_column(ForeignKey("agent_runs.id"), nullable=True)
+    schema_version: Mapped[str] = mapped_column(String(80), default="CandidateGrowthReport.v1", nullable=False)
+    report_version: Mapped[str] = mapped_column(String(30), default="v1", nullable=False)
+    source_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    evidence_refs: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    content: Mapped[dict] = mapped_column(JSON, nullable=False)
+    raw_response: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="success", nullable=False)
+    create_time: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)

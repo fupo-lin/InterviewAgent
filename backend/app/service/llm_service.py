@@ -332,6 +332,49 @@ class LLMService:
             ),
         ), raw_response
 
+    async def generate_candidate_growth_report(
+        self,
+        role_name: str,
+        jd_analysis: dict | None = None,
+        resume_profile: dict | None = None,
+        gap_analysis: dict | None = None,
+        project_candidate_profile: dict | None = None,
+        resume_authenticity: dict | None = None,
+        execution_state: dict | None = None,
+        evaluation: dict | None = None,
+        transcript_messages: list[InterviewMessage] | None = None,
+        evidence_packet: dict | None = None,
+    ) -> tuple[dict, dict | None]:
+        prompt = load_prompt(
+            prompt_registry.prompt_file("candidate_growth_report"),
+            role_name=role_name,
+            jd_analysis=json.dumps(jd_analysis or {}, ensure_ascii=False),
+            resume_profile=json.dumps(resume_profile or {}, ensure_ascii=False),
+            gap_analysis=json.dumps(gap_analysis or {}, ensure_ascii=False),
+            project_candidate_profile=json.dumps(project_candidate_profile or {}, ensure_ascii=False),
+            resume_authenticity=json.dumps(resume_authenticity or {}, ensure_ascii=False),
+            execution_state=json.dumps(execution_state or {}, ensure_ascii=False),
+            evaluation=json.dumps(evaluation or {}, ensure_ascii=False),
+            transcript=self._format_transcript(transcript_messages or []),
+            evidence_packet=json.dumps(evidence_packet or {}, ensure_ascii=False),
+        )
+        fallback = self._mock_candidate_growth_report(
+            role_name=role_name,
+            jd_analysis=jd_analysis,
+            resume_profile=resume_profile,
+            gap_analysis=gap_analysis,
+            project_candidate_profile=project_candidate_profile,
+            resume_authenticity=resume_authenticity,
+            evaluation=evaluation,
+            transcript_messages=transcript_messages or [],
+            evidence_packet=evidence_packet,
+        )
+        if not self.api_key:
+            return fallback, {"mock": True}
+
+        content, raw_response = await self._chat_completion([{"role": "user", "content": prompt}])
+        return self._parse_json_object(content, fallback), raw_response
+
     async def _chat_completion(self, messages: list[dict[str, str]]) -> tuple[str, dict | None]:
         payload = {"model": self.model, "messages": messages, "temperature": 0.7}
         headers = {"Authorization": f"Bearer {self.api_key}"}
@@ -621,6 +664,149 @@ class LLMService:
                 "把面试中能讲清楚的贡献放在项目描述前半部分",
             ],
         }
+
+    def _mock_candidate_growth_report(
+        self,
+        role_name: str,
+        jd_analysis: dict | None,
+        resume_profile: dict | None,
+        gap_analysis: dict | None,
+        project_candidate_profile: dict | None,
+        resume_authenticity: dict | None,
+        evaluation: dict | None,
+        transcript_messages: list[InterviewMessage],
+        evidence_packet: dict | None,
+    ) -> dict:
+        user_answers = [item for item in transcript_messages if item.role_type == "user"]
+        evidence_items = (evidence_packet or {}).get("evidence_items") or []
+        evidence_refs = [
+            {
+                "evidence_id": item.get("evidence_id"),
+                "source_type": item.get("source_type"),
+                "summary": item.get("content_excerpt", ""),
+            }
+            for item in evidence_items[:8]
+            if isinstance(item, dict)
+        ]
+        missing = (evidence_packet or {}).get("missing_evidence") or []
+        strongest = (evaluation or {}).get("strengths") or "候选人能够围绕项目经历展开回答。"
+        risk = (evaluation or {}).get("weaknesses") or "仍需要补充量化指标、个人贡献边界和方案取舍。"
+        jd_skills = (jd_analysis or {}).get("required_skills") or []
+        resume_skills = (resume_profile or {}).get("skills") or []
+        return {
+            "report_version": "v1",
+            "overall_summary": {
+                "level": "medium" if user_answers else "unknown",
+                "summary": (evaluation or {}).get("summary")
+                or f"本次围绕 {role_name} 完成了 {len(user_answers)} 轮候选人回答，可进入针对性补强。",
+                "top_strength": strongest,
+                "top_risk": risk,
+                "next_priority": "补充可量化项目结果，并准备关键技术方案的取舍说明。",
+            },
+            "job_match": {
+                "level": "unknown" if not jd_analysis else "medium",
+                "matched_points": [
+                    {
+                        "title": str(item)[:80],
+                        "reason": "简历或面试中已有相关线索，后续需要继续用项目细节验证。",
+                        "evidence_ids": self._evidence_ids(evidence_items, limit=2),
+                    }
+                    for item in jd_skills[:3]
+                ],
+                "missing_points": [
+                    {
+                        "title": str(item)[:80],
+                        "impact": "如果不能讲清，会影响岗位匹配度判断。",
+                        "suggestion": "准备一个包含场景、方案、指标、复盘的回答案例。",
+                        "evidence_ids": self._evidence_ids(evidence_items, limit=2),
+                    }
+                    for item in (gap_analysis or {}).get("gap_points", [])[:3]
+                ],
+            },
+            "technical_strengths": [
+                {
+                    "skill": str(item.get("name") if isinstance(item, dict) else item),
+                    "description": "简历或面试中出现过该能力线索。",
+                    "evidence_ids": self._evidence_ids(evidence_items, limit=2),
+                }
+                for item in resume_skills[:5]
+            ],
+            "technical_gaps": [
+                {
+                    "skill": "系统设计深度",
+                    "gap": risk,
+                    "priority": "high",
+                    "improvement_action": "用一个项目补齐架构图、核心链路、异常处理、容量指标和复盘结果。",
+                    "evidence_ids": self._evidence_ids(evidence_items, limit=3),
+                }
+            ],
+            "project_storytelling": {
+                "strengths": [strongest],
+                "risks": [risk],
+                "suggestions": [
+                    "使用 背景-任务-行动-结果 的结构组织项目表达。",
+                    "每个关键贡献至少准备一个可追问的技术细节。",
+                ],
+            },
+            "authenticity_risks": [
+                {
+                    "risk": item.get("resume_claim", "部分简历表述仍需更多面试证据支撑"),
+                    "severity": item.get("risk_level", "medium"),
+                    "reason": item.get("evidence", "") or "当前证据链还不够完整。",
+                    "suggested_fix": item.get("suggestion", "保留能讲清的贡献，补充真实指标和个人边界。"),
+                    "evidence_ids": self._evidence_ids(evidence_items, limit=2),
+                }
+                for item in (resume_authenticity or {}).get("claim_checks", [])[:3]
+            ],
+            "resume_suggestions": [
+                {
+                    "section": "project_experience",
+                    "problem": "项目描述需要更突出个人贡献和可验证结果。",
+                    "suggestion": "把已经能在面试中讲清的职责、方案和结果前置。",
+                    "priority": "high",
+                }
+            ],
+            "next_interview_focus": [
+                {
+                    "topic": "项目深挖",
+                    "reason": "继续验证个人贡献、技术取舍和线上效果。",
+                    "sample_question": "请选一个核心模块，说明你为什么这样设计，以及上线后的指标变化。",
+                },
+                {
+                    "topic": "故障排查",
+                    "reason": "补充真实问题定位过程可以增强可信度。",
+                    "sample_question": "请讲一次线上问题，你如何定位、止损和复盘？",
+                },
+            ],
+            "learning_plan": [
+                {
+                    "day_range": "day_1_3",
+                    "goal": "整理项目证据链",
+                    "tasks": ["补充架构图", "列出个人贡献", "补齐量化指标"],
+                    "expected_output": "一份可用于面试追问的项目说明稿。",
+                },
+                {
+                    "day_range": "day_4_7",
+                    "goal": "训练技术深挖回答",
+                    "tasks": ["准备方案取舍", "准备异常场景", "准备性能数据"],
+                    "expected_output": "3 个可复用的深挖回答案例。",
+                },
+            ],
+            "evidence_references": evidence_refs,
+            "missing_evidence": missing,
+        }
+
+    def _evidence_ids(self, evidence_items: list, limit: int = 3) -> list[str]:
+        ids = []
+        for item in evidence_items:
+            if not isinstance(item, dict):
+                continue
+            evidence_id = item.get("evidence_id")
+            if evidence_id and evidence_id not in ids:
+                ids.append(evidence_id)
+            if len(ids) >= limit:
+                break
+        return ids
 
     def _mock_evaluation(self, history: list[InterviewMessage]) -> dict[str, str]:
         answer_count = len([item for item in history if item.role_type == "user"])

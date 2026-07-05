@@ -76,6 +76,13 @@
       "responsibility": "Rewrite the resume using verified claims, candidate profile, and target role context.",
       "owns": ["resume_rewrite"],
       "not_responsible_for": ["authenticity judgement", "interview evaluation", "candidate memory persistence"]
+    },
+    {
+      "agent_name": "GrowthReportAgent",
+      "category": "artifact_generation",
+      "responsibility": "Generate a structured candidate growth report from interview, evaluation, resume, JD, and evidence context.",
+      "owns": ["candidate_growth_report_generation"],
+      "not_responsible_for": ["interview execution", "artifact persistence", "workflow orchestration", "resume rewriting"]
     }
   ],
   "workflows": [
@@ -216,6 +223,21 @@
           "task": "resume_rewrite",
           "required": true,
           "depends_on": ["resume_authenticity"]
+        }
+      ]
+    },
+    {
+      "workflow_id": "candidate_growth_report",
+      "name": "Candidate Growth Report Workflow",
+      "description": "Generate a structured growth report and action plan from post-interview evidence.",
+      "steps": [
+        {
+          "step_id": "generate_growth_report",
+          "agent_name": "GrowthReportAgent",
+          "prompt_id": "candidate_growth_report",
+          "task": "candidate_growth_report_generation",
+          "required": true,
+          "depends_on": []
         }
       ]
     }
@@ -376,6 +398,18 @@
       "required_context": ["ResumeDocument", "ResumeProfile"],
       "optional_context": ["JDAnalysis", "GapAnalysis", "ProjectCandidateProfile", "Evaluation"],
       "required_evidence": ["resume_claim", "authenticity_check"]
+    },
+    {
+      "prompt_id": "candidate_growth_report",
+      "prompt_file": "candidate_growth_report.txt",
+      "version": "1.0.0",
+      "owner_agent": "GrowthReportAgent",
+      "task": "candidate_growth_report_generation",
+      "input_schema": "CandidateGrowthReportInput.v1",
+      "output_schema": "CandidateGrowthReport.v1",
+      "required_context": ["Evaluation"],
+      "optional_context": ["JDAnalysis", "ResumeProfile", "GapAnalysis", "ProjectCandidateProfile", "InterviewPlanExecution"],
+      "required_evidence": ["interview_answer", "evaluation_finding"]
     }
   ]
 }

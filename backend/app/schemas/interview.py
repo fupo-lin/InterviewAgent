@@ -56,6 +56,19 @@ class EndInterviewResponse(BaseModel):
     evaluation: EvaluationResponse
 
 
+class GrowthReportResponse(BaseModel):
+    session_id: str = Field(alias="sessionId")
+    status: str
+    workflow_run_id: str | None = Field(default=None, alias="workflowRunId")
+    report_id: int | None = Field(default=None, alias="reportId")
+    report_uid: str | None = Field(default=None, alias="reportUid")
+    report: dict | None = None
+    error_message: str | None = Field(default=None, alias="errorMessage")
+
+    class Config:
+        populate_by_name = True
+
+
 class MessageResponse(BaseModel):
     role_type: str = Field(alias="roleType")
     message_type: str = Field(alias="messageType")
