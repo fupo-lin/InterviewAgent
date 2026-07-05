@@ -2,10 +2,13 @@ from __future__ import annotations
 
 from uuid import uuid4
 
+from app.service.workflow_state_contract import WorkflowStateValidator
+
 
 class WorkflowRuntime:
-    def __init__(self, repository):
+    def __init__(self, repository, state_validator: WorkflowStateValidator | None = None):
         self.repository = repository
+        self.state_validator = state_validator or WorkflowStateValidator()
 
     def load_or_create(
         self,
@@ -20,6 +23,7 @@ class WorkflowRuntime:
         if existing:
             return existing
         workflow_run_id = f"{workflow_id}_{uuid4().hex}"
+        validated_state = self.state_validator.validate(initial_state or {})
         return self.repository.create(
             workflow_run_id=workflow_run_id,
             workflow_id=workflow_id,
@@ -28,7 +32,7 @@ class WorkflowRuntime:
             session_id=session_id,
             status="running",
             current_step="start",
-            state=initial_state,
+            state=validated_state,
         )
 
     def save(
@@ -40,9 +44,10 @@ class WorkflowRuntime:
         status: str = "running",
         last_error: dict | None = None,
     ):
+        validated_state = self.state_validator.validate(state)
         return self.repository.save_state(
             workflow_run,
-            state=state,
+            state=validated_state,
             current_step=current_step,
             status=status,
             last_error=last_error,

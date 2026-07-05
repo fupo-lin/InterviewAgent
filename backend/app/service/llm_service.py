@@ -375,8 +375,49 @@ class LLMService:
         content, raw_response = await self._chat_completion([{"role": "user", "content": prompt}])
         return self._parse_json_object(content, fallback), raw_response
 
-    async def _chat_completion(self, messages: list[dict[str, str]]) -> tuple[str, dict | None]:
-        payload = {"model": self.model, "messages": messages, "temperature": 0.7}
+    async def repair_structured_output(
+        self,
+        prompt_id: str,
+        output: object,
+        output_schema: dict,
+        validation_errors: list[str],
+    ) -> tuple[dict, dict | None] | None:
+        if not self.api_key:
+            return None
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You repair invalid structured agent outputs. Return only one JSON object. "
+                    "Do not add markdown fences or explanatory text."
+                ),
+            },
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        "prompt_id": prompt_id,
+                        "validation_errors": validation_errors,
+                        "json_schema": output_schema,
+                        "invalid_output": output,
+                    },
+                    ensure_ascii=False,
+                    default=str,
+                ),
+            },
+        ]
+        content, raw_response = await self._chat_completion(messages, temperature=0.0)
+        repaired = self._parse_json_object(content, {})
+        if not repaired:
+            return None
+        return repaired, raw_response
+
+    async def _chat_completion(
+        self,
+        messages: list[dict[str, str]],
+        temperature: float = 0.7,
+    ) -> tuple[str, dict | None]:
+        payload = {"model": self.model, "messages": messages, "temperature": temperature}
         headers = {"Authorization": f"Bearer {self.api_key}"}
         async with httpx.AsyncClient(timeout=60) as client:
             response = await client.post(

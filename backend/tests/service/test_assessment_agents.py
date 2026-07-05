@@ -7,7 +7,7 @@ from service.support import configure_backend_imports
 configure_backend_imports()
 
 from app.service.agent_run_service import AgentRunExecutor
-from app.service.agent_runtime import AgentRuntimeConfig
+from app.service.agent_runtime import AgentOutputValidationError, AgentRuntimeConfig
 from app.service.assessment_agents import (
     EvaluationAgent,
     EvaluationAgentInput,
@@ -24,13 +24,15 @@ from app.service.project_agent_spec_builder import ProjectAgentContext
 class FakeRecorder:
     def __init__(self) -> None:
         self.success_calls = []
+        self.failure_calls = []
 
     def record_success(self, **kwargs):
         self.success_calls.append(kwargs)
         return SimpleNamespace(id=800 + len(self.success_calls))
 
     def record_failure(self, **kwargs):
-        raise AssertionError("failure was not expected")
+        self.failure_calls.append(kwargs)
+        return SimpleNamespace(id=900 + len(self.failure_calls))
 
 
 class FakeLLM:
@@ -66,6 +68,48 @@ class FakeLLM:
         }, {"raw": "project_profile"}
 
 
+class InvalidOutputLLM(FakeLLM):
+    async def generate_evaluation(self, *args, **kwargs):
+        self.evaluation_calls.append((args, kwargs))
+        return {
+            "strengths": "clear project context",
+            "weaknesses": "needs metrics",
+            "summary": [],
+        }, {"raw": "invalid_evaluation"}
+
+
+class RepairingOutputLLM(InvalidOutputLLM):
+    def __init__(self) -> None:
+        super().__init__()
+        self.repair_calls = []
+
+    async def repair_structured_output(
+        self,
+        prompt_id: str,
+        output: object,
+        output_schema: dict,
+        validation_errors: list[str],
+    ):
+        self.repair_calls.append(
+            {
+                "prompt_id": prompt_id,
+                "output": output,
+                "output_schema": output_schema,
+                "validation_errors": validation_errors,
+            }
+        )
+        return {
+            "strengths": "clear project context",
+            "weaknesses": "needs metrics",
+            "suggestions": "prepare numbers",
+            "summary": "repaired ok",
+            "technical_ability": "medium",
+            "project_experience": "medium",
+            "communication": "clear",
+            "improvement_suggestions": "prepare numbers",
+        }, {"raw": "repaired_evaluation"}
+
+
 def message(message_id: int, role_type: str, content: str, round_no: int = 1):
     return SimpleNamespace(
         id=message_id,
@@ -84,7 +128,10 @@ def artifact(artifact_id: int, content):
 class AssessmentAgentRuntimeTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.recorder = FakeRecorder()
-        self.executor = AgentRunExecutor(db=SimpleNamespace(), recorder=self.recorder)
+        self.executor = AgentRunExecutor(
+            db=SimpleNamespace(commit=lambda: None),
+            recorder=self.recorder,
+        )
         self.evidence_builder = EvidencePacketBuilder()
         self.llm = FakeLLM()
         self.config = AgentRuntimeConfig(model_name=self.llm.model)
@@ -155,6 +202,93 @@ class AssessmentAgentRuntimeTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(contract["input_ok"])
         self.assertTrue(contract["output_ok"])
         self.assertEqual(contract["errors"], [])
+        self.assertEqual(self.recorder.failure_calls, [])
+
+    async def test_invalid_output_is_recorded_as_failed_agent_run(self):
+        llm = InvalidOutputLLM()
+        agent = EvaluationAgent(
+            agent_run_executor=self.executor,
+            evidence_builder=self.evidence_builder,
+            llm=llm,
+            config=self.config,
+        )
+        session = SimpleNamespace(id=10, project_id=1, interview_plan_id=20)
+        history = [
+            message(1, "assistant", "Please introduce your project."),
+            message(2, "user", "I built a backend service with retry handling."),
+        ]
+
+        with self.assertRaises(AgentOutputValidationError) as raised:
+            await agent.run(
+                EvaluationAgentInput(
+                    session=session,
+                    history=history,
+                    full_history=history,
+                    execution=None,
+                    candidate_profile=None,
+                    conversation_summary=None,
+                    plan_context="plan context",
+                )
+            )
+
+        self.assertIn("output.summary", str(raised.exception))
+        self.assertEqual(self.recorder.success_calls, [])
+        self.assertEqual(len(self.recorder.failure_calls), 1)
+        failure = self.recorder.failure_calls[0]
+        self.assertIsInstance(failure["error"], AgentOutputValidationError)
+        contract = failure["input_snapshot"]["agent_contract_validation"]
+        self.assertEqual(contract["input_schema"], "EvaluationInputV1")
+        self.assertEqual(contract["output_schema"], "InterviewEvaluationV1")
+        self.assertTrue(contract["input_ok"])
+        self.assertFalse(contract["output_ok"])
+        self.assertTrue(any("output.summary" in item for item in contract["errors"]))
+        self.assertFalse(hasattr(llm, "repair_calls"))
+
+    async def test_invalid_output_can_be_repaired_before_recording_success(self):
+        llm = RepairingOutputLLM()
+        agent = EvaluationAgent(
+            agent_run_executor=self.executor,
+            evidence_builder=self.evidence_builder,
+            llm=llm,
+            config=self.config,
+        )
+        session = SimpleNamespace(id=10, project_id=1, interview_plan_id=20)
+        history = [
+            message(1, "assistant", "Please introduce your project."),
+            message(2, "user", "I built a backend service with retry handling."),
+        ]
+
+        result = await agent.run(
+            EvaluationAgentInput(
+                session=session,
+                history=history,
+                full_history=history,
+                execution=None,
+                candidate_profile=None,
+                conversation_summary=None,
+                plan_context="plan context",
+            )
+        )
+
+        self.assertEqual(result.output["summary"], "repaired ok")
+        self.assertTrue(result.raw_response["output_repaired"])
+        self.assertEqual(result.raw_response["original"], {"raw": "invalid_evaluation"})
+        self.assertEqual(result.raw_response["repair"], {"raw": "repaired_evaluation"})
+        self.assertEqual(self.recorder.failure_calls, [])
+        self.assertEqual(len(self.recorder.success_calls), 1)
+        self.assertEqual(len(llm.repair_calls), 1)
+        repair_call = llm.repair_calls[0]
+        self.assertEqual(repair_call["prompt_id"], "evaluation")
+        self.assertIn("properties", repair_call["output_schema"])
+        self.assertTrue(any("output.summary" in item for item in repair_call["validation_errors"]))
+        contract = self.recorder.success_calls[0]["input_snapshot"]["agent_contract_validation"]
+        self.assertTrue(contract["output_ok"])
+        self.assertEqual(contract["errors"], [])
+        self.assertEqual(contract["output_repair"]["attempted"], True)
+        self.assertEqual(contract["output_repair"]["repaired_ok"], True)
+        self.assertTrue(
+            any("output.summary" in item for item in contract["output_repair"]["initial_errors"])
+        )
 
     async def test_project_candidate_profile_agent_runs_through_agent_runtime(self):
         agent = ProjectCandidateProfileAgent(
