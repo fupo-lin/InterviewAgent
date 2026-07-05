@@ -28,6 +28,7 @@ from app.service.assessment_agents import EvaluationAgent, GrowthReportAgent
 from app.service.candidate_growth_report_nodes import CandidateGrowthReportNodes
 from app.service.candidate_growth_report_workflow import CandidateGrowthReportWorkflow
 from app.service.evidence_service import EvidencePacketBuilder
+from app.service.growth_report_response import growth_report_response
 from app.service.interview_agent_spec_builder import InterviewAgentSpecBuilder
 from app.service.interview_execution_service import InterviewExecutionService
 from app.service.interview_runtime_nodes import InterviewRuntimeNodes
@@ -322,6 +323,10 @@ class InterviewService:
                 reportUid=None,
                 report=None,
                 errorMessage=None,
+                missingInputs=[],
+                branch=None,
+                branchReason=None,
+                nextActions=[],
             )
         return self._growth_report_response(session, report, status="success")
 
@@ -339,6 +344,10 @@ class InterviewService:
                 reportUid=None,
                 report=None,
                 errorMessage=str(exc),
+                missingInputs=[],
+                branch=None,
+                branchReason=None,
+                nextActions=[],
             )
         self.db.commit()
         if result.report:
@@ -347,6 +356,7 @@ class InterviewService:
                 result.report,
                 status=result.state.get("status") or "success",
                 workflow_run_id=result.state.get("workflow_run_id"),
+                workflow_state=result.state,
             )
         return GrowthReportResponse(
             sessionId=session.session_uid,
@@ -356,6 +366,10 @@ class InterviewService:
             reportUid=None,
             report=None,
             errorMessage=result.state.get("partial_reason"),
+            missingInputs=result.state.get("missing_inputs") or [],
+            branch=result.state.get("branch"),
+            branchReason=result.state.get("branch_reason"),
+            nextActions=result.state.get("next_actions") or [],
         )
 
     async def _generate_first_question_with_run(
@@ -614,15 +628,14 @@ class InterviewService:
         report,
         status: str,
         workflow_run_id: str | None = None,
+        workflow_state: dict | None = None,
     ) -> GrowthReportResponse:
-        return GrowthReportResponse(
-            sessionId=session.session_uid,
+        return growth_report_response(
+            session=session,
+            report=report,
             status=status,
-            workflowRunId=workflow_run_id or getattr(report, "workflow_run_id", None),
-            reportId=report.id,
-            reportUid=report.report_uid,
-            report=report.content,
-            errorMessage=None,
+            workflow_run_id=workflow_run_id,
+            workflow_state=workflow_state,
         )
 
     async def _generate_project_outputs_if_needed(self, session, evaluation) -> dict[str, int]:

@@ -274,6 +274,35 @@ textarea:focus {
   padding: 12px;
 }
 
+.growth-diagnostics {
+  background: #f8fafb;
+  border: 1px solid #edf1f4;
+  border-radius: 8px;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  padding: 12px;
+}
+
+.growth-diagnostics div {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.growth-diagnostics span {
+  color: #607080;
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.growth-diagnostics strong {
+  color: #18202a;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
 .growth-report-empty {
   align-items: center;
   border: 1px dashed #cbd5df;
@@ -1062,7 +1091,8 @@ textarea:focus {
   }
 
   .growth-summary-grid,
-  .growth-section-grid {
+  .growth-section-grid,
+  .growth-diagnostics {
     grid-template-columns: 1fr;
   }
 

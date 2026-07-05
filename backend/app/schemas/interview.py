@@ -64,6 +64,10 @@ class GrowthReportResponse(BaseModel):
     report_uid: str | None = Field(default=None, alias="reportUid")
     report: dict | None = None
     error_message: str | None = Field(default=None, alias="errorMessage")
+    missing_inputs: list[str] = Field(default_factory=list, alias="missingInputs")
+    branch: str | None = None
+    branch_reason: str | None = Field(default=None, alias="branchReason")
+    next_actions: list[dict] = Field(default_factory=list, alias="nextActions")
 
     class Config:
         populate_by_name = True

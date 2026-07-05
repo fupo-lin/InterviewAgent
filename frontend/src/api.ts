@@ -36,6 +36,10 @@ export type GrowthReportResponse = {
   reportUid?: string | null;
   report?: Record<string, unknown> | null;
   errorMessage?: string | null;
+  missingInputs?: string[];
+  branch?: string | null;
+  branchReason?: string | null;
+  nextActions?: Array<Record<string, unknown>>;
 };
 
 export type WorkflowRunStatus = "running" | "waiting_user" | "failed" | "success" | "partial";

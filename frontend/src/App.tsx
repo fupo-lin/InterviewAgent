@@ -412,6 +412,14 @@ function GrowthReportPanel({
   const jobMatch = getRecord(report?.job_match);
   const storytelling = getRecord(report?.project_storytelling);
   const workflowRunId = reportResponse?.workflowRunId || "";
+  const missingInputs = reportResponse?.missingInputs ?? [];
+  const nextActions = reportResponse?.nextActions ?? [];
+  const showDiagnostics =
+    Boolean(reportResponse) &&
+    (status !== "success" ||
+      Boolean(reportResponse?.branch) ||
+      missingInputs.length > 0 ||
+      nextActions.length > 0);
 
   return (
     <section className="growth-report">
@@ -443,6 +451,39 @@ function GrowthReportPanel({
       </header>
 
       {error && <div className="growth-report-error">{error}</div>}
+
+      {showDiagnostics && (
+        <section className="growth-diagnostics">
+          <div>
+            <span>Status</span>
+            <strong>{status}</strong>
+          </div>
+          {reportResponse?.branch && (
+            <div>
+              <span>Branch</span>
+              <strong>{reportResponse.branch}</strong>
+            </div>
+          )}
+          {reportResponse?.branchReason && (
+            <div>
+              <span>Reason</span>
+              <strong>{reportResponse.branchReason}</strong>
+            </div>
+          )}
+          {missingInputs.length > 0 && (
+            <div>
+              <span>Missing Inputs</span>
+              <strong>{missingInputs.join(", ")}</strong>
+            </div>
+          )}
+          {nextActions.length > 0 && (
+            <div>
+              <span>Next Actions</span>
+              <strong>{nextActions.map((item) => getString(item.type) || stringifyValue(item)).join(", ")}</strong>
+            </div>
+          )}
+        </section>
+      )}
 
       {loading && !hasReport && (
         <div className="growth-report-empty">
