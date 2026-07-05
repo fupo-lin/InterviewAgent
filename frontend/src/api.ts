@@ -28,6 +28,59 @@ export type HistoryResponse = {
   evaluation: Evaluation | null;
 };
 
+export type ProjectResponse = {
+  projectId: string;
+  title: string;
+  targetRole?: string | null;
+  status: string;
+  createTime: string;
+};
+
+export type ProjectOverviewResponse = {
+  project: Record<string, unknown>;
+  jd?: Record<string, unknown> | null;
+  jdAnalysis?: Record<string, unknown> | null;
+  resume?: Record<string, unknown> | null;
+  resumeProfile?: Record<string, unknown> | null;
+  gapAnalysis?: Record<string, unknown> | null;
+  interviewPlan?: Record<string, unknown> | null;
+  candidateProfile?: Record<string, unknown> | null;
+  resumeAuthenticity?: Record<string, unknown> | null;
+  resumeRewrite?: Record<string, unknown> | null;
+};
+
+export type ProjectArtifactResponse = {
+  analysisId?: number;
+  analysis?: Record<string, unknown>;
+  resumeId?: number;
+  profileId?: number;
+  profile?: Record<string, unknown>;
+  gapAnalysisId?: number;
+  gapAnalysis?: Record<string, unknown>;
+  interviewPlanId?: number;
+  planMode?: string;
+  plan?: Record<string, unknown>;
+  reportId?: number;
+  report?: Record<string, unknown>;
+  rewriteId?: number;
+  rewriteMode?: string;
+  result?: Record<string, unknown>;
+};
+
+export type GrowthReportResponse = {
+  sessionId: string;
+  status: "not_found" | "success" | "failed" | "partial" | "generating";
+  workflowRunId?: string | null;
+  reportId?: number | null;
+  reportUid?: string | null;
+  report?: Record<string, unknown> | null;
+  errorMessage?: string | null;
+  missingInputs?: string[];
+  branch?: string | null;
+  branchReason?: string | null;
+  nextActions?: Array<Record<string, unknown>>;
+};
+
 export type WorkflowRunStatus = "running" | "waiting_user" | "failed" | "success" | "partial";
 
 export type WorkflowRunResumeReason =
@@ -146,6 +199,127 @@ export async function startInterview(roleName: string) {
   });
 }
 
+export async function createProject(title: string, targetRole?: string) {
+  return request<ProjectResponse>("/preparation/projects", {
+    method: "POST",
+    body: JSON.stringify({ title, targetRole: targetRole || null }),
+  });
+}
+
+export async function getProjectOverview(projectId: string) {
+  return request<ProjectOverviewResponse>(
+    `/preparation/projects/${encodeURIComponent(projectId)}/overview`,
+  );
+}
+
+export async function addJobDescription(
+  projectId: string,
+  payload: {
+    content: string;
+    title?: string;
+    companyName?: string;
+    sourceUrl?: string;
+  },
+) {
+  return request<ProjectArtifactResponse>(
+    `/preparation/projects/${encodeURIComponent(projectId)}/jd`,
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+  );
+}
+
+export async function analyzeJobDescription(projectId: string) {
+  return request<ProjectArtifactResponse>(
+    `/preparation/projects/${encodeURIComponent(projectId)}/jd/analyze`,
+    {
+      method: "POST",
+    },
+  );
+}
+
+export async function addResumeDocument(
+  projectId: string,
+  payload: {
+    content: string;
+    fileName?: string;
+    fileType?: string;
+  },
+) {
+  return request<ProjectArtifactResponse>(
+    `/preparation/projects/${encodeURIComponent(projectId)}/resume`,
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+  );
+}
+
+export async function analyzeResume(projectId: string) {
+  return request<ProjectArtifactResponse>(
+    `/preparation/projects/${encodeURIComponent(projectId)}/resume/analyze`,
+    {
+      method: "POST",
+    },
+  );
+}
+
+export async function analyzeGap(projectId: string) {
+  return request<ProjectArtifactResponse>(
+    `/preparation/projects/${encodeURIComponent(projectId)}/gap/analyze`,
+    {
+      method: "POST",
+    },
+  );
+}
+
+export async function generateInterviewPlan(projectId: string) {
+  return request<ProjectArtifactResponse>(
+    `/preparation/projects/${encodeURIComponent(projectId)}/interview-plan/generate`,
+    {
+      method: "POST",
+    },
+  );
+}
+
+export async function generateCandidateProfile(projectId: string) {
+  return request<ProjectArtifactResponse>(
+    `/preparation/projects/${encodeURIComponent(projectId)}/candidate-profile/generate`,
+    {
+      method: "POST",
+    },
+  );
+}
+
+export async function generateResumeAuthenticity(projectId: string) {
+  return request<ProjectArtifactResponse>(
+    `/preparation/projects/${encodeURIComponent(projectId)}/resume/authenticity`,
+    {
+      method: "POST",
+    },
+  );
+}
+
+export async function rewriteResume(projectId: string, rewriteMode = "jd_targeted") {
+  return request<ProjectArtifactResponse>(
+    `/preparation/projects/${encodeURIComponent(projectId)}/resume/rewrite`,
+    {
+      method: "POST",
+      body: JSON.stringify({ rewriteMode }),
+    },
+  );
+}
+
+export async function startProjectInterview(projectId: string) {
+  return request<{ sessionId: string; reply: string }>(
+    `/preparation/projects/${encodeURIComponent(projectId)}/interview/start`,
+    {
+      method: "POST",
+    },
+  );
+}
+
 export async function sendMessage(sessionId: string, message: string) {
   return request<{ reply: string; roundNo: number }>("/interview/chat", {
     method: "POST",
@@ -168,6 +342,19 @@ export async function deleteInterview(sessionId: string) {
   return request<{ success: boolean }>(`/interview/delete/${sessionId}`, {
     method: "DELETE",
   });
+}
+
+export async function getGrowthReport(sessionId: string) {
+  return request<GrowthReportResponse>(`/interview/${encodeURIComponent(sessionId)}/growth-report`);
+}
+
+export async function generateGrowthReport(sessionId: string) {
+  return request<GrowthReportResponse>(
+    `/interview/${encodeURIComponent(sessionId)}/growth-report/generate`,
+    {
+      method: "POST",
+    },
+  );
 }
 
 export async function listWorkflowRuns(filters?: {

@@ -1,3 +1,4 @@
+import json
 import unittest
 from types import SimpleNamespace
 
@@ -10,6 +11,9 @@ from app.service.agent_runtime import AgentRuntimeConfig
 from app.service.assessment_agents import (
     EvaluationAgent,
     EvaluationAgentInput,
+    GrowthReportAgent,
+    GrowthReportAgentInput,
+    GrowthReportContext,
     ProjectCandidateProfileAgent,
     ProjectCandidateProfileAgentInput,
 )
@@ -231,6 +235,54 @@ class AssessmentAgentRuntimeTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(contract["input_ok"])
         self.assertTrue(contract["output_ok"])
         self.assertIn("input.project_id", contract["errors"][0])
+
+    def test_growth_report_agent_input_snapshot_is_json_serializable(self):
+        agent = GrowthReportAgent(
+            agent_run_executor=self.executor,
+            evidence_builder=self.evidence_builder,
+            llm=self.llm,
+            config=self.config,
+        )
+        session = SimpleNamespace(
+            id=10,
+            project_id=1,
+            role_name="Backend Engineer",
+        )
+        evaluation = SimpleNamespace(
+            id=900,
+            strengths="clear project context",
+            weaknesses="needs metrics",
+            suggestions="prepare numbers",
+            technical_ability="medium",
+            project_experience="medium",
+            communication="clear",
+            improvement_suggestions="prepare numbers",
+            summary="ok",
+            schema_version="InterviewEvaluation.v1",
+        )
+        execution = SimpleNamespace(id=40, state={"sections": []}, status="finished")
+
+        spec = agent.build_spec(
+            GrowthReportAgentInput(
+                session=session,
+                transcript_messages=[message(2, "user", "I owned the backend API.")],
+                execution=execution,
+                evaluation=evaluation,
+                context=GrowthReportContext(
+                    jd_analysis=artifact(11, {"required_skills": ["FastAPI"]}),
+                    resume_profile=artifact(22, {"skills": ["FastAPI"]}),
+                    gap_analysis=artifact(33, {"gap_points": []}),
+                    project_candidate_profile=artifact(44, {"summary": "profile"}),
+                    resume_authenticity=artifact(55, {"summary": "supported"}),
+                ),
+                workflow_run_id="growth-run-1",
+            )
+        )
+
+        json.dumps(spec.input_snapshot)
+        self.assertIsInstance(spec.input_snapshot["context_refs"], dict)
+        self.assertEqual(spec.input_snapshot["context_refs"]["evaluation_id"], 900)
+        self.assertEqual(spec.workflow_context["workflow_id"], "candidate_growth_report")
 
 
 if __name__ == "__main__":

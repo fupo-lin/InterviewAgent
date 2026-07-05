@@ -234,6 +234,48 @@ class EvidencePacketBuilder:
             "missing_evidence": self._missing_topic_judge_evidence(items),
         }
 
+    def build_growth_report_packet(
+        self,
+        session_id: int,
+        project_id: int | None = None,
+        transcript_messages: list[InterviewMessage] | None = None,
+        execution_state: dict | None = None,
+        evaluation_id: int | None = None,
+        evaluation: dict | None = None,
+        jd_analysis_id: int | None = None,
+        jd_analysis: dict | None = None,
+        resume_profile_id: int | None = None,
+        resume_profile: dict | None = None,
+        gap_analysis_id: int | None = None,
+        gap_analysis: dict | None = None,
+        authenticity_report: dict | None = None,
+    ) -> dict[str, Any]:
+        items: list[EvidenceItem] = []
+        if project_id and jd_analysis_id and jd_analysis:
+            items.extend(self._jd_requirements(project_id, jd_analysis_id, jd_analysis))
+        if project_id and resume_profile_id and resume_profile:
+            items.extend(self._resume_claims_from_profile(project_id, resume_profile_id, resume_profile))
+        if project_id and gap_analysis_id and gap_analysis:
+            items.extend(self._gap_findings(project_id, gap_analysis_id, gap_analysis))
+        items.extend(self._interview_answers(project_id, transcript_messages or []))
+        items.extend(self._execution_probes(project_id, execution_state or {}))
+        items.extend(self._evaluation_findings(project_id, session_id, evaluation_id, evaluation or {}))
+        if project_id:
+            items.extend(self._authenticity_checks(project_id, authenticity_report or {}))
+        return {
+            "packet_id": self._packet_id("candidate_growth_report", session_id),
+            "task": "candidate_growth_report_generation",
+            "project_id": project_id,
+            "session_id": session_id,
+            "evidence_items": [item.to_dict() for item in items],
+            "missing_evidence": self._missing_growth_report_evidence(
+                items=items,
+                evaluation=evaluation,
+                jd_analysis=jd_analysis,
+                resume_profile=resume_profile,
+            ),
+        }
+
     def build_question_generation_packet(
         self,
         task: str,
@@ -519,6 +561,44 @@ class EvidencePacketBuilder:
             )
         return items
 
+    def _evaluation_findings(
+        self,
+        project_id: int | None,
+        session_id: int,
+        evaluation_id: int | None,
+        evaluation: dict,
+    ) -> list[EvidenceItem]:
+        if not evaluation:
+            return []
+        items: list[EvidenceItem] = []
+        for field_name in (
+            "summary",
+            "strengths",
+            "weaknesses",
+            "suggestions",
+            "technical_ability",
+            "project_experience",
+            "communication",
+            "improvement_suggestions",
+        ):
+            value = evaluation.get(field_name)
+            if not value:
+                continue
+            items.append(
+                EvidenceItem(
+                    evidence_id=f"evaluation_{evaluation_id or session_id}_{field_name}",
+                    evidence_type=EvidenceType.EVALUATION_FINDING,
+                    source_type=EvidenceSourceType.INTERVIEW_EVALUATION,
+                    source_id=evaluation_id,
+                    project_id=project_id,
+                    session_id=session_id,
+                    content_excerpt=self._excerpt(str(value)),
+                    tags=("evaluation", field_name),
+                    confidence="medium",
+                )
+            )
+        return items
+
     def _missing_evidence(
         self,
         items: list[EvidenceItem],
@@ -576,6 +656,24 @@ class EvidencePacketBuilder:
             missing.append("面试回答证据")
         if not any(item.evidence_type == EvidenceType.EXECUTION_PROBE for item in items):
             missing.append("面试计划执行证据")
+        return missing
+
+    def _missing_growth_report_evidence(
+        self,
+        items: list[EvidenceItem],
+        evaluation: dict | None,
+        jd_analysis: dict | None,
+        resume_profile: dict | None,
+    ) -> list[str]:
+        missing = []
+        if not any(item.evidence_type == EvidenceType.INTERVIEW_ANSWER for item in items):
+            missing.append("interview_answer")
+        if not evaluation:
+            missing.append("evaluation")
+        if not jd_analysis:
+            missing.append("jd_analysis")
+        if not resume_profile:
+            missing.append("resume_profile")
         return missing
 
     def _excerpt(self, content: str, limit: int = 300) -> str:

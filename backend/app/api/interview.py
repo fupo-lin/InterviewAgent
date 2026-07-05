@@ -7,6 +7,7 @@ from app.schemas.interview import (
     ChatResponse,
     EndInterviewRequest,
     EndInterviewResponse,
+    GrowthReportResponse,
     HistoryResponse,
     InterviewExecutionResponse,
     DeleteResponse,
@@ -54,6 +55,18 @@ def get_history(session_id: str, db: Session = Depends(get_db)):
 def get_execution(session_id: str, db: Session = Depends(get_db)):
     service = InterviewService(db)
     return service.execution(session_id)
+
+
+@router.get("/{session_id}/growth-report", response_model=GrowthReportResponse, response_model_by_alias=True)
+def get_growth_report(session_id: str, db: Session = Depends(get_db)):
+    service = InterviewService(db)
+    return service.growth_report(session_id)
+
+
+@router.post("/{session_id}/growth-report/generate", response_model=GrowthReportResponse, response_model_by_alias=True)
+async def generate_growth_report(session_id: str, db: Session = Depends(get_db)):
+    service = InterviewService(db)
+    return await service.generate_growth_report(session_id)
 
 
 @router.delete("/delete/{session_id}", response_model=DeleteResponse, response_model_by_alias=True)

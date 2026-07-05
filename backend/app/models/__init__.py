@@ -8,6 +8,7 @@ from app.models.interview import (
     InterviewSummary,
 )
 from app.models.preparation import (
+    CandidateGrowthReport,
     GapAnalysis,
     InterviewPlan,
     JDAnalysis,
@@ -39,6 +40,7 @@ __all__ = [
     "ProjectCandidateProfile",
     "ResumeAuthenticityReport",
     "ResumeRewriteResult",
+    "CandidateGrowthReport",
 ]
 
 

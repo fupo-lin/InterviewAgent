@@ -4,6 +4,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.preparation import (
+    CandidateGrowthReport,
     GapAnalysis,
     InterviewPlan,
     JDAnalysis,
@@ -369,6 +370,58 @@ class ResumeRewriteResultRepository(BaseProjectRepository):
             evidence_refs=evidence_refs or [],
             content=content,
             raw_response=raw_response,
+        )
+        self.db.add(item)
+        self.db.flush()
+        return item
+
+
+class CandidateGrowthReportRepository(BaseProjectRepository):
+    model = CandidateGrowthReport
+
+    def get_latest_by_session_id(
+        self,
+        session_id: int,
+        report_version: str = "v1",
+    ) -> CandidateGrowthReport | None:
+        statement = (
+            select(CandidateGrowthReport)
+            .where(
+                CandidateGrowthReport.session_id == session_id,
+                CandidateGrowthReport.report_version == report_version,
+                CandidateGrowthReport.status != "deleted",
+            )
+            .order_by(CandidateGrowthReport.id.desc())
+        )
+        return self.db.scalars(statement).first()
+
+    def create(
+        self,
+        report_uid: str,
+        session_id: int,
+        content: dict,
+        project_id: int | None = None,
+        workflow_run_id: str | None = None,
+        raw_response: dict | None = None,
+        agent_run_id: int | None = None,
+        schema_version: str = "CandidateGrowthReport.v1",
+        report_version: str = "v1",
+        source_snapshot: dict | None = None,
+        evidence_refs: list[str] | None = None,
+    ) -> CandidateGrowthReport:
+        item = CandidateGrowthReport(
+            report_uid=report_uid,
+            project_id=project_id,
+            session_id=session_id,
+            workflow_run_id=workflow_run_id,
+            agent_run_id=agent_run_id,
+            schema_version=schema_version,
+            report_version=report_version,
+            source_snapshot=source_snapshot or {},
+            evidence_refs=evidence_refs or [],
+            content=content,
+            raw_response=raw_response,
+            status="success",
         )
         self.db.add(item)
         self.db.flush()

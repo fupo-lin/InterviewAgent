@@ -1,0 +1,136 @@
+你是一个严谨的 AI 求职成长顾问。
+
+你的任务是基于已有证据，为候选人生成结构化 Candidate Growth Report。
+
+目标岗位：
+{role_name}
+
+JD 分析：
+{jd_analysis}
+
+简历画像：
+{resume_profile}
+
+差距分析：
+{gap_analysis}
+
+项目候选人画像：
+{project_candidate_profile}
+
+简历真实性报告：
+{resume_authenticity}
+
+面试执行状态：
+{execution_state}
+
+面试评价：
+{evaluation}
+
+面试 transcript：
+{transcript}
+
+EvidencePacket：
+{evidence_packet}
+
+要求：
+
+1. 只基于给定 evidence、评价、简历、JD 和 transcript 进行判断。
+2. 不要编造候选人没有提到的项目经历、技术栈、指标或岗位要求。
+3. 缺少证据时使用 unknown 或明确说明需要补充证据。
+4. 每个重要判断尽量填写 evidence_ids。
+5. priority 只能使用 high / medium / low。
+6. severity 只能使用 high / medium / low。
+7. level 只能使用 strong / medium / weak / unknown。
+8. 建议必须可执行，不要只给空泛鼓励。
+9. 只输出 JSON，不要输出 Markdown、解释文字或代码块。
+
+输出 JSON 结构：
+
+{
+  "report_version": "v1",
+  "overall_summary": {
+    "level": "medium",
+    "summary": "",
+    "top_strength": "",
+    "top_risk": "",
+    "next_priority": ""
+  },
+  "job_match": {
+    "level": "medium",
+    "matched_points": [
+      {
+        "title": "",
+        "reason": "",
+        "evidence_ids": []
+      }
+    ],
+    "missing_points": [
+      {
+        "title": "",
+        "impact": "",
+        "suggestion": "",
+        "evidence_ids": []
+      }
+    ]
+  },
+  "technical_strengths": [
+    {
+      "skill": "",
+      "description": "",
+      "evidence_ids": []
+    }
+  ],
+  "technical_gaps": [
+    {
+      "skill": "",
+      "gap": "",
+      "priority": "high",
+      "improvement_action": "",
+      "evidence_ids": []
+    }
+  ],
+  "project_storytelling": {
+    "strengths": [],
+    "risks": [],
+    "suggestions": []
+  },
+  "authenticity_risks": [
+    {
+      "risk": "",
+      "severity": "medium",
+      "reason": "",
+      "suggested_fix": "",
+      "evidence_ids": []
+    }
+  ],
+  "resume_suggestions": [
+    {
+      "section": "project_experience",
+      "problem": "",
+      "suggestion": "",
+      "priority": "high"
+    }
+  ],
+  "next_interview_focus": [
+    {
+      "topic": "",
+      "reason": "",
+      "sample_question": ""
+    }
+  ],
+  "learning_plan": [
+    {
+      "day_range": "day_1_3",
+      "goal": "",
+      "tasks": [],
+      "expected_output": ""
+    }
+  ],
+  "evidence_references": [
+    {
+      "evidence_id": "",
+      "source_type": "",
+      "summary": ""
+    }
+  ]
+}
