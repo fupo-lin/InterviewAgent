@@ -20,27 +20,40 @@ import {
   ChatMessage,
   Evaluation,
   GrowthReportResponse,
+  ProjectOverviewResponse,
   WorkflowRunDetailResponse,
   WorkflowRunListItem,
   WorkflowRunReconciliationResponse,
   WorkflowRunStatus,
+  addJobDescription,
+  addResumeDocument,
+  analyzeGap,
+  analyzeJobDescription,
+  analyzeResume,
+  createProject,
   deleteInterview,
   endInterview,
+  generateCandidateProfile,
   generateGrowthReport,
+  generateInterviewPlan,
+  generateResumeAuthenticity,
+  getProjectOverview,
   getGrowthReport,
   getWorkflowRunDetail,
   getWorkflowRunReconciliation,
   getHistory,
   listWorkflowRuns,
+  rewriteResume,
   sendMessage,
   startInterview,
+  startProjectInterview,
 } from "./api";
 
 // 定义一个常量数组，存放可选的面试岗位
 const ROLE_OPTIONS = ["Java后端", "测试开发", "AI应用开发", "前端开发", "Go后端"];
 
 function App() {
-  const [activeView, setActiveView] = useState<"interview" | "workflowRuns">("interview");
+  const [activeView, setActiveView] = useState<"preparation" | "interview" | "workflowRuns">("preparation");
   const [initialWorkflowFilter, setInitialWorkflowFilter] = useState("");
   // 定义各种状态，当前选中的岗位，默认是数组第一个"Java后端"。setRoleName 是用来修改它的工具
   //  evaluation面试结束后的评价报告。`Evaluation | null` 表示“要么是评价数据，要么是空(null)”
@@ -234,6 +247,14 @@ function App() {
 
         <nav className="view-switcher" aria-label="Primary views">
           <button
+            className={activeView === "preparation" ? "view-button view-button-active" : "view-button"}
+            type="button"
+            onClick={() => setActiveView("preparation")}
+          >
+            <FileText size={18} />
+            Preparation
+          </button>
+          <button
             className={activeView === "interview" ? "view-button view-button-active" : "view-button"}
             type="button"
             onClick={() => setActiveView("interview")}
@@ -292,7 +313,28 @@ function App() {
         )}
       </aside>
 
-      {activeView === "interview" ? (
+      {activeView === "preparation" ? (
+        <PreparationWorkspace
+          onStartInterview={(nextSessionId, reply, nextRoleName) => {
+            setSessionId(nextSessionId);
+            setHistorySessionId(nextSessionId);
+            setRoleName(nextRoleName || roleName);
+            setStatus("active");
+            setEvaluation(null);
+            setGrowthReport(null);
+            setGrowthReportError("");
+            setMessages([
+              {
+                roleType: "assistant",
+                messageType: "question",
+                roundNo: 1,
+                content: reply,
+              },
+            ]);
+            setActiveView("interview");
+          }}
+        />
+      ) : activeView === "interview" ? (
       <section className="workspace">
         {error && <div className="error-banner">{error}</div>}
 
@@ -396,6 +438,338 @@ type GrowthReportPanelProps = {
   onRefresh: () => void;
   onOpenWorkflow: (workflowRunId: string) => void;
 };
+
+function PreparationWorkspace({
+  onStartInterview,
+}: {
+  onStartInterview: (sessionId: string, reply: string, roleName?: string | null) => void;
+}) {
+  const [projectTitle, setProjectTitle] = useState("Backend Interview Prep");
+  const [targetRole, setTargetRole] = useState("Java后端");
+  const [projectId, setProjectId] = useState("");
+  const [loadedProjectId, setLoadedProjectId] = useState("");
+  const [overview, setOverview] = useState<ProjectOverviewResponse | null>(null);
+  const [jdTitle, setJdTitle] = useState("");
+  const [companyName, setCompanyName] = useState("");
+  const [sourceUrl, setSourceUrl] = useState("");
+  const [jdContent, setJdContent] = useState("");
+  const [resumeFileName, setResumeFileName] = useState("resume.txt");
+  const [resumeContent, setResumeContent] = useState("");
+  const [loadingAction, setLoadingAction] = useState("");
+  const [error, setError] = useState("");
+
+  const activeProjectId = loadedProjectId || projectId.trim();
+  const project = getRecord(overview?.project);
+  const hasJd = Boolean(overview?.jd);
+  const hasJdAnalysis = Boolean(overview?.jdAnalysis);
+  const hasResume = Boolean(overview?.resume);
+  const hasResumeProfile = Boolean(overview?.resumeProfile);
+  const hasGapAnalysis = Boolean(overview?.gapAnalysis);
+  const hasInterviewPlan = Boolean(overview?.interviewPlan);
+  const hasCandidateProfile = Boolean(overview?.candidateProfile);
+  const hasAuthenticity = Boolean(overview?.resumeAuthenticity);
+  const hasRewrite = Boolean(overview?.resumeRewrite);
+
+  async function runAction(action: string, task: () => Promise<void>) {
+    setLoadingAction(action);
+    setError("");
+    try {
+      await task();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : `${action} failed`);
+    } finally {
+      setLoadingAction("");
+    }
+  }
+
+  async function refreshOverview(id = activeProjectId) {
+    if (!id) return;
+    const result = await getProjectOverview(id);
+    setOverview(result);
+    setLoadedProjectId(id);
+    setProjectId(id);
+  }
+
+  function refreshAfter(action: string, task: () => Promise<void>) {
+    void runAction(action, async () => {
+      await task();
+      await refreshOverview();
+    });
+  }
+
+  return (
+    <section className="preparation-workspace">
+      <header className="preparation-header">
+        <div>
+          <p className="eyebrow">Preparation Workflow</p>
+          <h2>JD / Resume / Plan 工作台</h2>
+        </div>
+        <div className="preparation-header-actions">
+          <input
+            aria-label="Project ID"
+            placeholder="输入 projectId 加载"
+            value={projectId}
+            onChange={(event) => setProjectId(event.target.value)}
+          />
+          <button
+            type="button"
+            onClick={() => void runAction("load_project", () => refreshOverview(projectId.trim()))}
+            disabled={!projectId.trim() || Boolean(loadingAction)}
+          >
+            {loadingAction === "load_project" ? <Loader2 className="spin" size={18} /> : <RefreshCw size={18} />}
+            Load
+          </button>
+        </div>
+      </header>
+
+      {error && <div className="error-banner">{error}</div>}
+
+      <section className="preparation-grid">
+        <div className="preparation-column">
+          <section className="prep-panel">
+            <h3>Project</h3>
+            <label htmlFor="project-title">Title</label>
+            <input
+              id="project-title"
+              value={projectTitle}
+              onChange={(event) => setProjectTitle(event.target.value)}
+            />
+            <label htmlFor="target-role">Target Role</label>
+            <input
+              id="target-role"
+              value={targetRole}
+              onChange={(event) => setTargetRole(event.target.value)}
+            />
+            <button
+              className="primary-button"
+              type="button"
+              onClick={() =>
+                void runAction("create_project", async () => {
+                  const result = await createProject(projectTitle, targetRole);
+                  setProjectId(result.projectId);
+                  setLoadedProjectId(result.projectId);
+                  await refreshOverview(result.projectId);
+                })
+              }
+              disabled={!projectTitle.trim() || Boolean(loadingAction)}
+            >
+              {loadingAction === "create_project" ? <Loader2 className="spin" size={18} /> : <Play size={18} />}
+              Create Project
+            </button>
+            {project && (
+              <div className="prep-current-project">
+                <span>{getString(project.title, "Untitled Project")}</span>
+                <code>{getString(project.projectId)}</code>
+                <small>{getString(project.targetRole, "No target role")}</small>
+              </div>
+            )}
+          </section>
+
+          <section className="prep-panel">
+            <h3>JD</h3>
+            <input
+              placeholder="JD title"
+              value={jdTitle}
+              onChange={(event) => setJdTitle(event.target.value)}
+            />
+            <input
+              placeholder="Company"
+              value={companyName}
+              onChange={(event) => setCompanyName(event.target.value)}
+            />
+            <input
+              placeholder="Source URL"
+              value={sourceUrl}
+              onChange={(event) => setSourceUrl(event.target.value)}
+            />
+            <textarea
+              className="prep-textarea"
+              placeholder="粘贴目标岗位 JD"
+              value={jdContent}
+              onChange={(event) => setJdContent(event.target.value)}
+            />
+            <div className="prep-actions">
+              <button
+                type="button"
+                onClick={() =>
+                  refreshAfter("save_jd", () =>
+                    addJobDescription(activeProjectId, {
+                      content: jdContent,
+                      title: jdTitle || undefined,
+                      companyName: companyName || undefined,
+                      sourceUrl: sourceUrl || undefined,
+                    }).then(() => undefined),
+                  )
+                }
+                disabled={!activeProjectId || !jdContent.trim() || Boolean(loadingAction)}
+              >
+                {loadingAction === "save_jd" ? <Loader2 className="spin" size={18} /> : <FileText size={18} />}
+                Save JD
+              </button>
+              <button
+                type="button"
+                onClick={() => refreshAfter("analyze_jd", () => analyzeJobDescription(activeProjectId).then(() => undefined))}
+                disabled={!activeProjectId || !hasJd || Boolean(loadingAction)}
+              >
+                {loadingAction === "analyze_jd" ? <Loader2 className="spin" size={18} /> : <Target size={18} />}
+                Analyze JD
+              </button>
+            </div>
+          </section>
+        </div>
+
+        <div className="preparation-column">
+          <section className="prep-panel">
+            <h3>Resume</h3>
+            <input
+              placeholder="File name"
+              value={resumeFileName}
+              onChange={(event) => setResumeFileName(event.target.value)}
+            />
+            <textarea
+              className="prep-textarea prep-textarea-tall"
+              placeholder="粘贴简历文本"
+              value={resumeContent}
+              onChange={(event) => setResumeContent(event.target.value)}
+            />
+            <div className="prep-actions">
+              <button
+                type="button"
+                onClick={() =>
+                  refreshAfter("save_resume", () =>
+                    addResumeDocument(activeProjectId, {
+                      content: resumeContent,
+                      fileName: resumeFileName || undefined,
+                      fileType: "text",
+                    }).then(() => undefined),
+                  )
+                }
+                disabled={!activeProjectId || !resumeContent.trim() || Boolean(loadingAction)}
+              >
+                {loadingAction === "save_resume" ? <Loader2 className="spin" size={18} /> : <FileText size={18} />}
+                Save Resume
+              </button>
+              <button
+                type="button"
+                onClick={() => refreshAfter("analyze_resume", () => analyzeResume(activeProjectId).then(() => undefined))}
+                disabled={!activeProjectId || !hasResume || Boolean(loadingAction)}
+              >
+                {loadingAction === "analyze_resume" ? <Loader2 className="spin" size={18} /> : <Target size={18} />}
+                Analyze Resume
+              </button>
+            </div>
+          </section>
+
+          <section className="prep-panel">
+            <h3>Workflow Actions</h3>
+            <div className="prep-action-grid">
+              <button
+                type="button"
+                onClick={() => refreshAfter("analyze_gap", () => analyzeGap(activeProjectId).then(() => undefined))}
+                disabled={!activeProjectId || !hasJdAnalysis || !hasResumeProfile || Boolean(loadingAction)}
+              >
+                {loadingAction === "analyze_gap" ? <Loader2 className="spin" size={18} /> : <Route size={18} />}
+                Gap
+              </button>
+              <button
+                type="button"
+                onClick={() => refreshAfter("generate_plan", () => generateInterviewPlan(activeProjectId).then(() => undefined))}
+                disabled={!activeProjectId || (!hasJdAnalysis && !hasResumeProfile) || Boolean(loadingAction)}
+              >
+                {loadingAction === "generate_plan" ? <Loader2 className="spin" size={18} /> : <BookOpen size={18} />}
+                Plan
+              </button>
+              <button
+                type="button"
+                onClick={() => refreshAfter("candidate_profile", () => generateCandidateProfile(activeProjectId).then(() => undefined))}
+                disabled={!activeProjectId || Boolean(loadingAction)}
+              >
+                {loadingAction === "candidate_profile" ? <Loader2 className="spin" size={18} /> : <Target size={18} />}
+                Profile
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  refreshAfter("authenticity", () => generateResumeAuthenticity(activeProjectId).then(() => undefined))
+                }
+                disabled={!activeProjectId || !hasResume || Boolean(loadingAction)}
+              >
+                {loadingAction === "authenticity" ? <Loader2 className="spin" size={18} /> : <AlertTriangle size={18} />}
+                Authenticity
+              </button>
+              <button
+                type="button"
+                onClick={() => refreshAfter("rewrite", () => rewriteResume(activeProjectId).then(() => undefined))}
+                disabled={!activeProjectId || !hasResume || Boolean(loadingAction)}
+              >
+                {loadingAction === "rewrite" ? <Loader2 className="spin" size={18} /> : <FileText size={18} />}
+                Rewrite
+              </button>
+              <button
+                className="primary-button"
+                type="button"
+                onClick={() =>
+                  void runAction("start_project_interview", async () => {
+                    const result = await startProjectInterview(activeProjectId);
+                    onStartInterview(
+                      result.sessionId,
+                      result.reply,
+                      getString(project?.targetRole) || getString(project?.title),
+                    );
+                  })
+                }
+                disabled={!activeProjectId || !hasInterviewPlan || Boolean(loadingAction)}
+              >
+                {loadingAction === "start_project_interview" ? <Loader2 className="spin" size={18} /> : <Play size={18} />}
+                Start Interview
+              </button>
+            </div>
+          </section>
+        </div>
+
+        <section className="preparation-column prep-panel prep-overview">
+          <h3>Artifacts</h3>
+          <div className="prep-status-grid">
+            <PrepStatus label="JD" ready={hasJd} />
+            <PrepStatus label="JD Analysis" ready={hasJdAnalysis} />
+            <PrepStatus label="Resume" ready={hasResume} />
+            <PrepStatus label="Resume Profile" ready={hasResumeProfile} />
+            <PrepStatus label="Gap" ready={hasGapAnalysis} />
+            <PrepStatus label="Interview Plan" ready={hasInterviewPlan} />
+            <PrepStatus label="Candidate Profile" ready={hasCandidateProfile} />
+            <PrepStatus label="Authenticity" ready={hasAuthenticity} />
+            <PrepStatus label="Rewrite" ready={hasRewrite} />
+          </div>
+
+          <ArtifactPreview title="JD Analysis" value={overview?.jdAnalysis} />
+          <ArtifactPreview title="Resume Profile" value={overview?.resumeProfile} />
+          <ArtifactPreview title="Gap Analysis" value={overview?.gapAnalysis} />
+          <ArtifactPreview title="Interview Plan" value={overview?.interviewPlan} />
+        </section>
+      </section>
+    </section>
+  );
+}
+
+function PrepStatus({ label, ready }: { label: string; ready: boolean }) {
+  return (
+    <div className={`prep-status ${ready ? "prep-status-ready" : ""}`}>
+      <span>{label}</span>
+      <strong>{ready ? "ready" : "missing"}</strong>
+    </div>
+  );
+}
+
+function ArtifactPreview({ title, value }: { title: string; value: unknown }) {
+  const record = getRecord(value);
+  const compact = record ? JSON.stringify(record, null, 2) : "";
+  return (
+    <section className="artifact-preview">
+      <h4>{title}</h4>
+      {record ? <pre>{compact}</pre> : <p className="muted">No artifact yet.</p>}
+    </section>
+  );
+}
 
 function GrowthReportPanel({
   error,

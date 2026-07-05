@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     glm_api_base: str = "https://open.bigmodel.cn/api/paas/v4"
     glm_model: str = "glm-4"
     use_langgraph_interview_runtime: bool = Field(
-        default=False,
+        default=True,
         alias="USE_LANGGRAPH_INTERVIEW_RUNTIME",
     )
 
