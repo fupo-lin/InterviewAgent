@@ -8,6 +8,7 @@ configure_backend_imports()
 
 from app.service.interview_runtime_nodes import InterviewRuntimeNodes
 from app.service.interview_runtime_langgraph import LangGraphNotAvailable, StateGraph
+from app.service.interview_runtime_router import InterviewRuntimeRouter
 from app.service.interview_runtime_workflow import InterviewRuntimeWorkflow
 
 
@@ -145,6 +146,8 @@ class FakeWorkflowRuntime:
 class FakeExecutionService:
     def __init__(self) -> None:
         self.advance_calls = []
+        self.next_action = "continue_current_topic"
+        self.execution_status_after_advance = None
 
     def current_section(self, execution):
         return {"section_key": "system_design", "probe_points": ["idempotency"]}
@@ -157,9 +160,11 @@ class FakeExecutionService:
             evidence.append({"round_no": round_no, "answer_excerpt": answer})
         execution.current_section_round_no += 1
         execution.total_completed_round_no += 1
+        if self.execution_status_after_advance:
+            execution.status = self.execution_status_after_advance
         execution.state = {
             **(execution.state or {}),
-            "next_action": {"type": "continue_current_topic"},
+            "next_action": {"type": self.next_action},
         }
         return execution
 
@@ -551,6 +556,29 @@ class InterviewRuntimeNodesTest(unittest.IsolatedAsyncioTestCase):
             events.index("followup_llm"),
         )
         self.assertIn("commit:wait_user_answer", events)
+
+    async def test_runtime_workflow_records_route_after_advance(self):
+        self.execution_service.next_action = "move_next_section"
+        self.execution.state = {
+            "sections": [{"section_key": "system_design", "evidence": []}],
+            "next_action": {"type": "continue_current_topic"},
+        }
+        runtime = FakeWorkflowRuntime()
+        workflow = InterviewRuntimeWorkflow(self.nodes, runtime=runtime)
+
+        result = await workflow.resume_with_user_input(
+            session=self.session,
+            message="candidate answer",
+        )
+
+        self.assertEqual(
+            result.state["route_after_advance"],
+            InterviewRuntimeRouter.MOVE_NEXT_SECTION,
+        )
+        self.assertEqual(
+            result.state["route_after_advance_reason"],
+            "next_action_move_next_section",
+        )
 
     async def test_runtime_workflow_resumes_from_persisted_state_for_new_turn(self):
         self.execution.state = {

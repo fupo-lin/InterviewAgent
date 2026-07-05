@@ -7,6 +7,7 @@ from service.support import configure_backend_imports
 configure_backend_imports()
 
 from app.service.interview_runtime_langgraph import InterviewRuntimeLangGraph, StateGraph
+from app.service.interview_runtime_router import InterviewRuntimeRouter
 from app.service.interview_runtime_nodes import InterviewRuntimeNodes
 from app.service.interview_runtime_checkpoint import create_memory_checkpointer
 from app.service.interview_runtime_workflow import InterviewRuntimeWorkflow
@@ -112,6 +113,23 @@ class InterviewRuntimeLangGraphConfigTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(events, ["commit"])
         self.assertEqual(runtime.runtime.saved[-1][1]["current_step"], "save_user_answer")
         self.assertNotIn("session_obj", runtime.runtime.saved[-1][1]["state"])
+
+    async def test_route_after_advance_execution_records_conditional_route(self):
+        runtime = InterviewRuntimeLangGraph.__new__(InterviewRuntimeLangGraph)
+        runtime.router = InterviewRuntimeRouter()
+        state = {
+            "next_action": "wrap_up_interview",
+            "execution_obj": SimpleNamespace(status="active", state={}),
+        }
+
+        route = runtime._route_after_advance_execution(state)
+
+        self.assertEqual(route, InterviewRuntimeRouter.WRAP_UP)
+        self.assertEqual(state["route_after_advance"], InterviewRuntimeRouter.WRAP_UP)
+        self.assertEqual(
+            state["route_after_advance_reason"],
+            "next_action_wrap_up_interview",
+        )
 
 
 @unittest.skipIf(StateGraph is None, "langgraph is not installed")

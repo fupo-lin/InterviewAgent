@@ -6,6 +6,7 @@ from typing import Any, TypedDict
 
 from app.service.interview_runtime_nodes import InterviewRuntimeNodes
 from app.service.interview_runtime_resume import resume_interview_runtime_state
+from app.service.interview_runtime_router import InterviewRuntimeRouter
 from app.service.interview_runtime_state import InterviewRuntimeState
 from app.service.interview_runtime_workflow import InterviewRuntimeWorkflowResult
 
@@ -52,6 +53,7 @@ class InterviewRuntimeLangGraph:
         self.runtime = runtime
         self.checkpointer = checkpointer
         self.commit_after_step = commit_after_step
+        self.router = InterviewRuntimeRouter()
         self.graph = self._build_graph()
 
     async def resume_with_user_input(
@@ -99,7 +101,17 @@ class InterviewRuntimeLangGraph:
         builder.add_edge("save_user_answer", "load_runtime_context")
         builder.add_edge("load_runtime_context", "topic_judge")
         builder.add_edge("topic_judge", "advance_execution")
-        builder.add_edge("advance_execution", "refresh_memory")
+        builder.add_conditional_edges(
+            "advance_execution",
+            self._route_after_advance_execution,
+            {
+                InterviewRuntimeRouter.CONTINUE_TOPIC: "refresh_memory",
+                InterviewRuntimeRouter.SWITCH_TOPIC: "refresh_memory",
+                InterviewRuntimeRouter.MOVE_NEXT_SECTION: "refresh_memory",
+                InterviewRuntimeRouter.WRAP_UP: "refresh_memory",
+                InterviewRuntimeRouter.FINISHED: "refresh_memory",
+            },
+        )
         builder.add_edge("refresh_memory", "reload_followup_context")
         builder.add_edge("reload_followup_context", "generate_followup")
         builder.add_edge("generate_followup", "save_assistant_message")
@@ -189,6 +201,7 @@ class InterviewRuntimeLangGraph:
                 answer_message=state["answer_message_obj"],
                 judge_result=state.get("judge_result_obj"),
             )
+            self._record_route_after_advance(state, execution)
             self._save(state.get("workflow_run_obj"), state, "advance_execution", "running")
             return {
                 "execution_obj": execution,
@@ -198,10 +211,31 @@ class InterviewRuntimeLangGraph:
                 "current_section_round_no": state.get("current_section_round_no"),
                 "total_completed_round_no": state.get("total_completed_round_no"),
                 "next_action": state.get("next_action"),
+                "route_after_advance": state.get("route_after_advance"),
+                "route_after_advance_reason": state.get("route_after_advance_reason"),
                 "completed_steps": state.get("completed_steps", []),
             }
 
         return await self._run_node(state, "advance_execution", run)
+
+    def _route_after_advance_execution(self, state: InterviewRuntimeGraphState) -> str:
+        route = state.get("route_after_advance")
+        if isinstance(route, str) and route:
+            return route
+        return self._record_route_after_advance(
+            state,
+            state.get("execution_obj"),
+        )
+
+    def _record_route_after_advance(
+        self,
+        state: InterviewRuntimeGraphState,
+        execution,
+    ) -> str:
+        decision = self.router.route_after_advance(state, execution)
+        state["route_after_advance"] = decision.route
+        state["route_after_advance_reason"] = decision.reason
+        return decision.route
 
     async def _refresh_memory_node(self, state: InterviewRuntimeGraphState) -> dict:
         async def run() -> dict:

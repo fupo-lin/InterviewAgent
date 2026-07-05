@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from app.config.settings import settings
 from app.service.interview_runtime_nodes import InterviewRuntimeNodes
 from app.service.interview_runtime_resume import resume_interview_runtime_state
+from app.service.interview_runtime_router import InterviewRuntimeRouter
 from app.service.interview_runtime_state import InterviewRuntimeState
 
 
@@ -44,6 +45,7 @@ class InterviewRuntimeWorkflow:
         self.runtime = runtime
         self.checkpointer = checkpointer
         self.commit_after_step = commit_after_step
+        self.router = InterviewRuntimeRouter()
         self.use_langgraph = (
             settings.use_langgraph_interview_runtime
             if use_langgraph is None
@@ -91,6 +93,7 @@ class InterviewRuntimeWorkflow:
                 answer_message=answer_message,
                 judge_result=judge_result,
             )
+            self._record_route_after_advance(state, execution)
             self._save(workflow_run, state, "advance_execution", "running")
             state["active_step"] = "refresh_memory"
             await self.nodes.refresh_memory_node(
@@ -146,6 +149,16 @@ class InterviewRuntimeWorkflow:
                 commit_after_step=self.commit_after_step,
             )
         return self._langgraph_runtime
+
+    def _record_route_after_advance(
+        self,
+        state: InterviewRuntimeState,
+        execution,
+    ) -> str:
+        decision = self.router.route_after_advance(state, execution)
+        state["route_after_advance"] = decision.route
+        state["route_after_advance_reason"] = decision.reason
+        return decision.route
 
     def _state_for_turn(
         self,
