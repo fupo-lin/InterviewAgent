@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from copy import deepcopy
 from dataclasses import dataclass
 
@@ -37,10 +38,12 @@ class InterviewRuntimeWorkflow:
         runtime=None,
         use_langgraph: bool | None = None,
         checkpointer=None,
+        commit_after_step: Callable[[], None] | None = None,
     ) -> None:
         self.nodes = nodes
         self.runtime = runtime
         self.checkpointer = checkpointer
+        self.commit_after_step = commit_after_step
         self.use_langgraph = (
             settings.use_langgraph_interview_runtime
             if use_langgraph is None
@@ -140,6 +143,7 @@ class InterviewRuntimeWorkflow:
                 nodes=self.nodes,
                 runtime=self.runtime,
                 checkpointer=self.checkpointer,
+                commit_after_step=self.commit_after_step,
             )
         return self._langgraph_runtime
 
@@ -193,6 +197,11 @@ class InterviewRuntimeWorkflow:
             status=status,
             last_error=state.get("last_error"),
         )
+        self._commit_after_step()
+
+    def _commit_after_step(self) -> None:
+        if self.commit_after_step:
+            self.commit_after_step()
 
     def _fail(
         self,

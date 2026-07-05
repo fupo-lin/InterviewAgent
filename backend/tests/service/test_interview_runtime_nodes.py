@@ -171,10 +171,13 @@ class FakeExecutionService:
 
 
 class FakeTopicJudgeAgent:
-    def __init__(self) -> None:
+    def __init__(self, events=None) -> None:
         self.calls = []
+        self.events = events
 
     async def run(self, agent_input):
+        if self.events is not None:
+            self.events.append("topic_judge_llm")
         self.calls.append(agent_input)
         return SimpleNamespace(
             output={"next_action": "continue_current_topic", "answer_quality": "high"},
@@ -209,10 +212,13 @@ class FakeSessionMemoryAgent:
 
 
 class FakeInterviewExecutorAgent:
-    def __init__(self) -> None:
+    def __init__(self, events=None) -> None:
         self.calls = []
+        self.events = events
 
     async def run(self, agent_input):
+        if self.events is not None:
+            self.events.append("followup_llm")
         self.calls.append(agent_input)
         return SimpleNamespace(
             agent_run=SimpleNamespace(id=601),
@@ -513,6 +519,39 @@ class InterviewRuntimeNodesTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.topic_judge_agent.calls[0].workflow_run_id, "workflow-run-1")
         self.assertEqual(self.interview_executor_agent.calls[0].workflow_run_id, "workflow-run-1")
 
+    async def test_runtime_workflow_commits_between_external_llm_steps(self):
+        events = []
+        self.nodes.topic_judge_agent = FakeTopicJudgeAgent(events)
+        self.nodes.interview_executor_agent = FakeInterviewExecutorAgent(events)
+        self.execution.state = {
+            "sections": [{"section_key": "system_design", "evidence": []}],
+            "next_action": {"type": "continue_current_topic"},
+        }
+        runtime = FakeWorkflowRuntime()
+        workflow = InterviewRuntimeWorkflow(
+            self.nodes,
+            runtime=runtime,
+            commit_after_step=lambda: events.append(
+                f"commit:{runtime.saved[-1][1]['current_step']}"
+            ),
+        )
+
+        result = await workflow.resume_with_user_input(
+            session=self.session,
+            message="candidate answer",
+        )
+
+        self.assertEqual(result.reply, "followup question")
+        self.assertLess(
+            events.index("commit:save_user_answer"),
+            events.index("topic_judge_llm"),
+        )
+        self.assertLess(
+            events.index("commit:advance_execution"),
+            events.index("followup_llm"),
+        )
+        self.assertIn("commit:wait_user_answer", events)
+
     async def test_runtime_workflow_resumes_from_persisted_state_for_new_turn(self):
         self.execution.state = {
             "sections": [{"section_key": "system_design", "evidence": []}],
@@ -724,6 +763,43 @@ class InterviewRuntimeNodesTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(runtime.saved[-1][1]["status"], "waiting_user")
         self.assertEqual(self.topic_judge_agent.calls[0].workflow_run_id, "workflow-run-1")
         self.assertEqual(self.interview_executor_agent.calls[0].workflow_run_id, "workflow-run-1")
+
+    async def test_langgraph_path_uses_commit_after_step_when_available(self):
+        if StateGraph is None:
+            return
+
+        events = []
+        self.nodes.topic_judge_agent = FakeTopicJudgeAgent(events)
+        self.nodes.interview_executor_agent = FakeInterviewExecutorAgent(events)
+        self.execution.state = {
+            "sections": [{"section_key": "system_design", "evidence": []}],
+            "next_action": {"type": "continue_current_topic"},
+        }
+        runtime = FakeWorkflowRuntime()
+        workflow = InterviewRuntimeWorkflow(
+            self.nodes,
+            runtime=runtime,
+            use_langgraph=True,
+            commit_after_step=lambda: events.append(
+                f"commit:{runtime.saved[-1][1]['current_step']}"
+            ),
+        )
+
+        result = await workflow.resume_with_user_input(
+            session=self.session,
+            message="candidate answer",
+        )
+
+        self.assertEqual(result.reply, "followup question")
+        self.assertLess(
+            events.index("commit:save_user_answer"),
+            events.index("topic_judge_llm"),
+        )
+        self.assertLess(
+            events.index("commit:advance_execution"),
+            events.index("followup_llm"),
+        )
+        self.assertIn("commit:wait_user_answer", events)
 
     async def test_langgraph_path_resumes_from_persisted_state_when_available(self):
         if StateGraph is None:

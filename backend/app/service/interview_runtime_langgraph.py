@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from copy import deepcopy
 from typing import Any, TypedDict
 
@@ -40,6 +41,7 @@ class InterviewRuntimeLangGraph:
         nodes: InterviewRuntimeNodes,
         runtime=None,
         checkpointer=None,
+        commit_after_step: Callable[[], None] | None = None,
     ) -> None:
         if StateGraph is None:
             raise LangGraphNotAvailable(
@@ -49,6 +51,7 @@ class InterviewRuntimeLangGraph:
         self.nodes = nodes
         self.runtime = runtime
         self.checkpointer = checkpointer
+        self.commit_after_step = commit_after_step
         self.graph = self._build_graph()
 
     async def resume_with_user_input(
@@ -318,6 +321,11 @@ class InterviewRuntimeLangGraph:
             status=status,
             last_error=state.get("last_error"),
         )
+        self._commit_after_step()
+
+    def _commit_after_step(self) -> None:
+        if self.commit_after_step:
+            self.commit_after_step()
 
     def _fail(
         self,

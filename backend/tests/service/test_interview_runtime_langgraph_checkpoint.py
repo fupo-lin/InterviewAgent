@@ -88,6 +88,31 @@ class InterviewRuntimeLangGraphConfigTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.answer_message_id, 101)
         self.assertEqual(result.assistant_message_id, 202)
 
+    async def test_save_invokes_commit_after_step_hook(self):
+        events = []
+        runtime = InterviewRuntimeLangGraph.__new__(InterviewRuntimeLangGraph)
+        runtime.runtime = FakeWorkflowRuntime()
+        runtime.commit_after_step = lambda: events.append("commit")
+        workflow_run = runtime.runtime.load_or_create(
+            workflow_id="interview_runtime",
+            thread_id="interview:session-uid",
+            project_id=1,
+            session_id=10,
+            initial_state={},
+        )
+        state = {
+            "status": "running",
+            "session_obj": object(),
+            "workflow_run_obj": workflow_run,
+            "completed_steps": [],
+        }
+
+        runtime._save(workflow_run, state, "save_user_answer", "running")
+
+        self.assertEqual(events, ["commit"])
+        self.assertEqual(runtime.runtime.saved[-1][1]["current_step"], "save_user_answer")
+        self.assertNotIn("session_obj", runtime.runtime.saved[-1][1]["state"])
+
 
 @unittest.skipIf(StateGraph is None, "langgraph is not installed")
 class InterviewRuntimeLangGraphCheckpointTest(unittest.IsolatedAsyncioTestCase):

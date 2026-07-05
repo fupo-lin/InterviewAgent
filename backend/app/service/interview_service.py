@@ -132,6 +132,7 @@ class InterviewService:
         self.runtime_workflow = InterviewRuntimeWorkflow(
             self.runtime_nodes,
             runtime=self.workflow_runtime,
+            commit_after_step=self.db.commit,
         )
         self.assessment_nodes = PostInterviewAssessmentNodes(
             message_repo=self.message_repo,
@@ -238,7 +239,7 @@ class InterviewService:
         try:
             result = await self.runtime_workflow.resume_with_user_input(session, message)
         except Exception:
-            self.db.commit()
+            self.db.rollback()
             raise
         self.db.commit()
         return result.reply, result.round_no
