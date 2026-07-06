@@ -1,6 +1,7 @@
 import json
 import re
 
+from fastapi import HTTPException
 import httpx
 
 from app.config.settings import settings
@@ -11,9 +12,10 @@ from app.service.prompt_registry import prompt_registry
 
 class LLMService:
     def __init__(self) -> None:
-        self.api_key = settings.glm_api_key
-        self.api_base = settings.glm_api_base.rstrip("/")
-        self.model = settings.glm_model
+        self.api_key = settings.llm_api_key
+        self.api_base = settings.llm_api_base.rstrip("/")
+        self.model = settings.llm_model
+        self.timeout_seconds = settings.llm_timeout_seconds
 
     async def generate_first_question(
         self,
@@ -419,14 +421,30 @@ class LLMService:
     ) -> tuple[str, dict | None]:
         payload = {"model": self.model, "messages": messages, "temperature": temperature}
         headers = {"Authorization": f"Bearer {self.api_key}"}
-        async with httpx.AsyncClient(timeout=60) as client:
-            response = await client.post(
-                f"{self.api_base}/chat/completions",
-                headers=headers,
-                json=payload,
-            )
-            response.raise_for_status()
-            data = response.json()
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+                response = await client.post(
+                    f"{self.api_base}/chat/completions",
+                    headers=headers,
+                    json=payload,
+                )
+                response.raise_for_status()
+                data = response.json()
+        except httpx.TimeoutException as exc:
+            raise HTTPException(
+                status_code=504,
+                detail="LLM provider request timed out. Please retry in a moment.",
+            ) from exc
+        except httpx.HTTPStatusError as exc:
+            raise HTTPException(
+                status_code=502,
+                detail=f"LLM provider returned HTTP {exc.response.status_code}.",
+            ) from exc
+        except httpx.RequestError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="LLM provider is temporarily unavailable. Please retry in a moment.",
+            ) from exc
         content = data["choices"][0]["message"]["content"]
         return content, data
 

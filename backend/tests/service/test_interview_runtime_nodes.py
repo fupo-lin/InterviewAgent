@@ -38,6 +38,9 @@ class FakeMessageRepo:
         self.created = []
         self.latest_completed = 0
         self.existing_by_round = {}
+        self.between_rounds = []
+        self.between_round_messages = []
+        self.recent_rounds = []
 
     def latest_assistant_question_round_no(self, session_id):
         return 3
@@ -46,10 +49,12 @@ class FakeMessageRepo:
         return self.latest_completed
 
     def list_recent_rounds(self, session_id, rounds):
+        self.recent_rounds.append(rounds)
         return [message(30, "previous answer", round_no=2)]
 
     def list_between_rounds(self, session_id, from_round_no, to_round_no):
-        return []
+        self.between_rounds.append((from_round_no, to_round_no))
+        return self.between_round_messages
 
     def get_by_round(self, session_id, round_no, role_type, message_type=None):
         return self.existing_by_round.get((round_no, role_type, message_type))
@@ -73,8 +78,20 @@ class FakeMessageRepo:
 
 
 class FakeSummaryRepo:
+    def __init__(self) -> None:
+        self.latest = {}
+        self.created = []
+
     def get_latest_by_session_id(self, session_id, summary_type):
+        return self.latest.get(summary_type)
+
+    def get_by_range(self, session_id, summary_type, from_round_no, to_round_no):
         return None
+
+    def create(self, **kwargs):
+        item = SimpleNamespace(id=800 + len(self.created), **kwargs)
+        self.created.append(item)
+        return item
 
 
 class FakeExecutionRepo:
@@ -366,6 +383,75 @@ class InterviewRuntimeNodesTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("save_user_answer", state["completed_steps"])
         self.assertIn("save_assistant_message", state["completed_steps"])
         self.assertEqual(len(self.message_repo.created), 2)
+        self.assertEqual(followup_context.plan_context, None)
+        self.assertEqual(self.interview_executor_agent.calls[0].plan_context, None)
+        self.assertEqual(followup_context.execution_context, "execution context")
+        self.assertEqual(self.message_repo.recent_rounds[-1], 4)
+
+    async def test_refresh_memory_waits_until_fifteen_completed_rounds(self):
+        state = self.nodes.initial_chat_state(self.session, "candidate answer")
+
+        await self.nodes.refresh_memory_node(
+            state,
+            self.session,
+            latest_completed_round_no=14,
+        )
+
+        self.assertEqual(self.session_memory_agent.calls, [])
+        self.assertEqual(self.message_repo.between_rounds, [])
+        self.assertIn("refresh_memory_skipped", state["completed_steps"])
+
+    async def test_refresh_memory_uses_fifteen_round_interval_for_profile_and_summary(self):
+        summary_repo = FakeSummaryRepo()
+        self.nodes.summary_repo = summary_repo
+        self.message_repo.between_round_messages = [
+            message(201, "round 1 answer", round_no=1),
+            message(215, "round 15 answer", round_no=15),
+        ]
+        state = self.nodes.initial_chat_state(self.session, "candidate answer")
+
+        await self.nodes.refresh_memory_node(
+            state,
+            self.session,
+            latest_completed_round_no=15,
+        )
+
+        self.assertEqual(
+            [call.prompt_id for call in self.session_memory_agent.calls],
+            ["candidate_profile", "conversation_summary"],
+        )
+        self.assertEqual(self.message_repo.between_rounds, [(1, 15), (1, 15)])
+        self.assertEqual(
+            [item.summary_type for item in summary_repo.created],
+            ["candidate_profile", "conversation"],
+        )
+        self.assertIn("refresh_memory", state["completed_steps"])
+
+    async def test_refresh_memory_reuses_summary_until_fifteen_new_rounds(self):
+        summary_repo = FakeSummaryRepo()
+        summary_repo.latest["candidate_profile"] = SimpleNamespace(
+            id=901,
+            content="profile",
+            to_round_no=10,
+        )
+        summary_repo.latest["conversation"] = SimpleNamespace(
+            id=902,
+            content="summary",
+            to_round_no=10,
+        )
+        self.nodes.summary_repo = summary_repo
+        state = self.nodes.initial_chat_state(self.session, "candidate answer")
+
+        await self.nodes.refresh_memory_node(
+            state,
+            self.session,
+            latest_completed_round_no=24,
+        )
+
+        self.assertEqual(self.session_memory_agent.calls, [])
+        self.assertEqual(self.message_repo.between_rounds, [])
+        self.assertEqual(summary_repo.created, [])
+        self.assertIn("refresh_memory", state["completed_steps"])
 
     async def test_topic_judge_failure_is_non_blocking(self):
         self.nodes.topic_judge_agent = FailingTopicJudgeAgent()

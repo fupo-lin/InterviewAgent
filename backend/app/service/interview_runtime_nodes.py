@@ -11,6 +11,10 @@ from app.service.runtime_agents import (
 from app.service.interview_runtime_state import InterviewRuntimeState, RuntimeContext
 
 
+MEMORY_REFRESH_ROUND_INTERVAL = 15
+RECENT_HISTORY_ROUNDS = 4
+
+
 class InterviewRuntimeNodes:
     def __init__(
         self,
@@ -93,7 +97,7 @@ class InterviewRuntimeNodes:
         session,
     ) -> RuntimeContext:
         latest_completed_round_no = self.message_repo.latest_completed_round_no(session.id)
-        recent_history = self.message_repo.list_recent_rounds(session.id, rounds=4)
+        recent_history = self.message_repo.list_recent_rounds(session.id, rounds=RECENT_HISTORY_ROUNDS)
         execution = self.execution_repo.get_active_by_session_id(session.id)
         candidate_profile = self.summary_repo.get_latest_by_session_id(
             session.id,
@@ -103,7 +107,7 @@ class InterviewRuntimeNodes:
             session.id,
             "conversation",
         )
-        plan_context = self._session_plan_context(session)
+        plan_context = None
         execution_context = self._session_execution_context(session, execution)
         self._sync_execution_state(state, execution)
         state["latest_candidate_memory_id"] = candidate_profile.id if candidate_profile else None
@@ -211,7 +215,7 @@ class InterviewRuntimeNodes:
         session,
         latest_completed_round_no: int,
     ) -> None:
-        if latest_completed_round_no < 10:
+        if latest_completed_round_no < MEMORY_REFRESH_ROUND_INTERVAL:
             self._complete(state, "refresh_memory_skipped")
             return
 
@@ -224,7 +228,7 @@ class InterviewRuntimeNodes:
             "candidate_profile",
         )
         profile_round = latest_profile.to_round_no if latest_profile else 0
-        if not latest_profile or latest_completed_round_no - profile_round >= 10:
+        if not latest_profile or latest_completed_round_no - profile_round >= MEMORY_REFRESH_ROUND_INTERVAL:
             profile_from_round_no = 1 if not latest_profile else latest_profile.to_round_no + 1
             profile_messages = self.message_repo.list_between_rounds(
                 session.id,
@@ -269,7 +273,7 @@ class InterviewRuntimeNodes:
                         self._remember_agent_run(state, summary.agent_run_id)
 
         last_summary_round = latest_conversation.to_round_no if latest_conversation else 0
-        if latest_conversation and latest_completed_round_no - last_summary_round < 5:
+        if latest_conversation and latest_completed_round_no - last_summary_round < MEMORY_REFRESH_ROUND_INTERVAL:
             self._complete(state, "refresh_memory")
             return
 
@@ -327,7 +331,7 @@ class InterviewRuntimeNodes:
         execution,
     ) -> RuntimeContext:
         latest_completed_round_no = self.message_repo.latest_completed_round_no(session.id)
-        recent_history = self.message_repo.list_recent_rounds(session.id, rounds=4)
+        recent_history = self.message_repo.list_recent_rounds(session.id, rounds=RECENT_HISTORY_ROUNDS)
         candidate_profile = self.summary_repo.get_latest_by_session_id(
             session.id,
             "candidate_profile",
@@ -336,7 +340,7 @@ class InterviewRuntimeNodes:
             session.id,
             "conversation",
         )
-        plan_context = self._session_plan_context(session)
+        plan_context = None
         execution_context = self._session_execution_context(session, execution)
         state["latest_candidate_memory_id"] = candidate_profile.id if candidate_profile else None
         state["latest_conversation_summary_id"] = (

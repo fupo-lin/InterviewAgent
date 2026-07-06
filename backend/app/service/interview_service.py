@@ -59,6 +59,8 @@ from app.service.llm_service import LLMService
 
 logger = logging.getLogger(__name__)
 
+MEMORY_REFRESH_ROUND_INTERVAL = 15
+
 
 class InterviewService:
     def __init__(self, db: Session):
@@ -468,7 +470,7 @@ class InterviewService:
                 recent_history=recent_history,
                 candidate_profile=candidate_profile,
                 conversation_summary=conversation_summary,
-                plan_context=plan_context,
+                plan_context=None,
                 execution_context=execution_context,
                 candidate_profile_id=candidate_profile_id,
                 conversation_summary_id=conversation_summary_id,
@@ -500,13 +502,13 @@ class InterviewService:
         return run_result.message_fields()
 
     async def _refresh_memory_if_needed(self, session_id: int, latest_completed_round_no: int) -> None:
-        if latest_completed_round_no < 10:
+        if latest_completed_round_no < MEMORY_REFRESH_ROUND_INTERVAL:
             return
 
         latest_conversation = self.summary_repo.get_latest_by_session_id(session_id, "conversation")
         latest_profile = self.summary_repo.get_latest_by_session_id(session_id, "candidate_profile")
         profile_round = latest_profile.to_round_no if latest_profile else 0
-        if not latest_profile or latest_completed_round_no - profile_round >= 10:
+        if not latest_profile or latest_completed_round_no - profile_round >= MEMORY_REFRESH_ROUND_INTERVAL:
             profile_from_round_no = 1 if not latest_profile else latest_profile.to_round_no + 1
             profile_messages = self.message_repo.list_between_rounds(
                 session_id,
@@ -534,7 +536,7 @@ class InterviewService:
                     )
 
         last_summary_round = latest_conversation.to_round_no if latest_conversation else 0
-        if latest_conversation and latest_completed_round_no - last_summary_round < 5:
+        if latest_conversation and latest_completed_round_no - last_summary_round < MEMORY_REFRESH_ROUND_INTERVAL:
             return
 
         from_round_no = 1 if not latest_conversation else latest_conversation.to_round_no + 1
