@@ -43,6 +43,7 @@ class InterviewRuntimeLangGraph:
         runtime=None,
         checkpointer=None,
         commit_after_step: Callable[[], None] | None = None,
+        on_step: Callable[[dict], None] | None = None,
     ) -> None:
         if StateGraph is None:
             raise LangGraphNotAvailable(
@@ -53,6 +54,7 @@ class InterviewRuntimeLangGraph:
         self.runtime = runtime
         self.checkpointer = checkpointer
         self.commit_after_step = commit_after_step
+        self.on_step = on_step
         self.router = InterviewRuntimeRouter()
         self.graph = self._build_graph()
 
@@ -451,11 +453,38 @@ class InterviewRuntimeLangGraph:
             status=status,
             last_error=state.get("last_error"),
         )
+        self._emit_step(state, current_step, status)
         self._commit_after_step()
 
     def _commit_after_step(self) -> None:
         if self.commit_after_step:
             self.commit_after_step()
+
+    def _emit_step(
+        self,
+        state: InterviewRuntimeGraphState,
+        current_step: str,
+        status: str,
+    ) -> None:
+        if not self.on_step:
+            return
+        public_state = self._public_state(state)
+        self.on_step(
+            {
+                "event": "step",
+                "workflowRunId": public_state.get("workflow_run_id"),
+                "workflowId": public_state.get("workflow_id"),
+                "threadId": public_state.get("thread_id"),
+                "step": current_step,
+                "status": status,
+                "activeStep": public_state.get("active_step"),
+                "routeAfterAdvance": public_state.get("route_after_advance"),
+                "routeAfterAdvanceReason": public_state.get("route_after_advance_reason"),
+                "completedSteps": public_state.get("completed_steps") or [],
+                "failedSteps": public_state.get("failed_steps") or [],
+                "lastError": public_state.get("last_error"),
+            }
+        )
 
     def _fail(
         self,

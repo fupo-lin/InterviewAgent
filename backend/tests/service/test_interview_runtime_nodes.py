@@ -709,6 +709,38 @@ class InterviewRuntimeNodesTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(runtime.saved[-1][1]["current_step"], "wait_user_answer")
         self.assertEqual(runtime.saved[-1][1]["status"], "waiting_user")
 
+    async def test_runtime_workflow_emits_step_events(self):
+        events = []
+        self.execution.state = {
+            "sections": [{"section_key": "system_design", "evidence": []}],
+            "next_action": {"type": "continue_current_topic"},
+        }
+        runtime = FakeWorkflowRuntime()
+        workflow = InterviewRuntimeWorkflow(
+            self.nodes,
+            runtime=runtime,
+            on_step=events.append,
+        )
+
+        result = await workflow.resume_with_user_input(
+            session=self.session,
+            message="candidate answer",
+        )
+
+        self.assertEqual(result.reply, "followup question")
+        step_names = [event["step"] for event in events]
+        self.assertIn("save_user_answer", step_names)
+        self.assertIn("advance_execution", step_names)
+        self.assertIn("wait_user_answer", step_names)
+        advance_event = events[step_names.index("advance_execution")]
+        self.assertEqual(advance_event["event"], "step")
+        self.assertEqual(advance_event["workflowRunId"], "workflow-run-1")
+        self.assertEqual(
+            advance_event["routeAfterAdvance"],
+            InterviewRuntimeRouter.CONTINUE_TOPIC,
+        )
+        self.assertEqual(events[-1]["status"], "waiting_user")
+
     async def test_runtime_workflow_resumes_from_persisted_state_for_new_turn(self):
         self.execution.state = {
             "sections": [{"section_key": "system_design", "evidence": []}],

@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from uuid import uuid4
 
@@ -130,11 +131,7 @@ class InterviewService:
             logger_=logger,
         )
         self.workflow_runtime = WorkflowRuntime(self.workflow_run_repo)
-        self.runtime_workflow = InterviewRuntimeWorkflow(
-            self.runtime_nodes,
-            runtime=self.workflow_runtime,
-            commit_after_step=self.db.commit,
-        )
+        self.runtime_workflow = self._build_runtime_workflow()
         self.assessment_nodes = PostInterviewAssessmentNodes(
             message_repo=self.message_repo,
             evaluation_repo=self.evaluation_repo,
@@ -244,6 +241,58 @@ class InterviewService:
             raise
         self.db.commit()
         return result.reply, result.round_no
+
+    async def chat_stream(self, session_uid: str, message: str):
+        queue: asyncio.Queue[dict | None] = asyncio.Queue()
+
+        def on_step(event: dict) -> None:
+            queue.put_nowait(event)
+
+        async def run_workflow() -> None:
+            try:
+                session = self._get_active_session(session_uid)
+                workflow = self._build_runtime_workflow(on_step=on_step)
+                result = await workflow.resume_with_user_input(session, message)
+            except Exception as exc:
+                self.db.rollback()
+                queue.put_nowait(
+                    {
+                        "event": "error",
+                        "message": str(exc),
+                        "errorType": exc.__class__.__name__,
+                    }
+                )
+            else:
+                self.db.commit()
+                queue.put_nowait(
+                    {
+                        "event": "done",
+                        "reply": result.reply,
+                        "roundNo": result.round_no,
+                        "answerMessageId": result.answer_message_id,
+                        "assistantMessageId": result.assistant_message_id,
+                        "status": result.state.get("status"),
+                        "workflowRunId": result.state.get("workflow_run_id"),
+                        "routeAfterAdvance": result.state.get("route_after_advance"),
+                    }
+                )
+            finally:
+                queue.put_nowait(None)
+
+        yield {
+            "event": "start",
+            "sessionId": session_uid,
+        }
+        task = asyncio.create_task(run_workflow())
+        try:
+            while True:
+                event = await queue.get()
+                if event is None:
+                    break
+                yield event
+        finally:
+            if not task.done():
+                task.cancel()
 
     async def end(self, session_uid: str) -> EvaluationResponse:
         session = self._get_session(session_uid)
@@ -390,6 +439,14 @@ class InterviewService:
             )
         )
         return run_result.message_fields()
+
+    def _build_runtime_workflow(self, on_step=None) -> InterviewRuntimeWorkflow:
+        return InterviewRuntimeWorkflow(
+            self.runtime_nodes,
+            runtime=self.workflow_runtime,
+            commit_after_step=self.db.commit,
+            on_step=on_step,
+        )
 
     async def _generate_followup_with_run(
         self,

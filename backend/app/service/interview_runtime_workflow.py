@@ -40,11 +40,13 @@ class InterviewRuntimeWorkflow:
         use_langgraph: bool | None = None,
         checkpointer=None,
         commit_after_step: Callable[[], None] | None = None,
+        on_step: Callable[[dict], None] | None = None,
     ) -> None:
         self.nodes = nodes
         self.runtime = runtime
         self.checkpointer = checkpointer
         self.commit_after_step = commit_after_step
+        self.on_step = on_step
         self.router = InterviewRuntimeRouter()
         self.use_langgraph = (
             settings.use_langgraph_interview_runtime
@@ -191,6 +193,7 @@ class InterviewRuntimeWorkflow:
                 runtime=self.runtime,
                 checkpointer=self.checkpointer,
                 commit_after_step=self.commit_after_step,
+                on_step=self.on_step,
             )
         return self._langgraph_runtime
 
@@ -254,11 +257,37 @@ class InterviewRuntimeWorkflow:
             status=status,
             last_error=state.get("last_error"),
         )
+        self._emit_step(state, current_step, status)
         self._commit_after_step()
 
     def _commit_after_step(self) -> None:
         if self.commit_after_step:
             self.commit_after_step()
+
+    def _emit_step(
+        self,
+        state: InterviewRuntimeState,
+        current_step: str,
+        status: str,
+    ) -> None:
+        if not self.on_step:
+            return
+        self.on_step(
+            {
+                "event": "step",
+                "workflowRunId": state.get("workflow_run_id"),
+                "workflowId": state.get("workflow_id"),
+                "threadId": state.get("thread_id"),
+                "step": current_step,
+                "status": status,
+                "activeStep": state.get("active_step"),
+                "routeAfterAdvance": state.get("route_after_advance"),
+                "routeAfterAdvanceReason": state.get("route_after_advance_reason"),
+                "completedSteps": state.get("completed_steps") or [],
+                "failedSteps": state.get("failed_steps") or [],
+                "lastError": state.get("last_error"),
+            }
+        )
 
     def _fail(
         self,

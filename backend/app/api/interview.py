@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.config.database import get_db
@@ -15,6 +16,7 @@ from app.schemas.interview import (
     StartInterviewResponse,
 )
 from app.service.interview_service import InterviewService
+from app.service.sse_streaming import sse_event
 
 router = APIRouter(prefix="/interview", tags=["interview"])
 
@@ -36,6 +38,17 @@ async def chat(payload: ChatRequest, db: Session = Depends(get_db)):
     service = InterviewService(db)
     reply, round_no = await service.chat(payload.session_id, payload.message)
     return ChatResponse(reply=reply, roundNo=round_no)
+
+
+@router.post("/chat/stream")
+async def chat_stream(payload: ChatRequest, db: Session = Depends(get_db)):
+    service = InterviewService(db)
+
+    async def event_stream():
+        async for event in service.chat_stream(payload.session_id, payload.message):
+            yield sse_event(event)
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
 @router.post("/end", response_model=EndInterviewResponse)

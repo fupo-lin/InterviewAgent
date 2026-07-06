@@ -18,6 +18,7 @@ import {
 
 import {
   ChatMessage,
+  ChatStreamStepEvent,
   Evaluation,
   GrowthReportResponse,
   ProjectOverviewResponse,
@@ -44,7 +45,7 @@ import {
   getHistory,
   listWorkflowRuns,
   rewriteResume,
-  sendMessage,
+  sendMessageStream,
   startInterview,
   startProjectInterview,
 } from "./api";
@@ -69,6 +70,9 @@ function App() {
   const [status, setStatus] = useState<"idle" | "active" | "finished">("idle");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [chatStreamSteps, setChatStreamSteps] = useState<ChatStreamStepEvent[]>([]);
+  const [currentChatStep, setCurrentChatStep] = useState("");
+  const [currentWorkflowRunId, setCurrentWorkflowRunId] = useState("");
   //  如果出错了，这里可以显示错误信息
 
   //  只有当状态是 active，有sessionId，且不在加载中时，这个值才是true，表示可以发送消息
@@ -80,6 +84,12 @@ function App() {
     return "面试评价";
   }, [roleName, status]);
 
+  function resetChatStream() {
+    setChatStreamSteps([]);
+    setCurrentChatStep("");
+    setCurrentWorkflowRunId("");
+  }
+
   //  用户点击“开始面试”按钮时，调用startInterview接口，获取sessionId和第一条问题，并更新状态
   async function handleStart() {
     setLoading(true);
@@ -87,6 +97,7 @@ function App() {
     setEvaluation(null); // 清空之前的评价
     setGrowthReport(null);
     setGrowthReportError("");
+    resetChatStream();
     try {
       const result = await startInterview(roleName);
       setSessionId(result.sessionId);
@@ -127,21 +138,41 @@ function App() {
 
     setLoading(true);
     setError("");
+    resetChatStream();
     try {
-      const result = await sendMessage(sessionId, content); // 发给后端
+      const result = await sendMessageStream(sessionId, content, (event) => {
+        if (event.event === "step") {
+          setChatStreamSteps((current) => [...current, event]);
+          setCurrentChatStep(event.activeStep || event.step || "");
+          if (event.workflowRunId) {
+            setCurrentWorkflowRunId(event.workflowRunId);
+          }
+        }
+
+        if (event.event === "done") {
+          setCurrentChatStep("");
+          if (event.workflowRunId) {
+            setCurrentWorkflowRunId(event.workflowRunId);
+          }
+        }
+      }); // 发给后端
       setMessages((current) => [ // 把 AI 的话也加到屏幕上
         ...current,
         {
           roleType: "assistant",
-          messageType: "followup",
+          messageType: resolveAssistantMessageType(result.status, result.routeAfterAdvance),
           roundNo: result.roundNo,
           content: result.reply,
         },
       ]);
+      if (result.status === "finished") {
+        setStatus("finished");
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "发送回答失败");
     } finally {
       setLoading(false);
+      setCurrentChatStep("");
     }
   }
 
@@ -174,6 +205,7 @@ function App() {
       setEvaluation(result.evaluation);
       setGrowthReport(null);
       setGrowthReportError("");
+      resetChatStream();
       setStatus(result.status === "finished" ? "finished" : "active");
       if (result.status === "finished") {
         await loadGrowthReport(result.sessionId);
@@ -201,6 +233,7 @@ function App() {
       setGrowthReportError("");
       setStatus("idle");
       setInput("");
+      resetChatStream();
     } catch (err) {
       setError(err instanceof Error ? err.message : "删除会话失败");
     } finally {
@@ -323,6 +356,7 @@ function App() {
             setEvaluation(null);
             setGrowthReport(null);
             setGrowthReportError("");
+            resetChatStream();
             setMessages([
               {
                 roleType: "assistant",
@@ -359,6 +393,15 @@ function App() {
             ))
           )}
         </div>
+
+        {(loading || chatStreamSteps.length > 0 || currentWorkflowRunId) && (
+          <ChatStreamStatus
+            activeStep={currentChatStep}
+            loading={loading}
+            steps={chatStreamSteps}
+            workflowRunId={currentWorkflowRunId}
+          />
+        )}
 
         {evaluation && (
           <section className="evaluation">
@@ -427,6 +470,70 @@ function App() {
         <WorkflowRunsView initialWorkflowId={initialWorkflowFilter} />
       )}
     </main>
+  );
+}
+
+function resolveAssistantMessageType(status?: string | null, route?: string | null): ChatMessage["messageType"] {
+  if (status === "finished" || route === "finished") return "summary";
+  if (route === "wrap_up") return "wrap_up";
+  return "followup";
+}
+
+const CHAT_STEP_LABELS: Record<string, string> = {
+  save_user_answer: "Saving answer",
+  topic_judge: "Checking topic coverage",
+  advance_execution: "Advancing interview plan",
+  refresh_memory: "Refreshing memory",
+  generate_followup: "Generating follow-up",
+  generate_wrap_up_question: "Generating wrap-up question",
+  finalize_interview: "Finishing interview",
+  wait_user_answer: "Ready for next answer",
+};
+
+function formatChatStep(step?: string | null) {
+  if (!step) return "Running workflow";
+  return CHAT_STEP_LABELS[step] || step;
+}
+
+function ChatStreamStatus({
+  activeStep,
+  loading,
+  steps,
+  workflowRunId,
+}: {
+  activeStep: string;
+  loading: boolean;
+  steps: ChatStreamStepEvent[];
+  workflowRunId: string;
+}) {
+  const latestStep = steps.length > 0 ? steps[steps.length - 1] : undefined;
+  const visibleSteps = steps.slice(-5);
+
+  return (
+    <section className="stream-status" aria-live="polite">
+      <div className="stream-status-main">
+        {loading ? <Loader2 className="spin" size={16} /> : <Route size={16} />}
+        <strong>{formatChatStep(activeStep || latestStep?.activeStep || latestStep?.step)}</strong>
+        {latestStep?.routeAfterAdvance && <span>{latestStep.routeAfterAdvance}</span>}
+      </div>
+      {workflowRunId && <code>{workflowRunId}</code>}
+      {visibleSteps.length > 0 && (
+        <div className="stream-step-list">
+          {visibleSteps.map((step, index) => {
+            const stepId = step.step || step.activeStep || `step-${index}`;
+            const isActive = Boolean(activeStep && (activeStep === step.step || activeStep === step.activeStep));
+            return (
+              <span
+                className={isActive ? "stream-step stream-step-active" : "stream-step"}
+                key={`${stepId}-${index}`}
+              >
+                {formatChatStep(stepId)}
+              </span>
+            );
+          })}
+        </div>
+      )}
+    </section>
   );
 }
 
