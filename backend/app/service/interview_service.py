@@ -13,17 +13,24 @@ from app.repository.interview_repository import (
     InterviewSummaryRepository,
 )
 from app.repository.agent_run_repository import AgentRunRepository
+from app.repository.knowledge_repository import (
+    KnowledgeChunkRepository,
+    KnowledgeDocumentRepository,
+)
 from app.repository.workflow_run_repository import WorkflowRunRepository
 from app.repository.preparation_repository import InterviewPlanRepository, PreparationProjectRepository
 from app.repository.preparation_repository import (
     CandidateGrowthReportRepository,
     GapAnalysisRepository,
     JDAnalysisRepository,
+    JobDescriptionRepository,
     ProjectCandidateProfileRepository,
+    ResumeDocumentRepository,
     ResumeAuthenticityReportRepository,
     ResumeProfileRepository,
 )
 from app.service.agent_run_service import AgentRunExecutor, AgentRunRecorder
+from app.service.agent_tools import build_interview_tool_planner, build_interview_tool_runtime
 from app.service.agent_runtime import AgentRuntimeConfig
 from app.service.assessment_agents import EvaluationAgent, GrowthReportAgent
 from app.service.candidate_growth_report_nodes import CandidateGrowthReportNodes
@@ -37,6 +44,8 @@ from app.service.interview_runtime_workflow import InterviewRuntimeWorkflow
 from app.service.post_interview_assessment_nodes import PostInterviewAssessmentNodes
 from app.service.post_interview_assessment_workflow import PostInterviewAssessmentWorkflow
 from app.service.preparation_service import PreparationService
+from app.service.retrieval_tools import LocalKnowledgeRetriever
+from app.service.rag_pipeline import HybridKnowledgeRetriever, KnowledgeIndexer
 from app.service.workflow_runtime import WorkflowRuntime
 from app.service.runtime_agents import (
     FirstQuestionAgentInput,
@@ -72,22 +81,49 @@ class InterviewService:
         self.execution_repo = InterviewPlanExecutionRepository(db)
         self.agent_run_repo = AgentRunRepository(db)
         self.workflow_run_repo = WorkflowRunRepository(db)
+        self.knowledge_document_repo = KnowledgeDocumentRepository(db)
+        self.knowledge_chunk_repo = KnowledgeChunkRepository(db)
         self.execution_service = InterviewExecutionService(self.execution_repo)
         self.project_repo = PreparationProjectRepository(db)
         self.plan_repo = InterviewPlanRepository(db)
         self.growth_report_repo = CandidateGrowthReportRepository(db)
         self.jd_analysis_repo = JDAnalysisRepository(db)
+        self.job_description_repo = JobDescriptionRepository(db)
+        self.resume_document_repo = ResumeDocumentRepository(db)
         self.resume_profile_repo = ResumeProfileRepository(db)
         self.gap_analysis_repo = GapAnalysisRepository(db)
         self.project_candidate_profile_repo = ProjectCandidateProfileRepository(db)
         self.resume_authenticity_repo = ResumeAuthenticityReportRepository(db)
         self.llm = LLMService()
         self.evidence_builder = EvidencePacketBuilder()
+        self.knowledge_indexer = KnowledgeIndexer(
+            document_repo=self.knowledge_document_repo,
+            chunk_repo=self.knowledge_chunk_repo,
+        )
+        self.hybrid_knowledge_retriever = HybridKnowledgeRetriever(
+            chunk_repo=self.knowledge_chunk_repo,
+        )
+        self.knowledge_retriever = LocalKnowledgeRetriever(
+            message_repo=self.message_repo,
+            resume_profile_repo=self.resume_profile_repo,
+            jd_analysis_repo=self.jd_analysis_repo,
+            gap_analysis_repo=self.gap_analysis_repo,
+            project_candidate_profile_repo=self.project_candidate_profile_repo,
+            job_description_repo=self.job_description_repo,
+            resume_document_repo=self.resume_document_repo,
+            knowledge_indexer=self.knowledge_indexer,
+            hybrid_retriever=self.hybrid_knowledge_retriever,
+        )
+        self.tool_runtime = build_interview_tool_runtime(self.knowledge_retriever)
+        self.tool_planner = build_interview_tool_planner()
         self.agent_run_recorder = AgentRunRecorder(db)
         self.agent_run_executor = AgentRunExecutor(db, self.agent_run_recorder)
         self.interview_agent_spec_builder = InterviewAgentSpecBuilder(
             agent_run_executor=self.agent_run_executor,
             evidence_builder=self.evidence_builder,
+            retriever=self.knowledge_retriever,
+            tool_runtime=self.tool_runtime,
+            tool_planner=self.tool_planner,
         )
         self.evaluation_agent = EvaluationAgent(
             agent_run_executor=self.agent_run_executor,

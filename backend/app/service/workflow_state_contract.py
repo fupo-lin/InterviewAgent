@@ -3,7 +3,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, ValidationError, model_validator
 
 
-WorkflowStatus = Literal["running", "waiting_user", "failed", "success", "partial", "finished"]
+WorkflowStatus = Literal["queued", "running", "waiting_user", "failed", "success", "partial", "finished"]
 
 
 class WorkflowStateContractError(ValueError):

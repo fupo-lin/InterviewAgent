@@ -9,6 +9,7 @@ from app.service.interview_runtime_nodes import InterviewRuntimeNodes
 from app.service.interview_runtime_resume import resume_interview_runtime_state
 from app.service.interview_runtime_router import InterviewRuntimeRouter
 from app.service.interview_runtime_state import InterviewRuntimeState
+from app.service.workflow_step_runner import WorkflowStepRunner
 
 
 @dataclass(frozen=True)
@@ -48,6 +49,7 @@ class InterviewRuntimeWorkflow:
         self.commit_after_step = commit_after_step
         self.on_step = on_step
         self.router = InterviewRuntimeRouter()
+        self.step_runner = WorkflowStepRunner()
         self.use_langgraph = (
             settings.use_langgraph_interview_runtime
             if use_langgraph is None
@@ -74,36 +76,56 @@ class InterviewRuntimeWorkflow:
             self._save(workflow_run, state, "start", "running")
 
             state["active_step"] = "save_user_answer"
-            answer_message = self.nodes.save_user_answer_node(state, session)
+            answer_message = await self.step_runner.run(
+                state,
+                "save_user_answer",
+                lambda: self.nodes.save_user_answer_node(state, session),
+            )
             self._save(workflow_run, state, "save_user_answer", "running")
             state["active_step"] = "load_runtime_context"
-            context = self.nodes.load_runtime_context_node(state, session)
+            context = await self.step_runner.run(
+                state,
+                "load_runtime_context",
+                lambda: self.nodes.load_runtime_context_node(state, session),
+            )
             self._save(workflow_run, state, "load_runtime_context", "running")
             state["active_step"] = "topic_judge"
-            judge_result = await self.nodes.topic_judge_node(
-                state=state,
-                session=session,
-                answer_message=answer_message,
-                recent_history=context.recent_history,
-                execution=context.execution,
+            judge_result = await self.step_runner.run(
+                state,
+                "topic_judge",
+                lambda: self.nodes.topic_judge_node(
+                    state=state,
+                    session=session,
+                    answer_message=answer_message,
+                    recent_history=context.recent_history,
+                    execution=context.execution,
+                ),
             )
             self._save(workflow_run, state, "topic_judge", "running")
             state["active_step"] = "advance_execution"
-            execution = self.nodes.advance_execution_node(
-                state=state,
-                execution=context.execution,
-                answer_message=answer_message,
-                judge_result=judge_result,
+            execution = await self.step_runner.run(
+                state,
+                "advance_execution",
+                lambda: self.nodes.advance_execution_node(
+                    state=state,
+                    execution=context.execution,
+                    answer_message=answer_message,
+                    judge_result=judge_result,
+                ),
             )
             self._record_route_after_advance(state, execution)
             self._save(workflow_run, state, "advance_execution", "running")
             if state.get("route_after_advance") == InterviewRuntimeRouter.FINISHED:
                 state["active_step"] = "finalize_interview"
-                assistant_message = self.nodes.finalize_interview_node(
-                    state=state,
-                    session=session,
-                    answer_message=answer_message,
-                    execution=execution,
+                assistant_message = await self.step_runner.run(
+                    state,
+                    "finalize_interview",
+                    lambda: self.nodes.finalize_interview_node(
+                        state=state,
+                        session=session,
+                        answer_message=answer_message,
+                        execution=execution,
+                    ),
                 )
                 self._save(workflow_run, state, "complete", "finished")
                 return InterviewRuntimeWorkflowResult(
@@ -115,35 +137,51 @@ class InterviewRuntimeWorkflow:
                 )
 
             state["active_step"] = "refresh_memory"
-            await self.nodes.refresh_memory_node(
-                state=state,
-                session=session,
-                latest_completed_round_no=context.latest_completed_round_no,
+            await self.step_runner.run(
+                state,
+                "refresh_memory",
+                lambda: self.nodes.refresh_memory_node(
+                    state=state,
+                    session=session,
+                    latest_completed_round_no=context.latest_completed_round_no,
+                ),
             )
             self._save(workflow_run, state, "refresh_memory", "running")
             state["active_step"] = "reload_followup_context"
-            followup_context = self.nodes.reload_followup_context_node(
-                state=state,
-                session=session,
-                execution=execution,
+            followup_context = await self.step_runner.run(
+                state,
+                "reload_followup_context",
+                lambda: self.nodes.reload_followup_context_node(
+                    state=state,
+                    session=session,
+                    execution=execution,
+                ),
             )
             self._save(workflow_run, state, "reload_followup_context", "running")
             if state.get("route_after_advance") == InterviewRuntimeRouter.WRAP_UP:
                 state["active_step"] = "generate_wrap_up_question"
-                message_fields = await self.nodes.generate_wrap_up_question_node(
-                    state=state,
-                    session=session,
-                    answer_message=answer_message,
-                    context=followup_context,
+                message_fields = await self.step_runner.run(
+                    state,
+                    "generate_wrap_up_question",
+                    lambda: self.nodes.generate_wrap_up_question_node(
+                        state=state,
+                        session=session,
+                        answer_message=answer_message,
+                        context=followup_context,
+                    ),
                 )
                 self._save(workflow_run, state, "generate_wrap_up_question", "running")
                 state["active_step"] = "save_wrap_up_message"
-                assistant_message = self.nodes.save_wrap_up_message_node(
-                    state=state,
-                    session=session,
-                    round_no=answer_message.round_no + 1,
-                    message_fields=message_fields,
-                    execution=execution,
+                assistant_message = await self.step_runner.run(
+                    state,
+                    "save_wrap_up_message",
+                    lambda: self.nodes.save_wrap_up_message_node(
+                        state=state,
+                        session=session,
+                        round_no=answer_message.round_no + 1,
+                        message_fields=message_fields,
+                        execution=execution,
+                    ),
                 )
                 state["active_step"] = None
                 self._save(workflow_run, state, "wait_user_answer", "waiting_user")
@@ -156,20 +194,28 @@ class InterviewRuntimeWorkflow:
                 )
 
             state["active_step"] = "generate_followup"
-            message_fields = await self.nodes.generate_followup_node(
-                state=state,
-                session=session,
-                answer_message=answer_message,
-                context=followup_context,
+            message_fields = await self.step_runner.run(
+                state,
+                "generate_followup",
+                lambda: self.nodes.generate_followup_node(
+                    state=state,
+                    session=session,
+                    answer_message=answer_message,
+                    context=followup_context,
+                ),
             )
             self._save(workflow_run, state, "generate_followup", "running")
             state["active_step"] = "save_assistant_message"
-            assistant_message = self.nodes.save_assistant_message_node(
-                state=state,
-                session=session,
-                round_no=answer_message.round_no + 1,
-                message_fields=message_fields,
-                execution=execution,
+            assistant_message = await self.step_runner.run(
+                state,
+                "save_assistant_message",
+                lambda: self.nodes.save_assistant_message_node(
+                    state=state,
+                    session=session,
+                    round_no=answer_message.round_no + 1,
+                    message_fields=message_fields,
+                    execution=execution,
+                ),
             )
             state["active_step"] = None
             self._save(workflow_run, state, "wait_user_answer", "waiting_user")

@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 from app.schemas.agent_run import AgentRunListItem
 
 
-WorkflowRunStatus = Literal["running", "waiting_user", "failed", "success", "partial"]
+WorkflowRunStatus = Literal["queued", "running", "waiting_user", "failed", "success", "partial", "finished"]
 WorkflowRunResumeReason = Literal[
     "new_user_input",
     "unfinished_turn",

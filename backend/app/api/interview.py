@@ -10,12 +10,18 @@ from app.schemas.interview import (
     EndInterviewResponse,
     GrowthReportResponse,
     HistoryResponse,
+    InterviewWorkflowRequest,
+    InterviewWorkflowResponse,
     InterviewExecutionResponse,
     DeleteResponse,
     StartInterviewRequest,
     StartInterviewResponse,
 )
 from app.service.interview_service import InterviewService
+from app.service.interview_workflow_task import (
+    InterviewWorkflowTaskService,
+    interview_workflow_worker,
+)
 from app.service.sse_streaming import sse_event
 
 router = APIRouter(prefix="/interview", tags=["interview"])
@@ -38,6 +44,22 @@ async def chat(payload: ChatRequest, db: Session = Depends(get_db)):
     service = InterviewService(db)
     reply, round_no = await service.chat(payload.session_id, payload.message)
     return ChatResponse(reply=reply, roundNo=round_no)
+
+
+@router.post("", response_model=InterviewWorkflowResponse, response_model_by_alias=True)
+async def enqueue_interview_turn(
+    payload: InterviewWorkflowRequest,
+    db: Session = Depends(get_db),
+):
+    task_service = InterviewWorkflowTaskService(db)
+    task = task_service.enqueue_user_message(payload.session_id, payload.message)
+    interview_workflow_worker.submit(payload.session_id, payload.message)
+    return InterviewWorkflowResponse(
+        workflowRunId=task.workflow_run_id,
+        sessionId=task.session_uid,
+        status=task.status,
+        accepted=True,
+    )
 
 
 @router.post("/chat/stream")

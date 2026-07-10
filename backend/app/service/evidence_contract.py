@@ -12,6 +12,7 @@ class EvidenceType:
     AUTHENTICITY_CHECK = "authenticity_check"
     GAP_POINT = "gap_point"
     MATCHED_POINT = "matched_point"
+    RETRIEVED_KNOWLEDGE = "retrieved_knowledge"
 
 
 class EvidenceSourceType:
@@ -24,6 +25,7 @@ class EvidenceSourceType:
     INTERVIEW_PLAN_EXECUTION = "interview_plan_execution"
     INTERVIEW_EVALUATION = "interview_evaluation"
     RESUME_AUTHENTICITY_REPORT = "resume_authenticity_report"
+    KNOWLEDGE_SOURCE = "knowledge_source"
 
 
 ALLOWED_EVIDENCE_TYPES = frozenset(
@@ -37,6 +39,7 @@ ALLOWED_EVIDENCE_TYPES = frozenset(
         EvidenceType.AUTHENTICITY_CHECK,
         EvidenceType.GAP_POINT,
         EvidenceType.MATCHED_POINT,
+        EvidenceType.RETRIEVED_KNOWLEDGE,
     }
 )
 
@@ -52,6 +55,7 @@ ALLOWED_EVIDENCE_SOURCE_TYPES = frozenset(
         EvidenceSourceType.INTERVIEW_PLAN_EXECUTION,
         EvidenceSourceType.INTERVIEW_EVALUATION,
         EvidenceSourceType.RESUME_AUTHENTICITY_REPORT,
+        EvidenceSourceType.KNOWLEDGE_SOURCE,
     }
 )
 

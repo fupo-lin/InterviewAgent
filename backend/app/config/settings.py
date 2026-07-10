@@ -25,6 +25,14 @@ class Settings(BaseSettings):
     llm_api_base: str = ""
     llm_model: str = ""
     llm_timeout_seconds: float = Field(default=180.0, alias="LLM_TIMEOUT_SECONDS")
+    workflow_step_timeout_seconds: float = Field(
+        default=120.0,
+        alias="WORKFLOW_STEP_TIMEOUT_SECONDS",
+    )
+    workflow_step_max_attempts: int = Field(
+        default=2,
+        alias="WORKFLOW_STEP_MAX_ATTEMPTS",
+    )
     use_langgraph_interview_runtime: bool = Field(
         default=False,
         alias="USE_LANGGRAPH_INTERVIEW_RUNTIME",
