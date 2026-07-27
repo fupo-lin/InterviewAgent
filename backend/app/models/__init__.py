@@ -1,5 +1,6 @@
 from app.models.agent import AgentEvidenceItem, AgentRun
 from app.models.workflow import WorkflowRun
+from app.models.knowledge import KnowledgeChunk, KnowledgeDocument
 from app.models.interview import (
     InterviewEvaluation,
     InterviewMessage,
@@ -25,6 +26,8 @@ __all__ = [
     "AgentRun",
     "AgentEvidenceItem",
     "WorkflowRun",
+    "KnowledgeDocument",
+    "KnowledgeChunk",
     "InterviewSession",
     "InterviewMessage",
     "InterviewEvaluation",

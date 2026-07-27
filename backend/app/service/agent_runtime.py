@@ -15,6 +15,16 @@ InputT = TypeVar("InputT")
 @dataclass(frozen=True)
 class AgentRuntimeConfig:
     model_name: str
+    max_output_repair_attempts: int = 1
+
+
+class AgentOutputValidationError(RuntimeError):
+    def __init__(self, validation: AgentContractValidation) -> None:
+        self.validation = validation
+        message = "agent output validation failed"
+        if validation.errors:
+            message = f"{message}: {'; '.join(validation.errors)}"
+        super().__init__(message)
 
 
 class BaseAgent(ABC, Generic[InputT]):
@@ -58,8 +68,35 @@ class BaseAgent(ABC, Generic[InputT]):
     ) -> tuple[Any, dict | None]:
         output, raw_response = await self.call_model(agent_input, spec)
         output_validation = self.validate_output(output)
+        if output_validation.output_ok:
+            self.merge_output_validation(spec, output_validation)
+            return output, raw_response
+
+        repaired = await self.repair_output(
+            agent_input=agent_input,
+            spec=spec,
+            output=output,
+            raw_response=raw_response,
+            validation=output_validation,
+        )
+        if repaired is not None:
+            repaired_output, repaired_raw_response = repaired
+            repaired_validation = self.validate_output(repaired_output)
+            self.add_output_repair_snapshot(
+                spec=spec,
+                initial_validation=output_validation,
+                repaired_validation=repaired_validation,
+            )
+            self.merge_output_validation(spec, repaired_validation)
+            if repaired_validation.output_ok:
+                return repaired_output, self.repaired_raw_response(
+                    original=raw_response,
+                    repair=repaired_raw_response,
+                )
+            output_validation = repaired_validation
+
         self.merge_output_validation(spec, output_validation)
-        return output, raw_response
+        raise AgentOutputValidationError(output_validation)
 
     def validate_output(self, output: Any) -> AgentContractValidation:
         validation = self._empty_validation()
@@ -88,12 +125,67 @@ class BaseAgent(ABC, Generic[InputT]):
         validation: AgentContractValidation,
     ) -> None:
         current = spec.input_snapshot.get("agent_contract_validation") or {}
+        if not isinstance(current, dict):
+            current = {}
+            spec.input_snapshot["agent_contract_validation"] = current
         current_errors = current.get("errors") or []
-        spec.input_snapshot["agent_contract_validation"] = {
-            **current,
-            "output_schema": validation.output_schema,
-            "output_ok": validation.output_ok,
-            "errors": [*current_errors, *validation.errors],
+        current.update(
+            {
+                "output_schema": validation.output_schema,
+                "output_ok": validation.output_ok,
+                "errors": [*current_errors, *validation.errors],
+            }
+        )
+
+    async def repair_output(
+        self,
+        agent_input: InputT,
+        spec: AgentSpec,
+        output: Any,
+        raw_response: dict | None,
+        validation: AgentContractValidation,
+    ) -> tuple[Any, dict | None] | None:
+        if self.config.max_output_repair_attempts <= 0 or not self.output_model:
+            return None
+        llm = getattr(self, "llm", None)
+        repair = getattr(llm, "repair_structured_output", None)
+        if not callable(repair):
+            return None
+        return await repair(
+            prompt_id=spec.prompt_id,
+            output=output,
+            output_schema=self.output_model.model_json_schema(),
+            validation_errors=validation.errors,
+        )
+
+    def add_output_repair_snapshot(
+        self,
+        spec: AgentSpec,
+        initial_validation: AgentContractValidation,
+        repaired_validation: AgentContractValidation,
+    ) -> None:
+        current = spec.input_snapshot.get("agent_contract_validation") or {}
+        if not isinstance(current, dict):
+            current = {}
+            spec.input_snapshot["agent_contract_validation"] = current
+        current["output_repair"] = {
+            "attempted": True,
+            "initial_errors": initial_validation.errors,
+            "repaired_ok": repaired_validation.output_ok,
+            "repaired_errors": repaired_validation.errors,
+        }
+
+    def repaired_raw_response(
+        self,
+        original: dict | None,
+        repair: dict | None,
+    ) -> dict | None:
+        if original is None and repair is None:
+            return None
+        return {
+            "output_repaired": True,
+            "original": original,
+            "repair": repair,
         }
 
     def _empty_validation(self) -> AgentContractValidation:

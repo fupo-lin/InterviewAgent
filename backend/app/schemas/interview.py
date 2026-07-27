@@ -34,6 +34,20 @@ class ChatResponse(BaseModel):
         populate_by_name = True
 
 
+class InterviewWorkflowRequest(ChatRequest):
+    pass
+
+
+class InterviewWorkflowResponse(BaseModel):
+    workflow_run_id: str = Field(alias="workflowRunId")
+    session_id: str = Field(alias="sessionId")
+    status: str
+    accepted: bool = True
+
+    class Config:
+        populate_by_name = True
+
+
 class EndInterviewRequest(BaseModel):
     session_id: str = Field(alias="sessionId", min_length=1)
 

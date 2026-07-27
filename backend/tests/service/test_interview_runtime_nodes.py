@@ -8,6 +8,7 @@ configure_backend_imports()
 
 from app.service.interview_runtime_nodes import InterviewRuntimeNodes
 from app.service.interview_runtime_langgraph import LangGraphNotAvailable, StateGraph
+from app.service.interview_runtime_router import InterviewRuntimeRouter
 from app.service.interview_runtime_workflow import InterviewRuntimeWorkflow
 
 
@@ -37,6 +38,9 @@ class FakeMessageRepo:
         self.created = []
         self.latest_completed = 0
         self.existing_by_round = {}
+        self.between_rounds = []
+        self.between_round_messages = []
+        self.recent_rounds = []
 
     def latest_assistant_question_round_no(self, session_id):
         return 3
@@ -45,10 +49,12 @@ class FakeMessageRepo:
         return self.latest_completed
 
     def list_recent_rounds(self, session_id, rounds):
+        self.recent_rounds.append(rounds)
         return [message(30, "previous answer", round_no=2)]
 
     def list_between_rounds(self, session_id, from_round_no, to_round_no):
-        return []
+        self.between_rounds.append((from_round_no, to_round_no))
+        return self.between_round_messages
 
     def get_by_round(self, session_id, round_no, role_type, message_type=None):
         return self.existing_by_round.get((round_no, role_type, message_type))
@@ -72,8 +78,20 @@ class FakeMessageRepo:
 
 
 class FakeSummaryRepo:
+    def __init__(self) -> None:
+        self.latest = {}
+        self.created = []
+
     def get_latest_by_session_id(self, session_id, summary_type):
+        return self.latest.get(summary_type)
+
+    def get_by_range(self, session_id, summary_type, from_round_no, to_round_no):
         return None
+
+    def create(self, **kwargs):
+        item = SimpleNamespace(id=800 + len(self.created), **kwargs)
+        self.created.append(item)
+        return item
 
 
 class FakeExecutionRepo:
@@ -90,6 +108,16 @@ class FakeExecutionRepo:
     def save(self, execution):
         self.save_calls.append(execution)
         return execution
+
+
+class FakeSessionRepo:
+    def __init__(self) -> None:
+        self.finished = []
+
+    def mark_finished(self, session):
+        session.status = "finished"
+        self.finished.append(session)
+        return session
 
 
 class FakePlanRepo:
@@ -145,6 +173,8 @@ class FakeWorkflowRuntime:
 class FakeExecutionService:
     def __init__(self) -> None:
         self.advance_calls = []
+        self.next_action = "continue_current_topic"
+        self.execution_status_after_advance = None
 
     def current_section(self, execution):
         return {"section_key": "system_design", "probe_points": ["idempotency"]}
@@ -157,9 +187,11 @@ class FakeExecutionService:
             evidence.append({"round_no": round_no, "answer_excerpt": answer})
         execution.current_section_round_no += 1
         execution.total_completed_round_no += 1
+        if self.execution_status_after_advance:
+            execution.status = self.execution_status_after_advance
         execution.state = {
             **(execution.state or {}),
-            "next_action": {"type": "continue_current_topic"},
+            "next_action": {"type": self.next_action},
         }
         return execution
 
@@ -167,14 +199,18 @@ class FakeExecutionService:
         return "execution context"
 
     def response(self, execution):
-        return {"nextAction": "continue_current_topic"}
+        next_action = ((execution.state or {}).get("next_action") or {}).get("type")
+        return {"nextAction": next_action or "continue_current_topic"}
 
 
 class FakeTopicJudgeAgent:
-    def __init__(self) -> None:
+    def __init__(self, events=None) -> None:
         self.calls = []
+        self.events = events
 
     async def run(self, agent_input):
+        if self.events is not None:
+            self.events.append("topic_judge_llm")
         self.calls.append(agent_input)
         return SimpleNamespace(
             output={"next_action": "continue_current_topic", "answer_quality": "high"},
@@ -188,6 +224,37 @@ class FakeTopicJudgeAgent:
 class FailingTopicJudgeAgent:
     async def run(self, agent_input):
         raise RuntimeError("judge unavailable")
+
+
+class StructuredMemoryTopicJudgeAgent:
+    async def run(self, agent_input):
+        return SimpleNamespace(
+            output={
+                "next_action": "continue_current_topic",
+                "answer_quality": "high",
+                "technical_highlights": [
+                    {
+                        "highlight": "candidate used idempotency keys",
+                        "related_probe_point": "idempotency",
+                        "missing_followup": "ask retry failure handling",
+                        "priority": "high",
+                        "confidence": "medium",
+                    }
+                ],
+                "risk_signals": [
+                    {
+                        "content": "no latency metric was provided",
+                        "probe_point": "metrics",
+                        "suggestion": "ask for latency and failure rate",
+                        "priority": "medium",
+                    }
+                ],
+            },
+            raw_response={"raw": "judge"},
+            agent_run=SimpleNamespace(id=777),
+            output_schema="TopicJudgeResult.v1",
+            evidence_refs=["interview_answer_100"],
+        )
 
 
 class FakeSessionMemoryAgent:
@@ -209,10 +276,13 @@ class FakeSessionMemoryAgent:
 
 
 class FakeInterviewExecutorAgent:
-    def __init__(self) -> None:
+    def __init__(self, events=None) -> None:
         self.calls = []
+        self.events = events
 
     async def run(self, agent_input):
+        if self.events is not None:
+            self.events.append("followup_llm")
         self.calls.append(agent_input)
         return SimpleNamespace(
             agent_run=SimpleNamespace(id=601),
@@ -246,9 +316,11 @@ class InterviewRuntimeNodesTest(unittest.IsolatedAsyncioTestCase):
             current_section_index=0,
             current_section_round_no=0,
             total_completed_round_no=0,
+            status="active",
             state={"next_action": {"type": "continue_current_topic"}},
         )
         self.message_repo = FakeMessageRepo()
+        self.session_repo = FakeSessionRepo()
         self.execution_service = FakeExecutionService()
         self.agent_run_repo = FakeAgentRunRepo()
         self.topic_judge_agent = FakeTopicJudgeAgent()
@@ -258,6 +330,7 @@ class InterviewRuntimeNodesTest(unittest.IsolatedAsyncioTestCase):
             message_repo=self.message_repo,
             summary_repo=FakeSummaryRepo(),
             execution_repo=FakeExecutionRepo(self.execution),
+            session_repo=self.session_repo,
             plan_repo=FakePlanRepo(),
             execution_service=self.execution_service,
             topic_judge_agent=self.topic_judge_agent,
@@ -267,6 +340,10 @@ class InterviewRuntimeNodesTest(unittest.IsolatedAsyncioTestCase):
             logger_=logging.getLogger("test_interview_runtime_nodes"),
         )
         self.nodes.logger.disabled = True
+
+    def test_runtime_workflow_rejects_sequential_fallback(self):
+        with self.assertRaisesRegex(ValueError, "LangGraph-only"):
+            InterviewRuntimeWorkflow(self.nodes, use_langgraph=False)
 
     async def test_chat_nodes_preserve_runtime_flow(self):
         state = self.nodes.initial_chat_state(self.session, "candidate answer")
@@ -331,7 +408,11 @@ class InterviewRuntimeNodesTest(unittest.IsolatedAsyncioTestCase):
             self.execution.state["sections"][0]["evidence"][-1]["topic_judge_agent_run_id"],
             501,
         )
-        self.assertEqual(len(self.nodes.execution_repo.save_calls), 1)
+        self.assertEqual(len(self.nodes.execution_repo.save_calls), 2)
+        self.assertEqual(
+            self.execution.state["memory_refs"]["agent_run_ids"],
+            [501, 601],
+        )
         self.assertEqual(fields["content"], "followup question")
         self.assertEqual(assistant.content, "followup question")
         self.assertEqual(assistant.round_no, 4)
@@ -341,6 +422,78 @@ class InterviewRuntimeNodesTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("save_user_answer", state["completed_steps"])
         self.assertIn("save_assistant_message", state["completed_steps"])
         self.assertEqual(len(self.message_repo.created), 2)
+        self.assertIn("InterviewPlan mode: jd_resume", followup_context.plan_context)
+        self.assertIn(
+            "InterviewPlan mode: jd_resume",
+            self.interview_executor_agent.calls[0].plan_context,
+        )
+        self.assertEqual(followup_context.execution_context, "execution context")
+        self.assertEqual(self.message_repo.recent_rounds[-1], 4)
+
+    async def test_refresh_memory_waits_until_fifteen_completed_rounds(self):
+        state = self.nodes.initial_chat_state(self.session, "candidate answer")
+
+        await self.nodes.refresh_memory_node(
+            state,
+            self.session,
+            latest_completed_round_no=14,
+        )
+
+        self.assertEqual(self.session_memory_agent.calls, [])
+        self.assertEqual(self.message_repo.between_rounds, [])
+        self.assertIn("refresh_memory_skipped", state["completed_steps"])
+
+    async def test_refresh_memory_uses_fifteen_round_interval_for_profile_and_summary(self):
+        summary_repo = FakeSummaryRepo()
+        self.nodes.summary_repo = summary_repo
+        self.message_repo.between_round_messages = [
+            message(201, "round 1 answer", round_no=1),
+            message(215, "round 15 answer", round_no=15),
+        ]
+        state = self.nodes.initial_chat_state(self.session, "candidate answer")
+
+        await self.nodes.refresh_memory_node(
+            state,
+            self.session,
+            latest_completed_round_no=15,
+        )
+
+        self.assertEqual(
+            [call.prompt_id for call in self.session_memory_agent.calls],
+            ["candidate_profile", "conversation_summary"],
+        )
+        self.assertEqual(self.message_repo.between_rounds, [(1, 15), (1, 15)])
+        self.assertEqual(
+            [item.summary_type for item in summary_repo.created],
+            ["candidate_profile", "conversation"],
+        )
+        self.assertIn("refresh_memory", state["completed_steps"])
+
+    async def test_refresh_memory_reuses_summary_until_fifteen_new_rounds(self):
+        summary_repo = FakeSummaryRepo()
+        summary_repo.latest["candidate_profile"] = SimpleNamespace(
+            id=901,
+            content="profile",
+            to_round_no=10,
+        )
+        summary_repo.latest["conversation"] = SimpleNamespace(
+            id=902,
+            content="summary",
+            to_round_no=10,
+        )
+        self.nodes.summary_repo = summary_repo
+        state = self.nodes.initial_chat_state(self.session, "candidate answer")
+
+        await self.nodes.refresh_memory_node(
+            state,
+            self.session,
+            latest_completed_round_no=24,
+        )
+
+        self.assertEqual(self.session_memory_agent.calls, [])
+        self.assertEqual(self.message_repo.between_rounds, [])
+        self.assertEqual(summary_repo.created, [])
+        self.assertIn("refresh_memory", state["completed_steps"])
 
     async def test_topic_judge_failure_is_non_blocking(self):
         self.nodes.topic_judge_agent = FailingTopicJudgeAgent()
@@ -359,6 +512,132 @@ class InterviewRuntimeNodesTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(judge_result)
         self.assertIn("topic_judge", state["failed_steps"])
         self.assertEqual(state["last_error"]["step_id"], "topic_judge")
+
+    async def test_runtime_context_restores_open_threads_from_execution_state(self):
+        self.execution.state = {
+            "next_action": {"type": "continue_current_topic"},
+            "open_threads": [
+                {
+                    "id": "thread-persisted",
+                    "source_message_id": 100,
+                    "round_no": 3,
+                    "section_key": "system_design",
+                    "probe_point": "idempotency",
+                    "highlight": "candidate mentioned idempotency",
+                    "missing_detail": "ask retry failure handling",
+                    "priority": "high",
+                    "status": "open",
+                }
+            ],
+            "memory_refs": {"conversation_summary_id": 902},
+        }
+        state = self.nodes.initial_chat_state(self.session, "candidate answer")
+
+        context = self.nodes.load_runtime_context_node(state, self.session)
+
+        self.assertEqual(state["open_threads"][0]["id"], "thread-persisted")
+        self.assertEqual(state["open_threads"][0]["memory_type"], "open_followup")
+        self.assertEqual(
+            state["open_threads"][0]["content"],
+            "candidate mentioned idempotency",
+        )
+        self.assertEqual(context.open_threads[0]["id"], "thread-persisted")
+        self.assertIn("OpenFollowupThreads:", context.execution_context)
+        self.assertIn("candidate mentioned idempotency", context.execution_context)
+        self.assertEqual(state["memory_refs"]["conversation_summary_id"], None)
+        self.assertEqual(state["memory_refs"]["execution_id"], 40)
+
+    async def test_topic_judge_normalizes_structured_memory_items(self):
+        self.nodes.topic_judge_agent = StructuredMemoryTopicJudgeAgent()
+        state = self.nodes.initial_chat_state(self.session, "candidate answer")
+        answer = message(888, "I used idempotency keys.", round_no=3)
+
+        result = await self.nodes.topic_judge_node(
+            state,
+            self.session,
+            answer,
+            recent_history=[answer],
+            execution=self.execution,
+        )
+
+        self.assertEqual(result["agent_run_id"], 777)
+        self.assertEqual(len(state["open_threads"]), 2)
+        first = state["open_threads"][0]
+        self.assertEqual(first["memory_type"], "technical_highlight")
+        self.assertEqual(first["content"], "candidate used idempotency keys")
+        self.assertEqual(first["missing_detail"], "ask retry failure handling")
+        self.assertEqual(first["source_message_id"], 888)
+        self.assertEqual(first["source_agent_run_id"], 777)
+        self.assertEqual(first["metadata"]["source_field"], "technical_highlights")
+        second = state["open_threads"][1]
+        self.assertEqual(second["memory_type"], "risk_signal")
+        self.assertEqual(second["content"], "no latency metric was provided")
+        self.assertEqual(second["missing_detail"], "ask for latency and failure rate")
+        self.assertEqual(self.execution.state["open_threads"], state["open_threads"])
+
+    async def test_open_thread_lifecycle_selects_asks_and_closes_after_answer(self):
+        state = self.nodes.initial_chat_state(self.session, "candidate answer")
+        state["open_threads"] = [
+            {
+                "id": "thread-1",
+                "source_message_id": 100,
+                "round_no": 3,
+                "section_key": "system_design",
+                "probe_point": "idempotency",
+                "highlight": "candidate mentioned idempotency",
+                "missing_detail": "ask failure scenario",
+                "priority": "high",
+                "status": "open",
+            }
+        ]
+        answer = message(777, "candidate answer", round_no=3)
+        context = self.nodes.reload_followup_context_node(
+            state,
+            self.session,
+            self.execution,
+        )
+
+        fields = await self.nodes.generate_followup_node(
+            state,
+            self.session,
+            answer,
+            context,
+        )
+
+        self.assertEqual(state["open_threads"][0]["status"], "selected")
+        self.assertEqual(state["open_threads"][0]["selected_agent_run_id"], 601)
+        self.assertEqual(self.execution.state["open_threads"][0]["status"], "selected")
+
+        assistant = self.nodes.save_assistant_message_node(
+            state,
+            self.session,
+            round_no=4,
+            message_fields=fields,
+            execution=self.execution,
+        )
+
+        self.assertEqual(state["open_threads"][0]["status"], "asked")
+        self.assertEqual(state["open_threads"][0]["asked_message_id"], assistant.id)
+        self.assertEqual(state["open_threads"][0]["asked_round_no"], 4)
+        self.assertEqual(self.execution.state["open_threads"][0]["status"], "asked")
+        self.assertEqual(
+            self.execution.state["open_threads"][0]["asked_message_id"],
+            assistant.id,
+        )
+
+        next_answer = message(778, "I used idempotency keys for retries.", round_no=4)
+        await self.nodes.topic_judge_node(
+            state,
+            self.session,
+            next_answer,
+            recent_history=[next_answer],
+            execution=self.execution,
+        )
+
+        self.assertEqual(state["open_threads"][0]["status"], "closed")
+        self.assertEqual(state["open_threads"][0]["answered_message_id"], 778)
+        self.assertEqual(self.execution.state["open_threads"][0]["status"], "closed")
+        self.assertEqual(self.execution.state["open_threads"][0]["answered_message_id"], 778)
 
     async def test_save_user_answer_reuses_existing_round_message(self):
         existing = message(999, "existing answer", round_no=3)
@@ -396,6 +675,31 @@ class InterviewRuntimeNodesTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state["status"], "waiting_user")
         self.assertIn("save_assistant_message_reused", state["completed_steps"])
         self.assertEqual(self.message_repo.created, [])
+
+    async def test_finalize_interview_node_marks_session_and_execution_finished(self):
+        answer = message(777, "final answer", round_no=3)
+        state = self.nodes.initial_chat_state(self.session, "final answer")
+        state["route_after_advance"] = InterviewRuntimeRouter.FINISHED
+        state["route_after_advance_reason"] = "next_action_finished"
+
+        assistant = self.nodes.finalize_interview_node(
+            state=state,
+            session=self.session,
+            answer_message=answer,
+            execution=self.execution,
+        )
+
+        self.assertEqual(assistant.role_type, "assistant")
+        self.assertEqual(assistant.message_type, "summary")
+        self.assertEqual(assistant.round_no, 4)
+        self.assertEqual(self.session.status, "finished")
+        self.assertEqual(self.execution.status, "finished")
+        self.assertEqual(self.execution.state["next_action"]["type"], "finished")
+        self.assertEqual(state["status"], "finished")
+        self.assertEqual(state["active_step"], None)
+        self.assertEqual(state["last_assistant_message_id"], assistant.id)
+        self.assertIn("finalize_interview", state["completed_steps"])
+        self.assertEqual(self.session_repo.finished, [self.session])
 
     async def test_advance_execution_reuses_existing_answer_marker(self):
         answer = message(777, "candidate answer", round_no=3)
@@ -485,6 +789,39 @@ class InterviewRuntimeNodesTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.interview_executor_agent.calls, [])
         self.assertIn("generate_followup_reused", state["completed_steps"])
 
+    async def test_wrap_up_nodes_generate_and_save_wrap_up_message(self):
+        answer = message(888, "candidate answer", round_no=3)
+        state = self.nodes.initial_chat_state(self.session, "candidate answer")
+        state["route_after_advance"] = InterviewRuntimeRouter.WRAP_UP
+        state["route_after_advance_reason"] = "next_action_wrap_up_interview"
+        context = self.nodes.reload_followup_context_node(state, self.session, self.execution)
+
+        fields = await self.nodes.generate_wrap_up_question_node(
+            state,
+            self.session,
+            answer,
+            context,
+        )
+        assistant = self.nodes.save_wrap_up_message_node(
+            state,
+            self.session,
+            4,
+            fields,
+            self.execution,
+        )
+
+        self.assertEqual(fields["content"], "followup question")
+        self.assertEqual(assistant.message_type, "wrap_up")
+        self.assertEqual(assistant.raw_response["source"], "interview_runtime_wrap_up")
+        self.assertEqual(
+            assistant.raw_response["route_after_advance"],
+            InterviewRuntimeRouter.WRAP_UP,
+        )
+        self.assertIn("generate_wrap_up_question", state["completed_steps"])
+        self.assertIn("save_wrap_up_message", state["completed_steps"])
+        self.assertNotIn("generate_followup", state["completed_steps"])
+        self.assertNotIn("save_assistant_message", state["completed_steps"])
+
     async def test_runtime_workflow_wraps_chat_loop(self):
         self.execution.state = {
             "sections": [{"section_key": "system_design", "evidence": []}],
@@ -512,6 +849,151 @@ class InterviewRuntimeNodesTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(runtime.saved[-1][1]["state"]["status"], "waiting_user")
         self.assertEqual(self.topic_judge_agent.calls[0].workflow_run_id, "workflow-run-1")
         self.assertEqual(self.interview_executor_agent.calls[0].workflow_run_id, "workflow-run-1")
+
+    async def test_runtime_workflow_commits_between_external_llm_steps(self):
+        events = []
+        self.nodes.topic_judge_agent = FakeTopicJudgeAgent(events)
+        self.nodes.interview_executor_agent = FakeInterviewExecutorAgent(events)
+        self.execution.state = {
+            "sections": [{"section_key": "system_design", "evidence": []}],
+            "next_action": {"type": "continue_current_topic"},
+        }
+        runtime = FakeWorkflowRuntime()
+        workflow = InterviewRuntimeWorkflow(
+            self.nodes,
+            runtime=runtime,
+            commit_after_step=lambda: events.append(
+                f"commit:{runtime.saved[-1][1]['current_step']}"
+            ),
+        )
+
+        result = await workflow.resume_with_user_input(
+            session=self.session,
+            message="candidate answer",
+        )
+
+        self.assertEqual(result.reply, "followup question")
+        self.assertLess(
+            events.index("commit:save_user_answer"),
+            events.index("topic_judge_llm"),
+        )
+        self.assertLess(
+            events.index("commit:advance_execution"),
+            events.index("followup_llm"),
+        )
+        self.assertIn("commit:wait_user_answer", events)
+
+    async def test_runtime_workflow_records_route_after_advance(self):
+        self.execution_service.next_action = "move_next_section"
+        self.execution.state = {
+            "sections": [{"section_key": "system_design", "evidence": []}],
+            "next_action": {"type": "continue_current_topic"},
+        }
+        runtime = FakeWorkflowRuntime()
+        workflow = InterviewRuntimeWorkflow(self.nodes, runtime=runtime)
+
+        result = await workflow.resume_with_user_input(
+            session=self.session,
+            message="candidate answer",
+        )
+
+        self.assertEqual(
+            result.state["route_after_advance"],
+            InterviewRuntimeRouter.MOVE_NEXT_SECTION,
+        )
+        self.assertEqual(
+            result.state["route_after_advance_reason"],
+            "next_action_move_next_section",
+        )
+
+    async def test_runtime_workflow_finished_route_finalizes_without_followup(self):
+        self.execution_service.next_action = "finished"
+        self.execution_service.execution_status_after_advance = "finished"
+        self.execution.state = {
+            "sections": [{"section_key": "system_design", "evidence": []}],
+            "next_action": {"type": "continue_current_topic"},
+        }
+        runtime = FakeWorkflowRuntime()
+        workflow = InterviewRuntimeWorkflow(self.nodes, runtime=runtime)
+
+        result = await workflow.resume_with_user_input(
+            session=self.session,
+            message="final candidate answer",
+        )
+
+        self.assertEqual(result.round_no, 4)
+        self.assertEqual(result.state["status"], "finished")
+        self.assertEqual(
+            result.state["route_after_advance"],
+            InterviewRuntimeRouter.FINISHED,
+        )
+        self.assertIn("finalize_interview", result.state["completed_steps"])
+        self.assertNotIn("generate_followup", result.state["completed_steps"])
+        self.assertEqual(self.interview_executor_agent.calls, [])
+        self.assertEqual(self.message_repo.created[-1].message_type, "summary")
+        self.assertEqual(runtime.saved[-1][1]["current_step"], "complete")
+        self.assertEqual(runtime.saved[-1][1]["status"], "finished")
+        self.assertEqual(self.session.status, "finished")
+
+    async def test_runtime_workflow_wrap_up_route_uses_wrap_up_steps(self):
+        self.execution_service.next_action = "wrap_up_interview"
+        self.execution.state = {
+            "sections": [{"section_key": "system_design", "evidence": []}],
+            "next_action": {"type": "continue_current_topic"},
+        }
+        runtime = FakeWorkflowRuntime()
+        workflow = InterviewRuntimeWorkflow(self.nodes, runtime=runtime)
+
+        result = await workflow.resume_with_user_input(
+            session=self.session,
+            message="candidate answer",
+        )
+
+        self.assertEqual(result.reply, "followup question")
+        self.assertEqual(result.state["status"], "waiting_user")
+        self.assertEqual(
+            result.state["route_after_advance"],
+            InterviewRuntimeRouter.WRAP_UP,
+        )
+        self.assertIn("generate_wrap_up_question", result.state["completed_steps"])
+        self.assertIn("save_wrap_up_message", result.state["completed_steps"])
+        self.assertNotIn("generate_followup", result.state["completed_steps"])
+        self.assertNotIn("save_assistant_message", result.state["completed_steps"])
+        self.assertEqual(self.message_repo.created[-1].message_type, "wrap_up")
+        self.assertEqual(runtime.saved[-1][1]["current_step"], "wait_user_answer")
+        self.assertEqual(runtime.saved[-1][1]["status"], "waiting_user")
+
+    async def test_runtime_workflow_emits_step_events(self):
+        events = []
+        self.execution.state = {
+            "sections": [{"section_key": "system_design", "evidence": []}],
+            "next_action": {"type": "continue_current_topic"},
+        }
+        runtime = FakeWorkflowRuntime()
+        workflow = InterviewRuntimeWorkflow(
+            self.nodes,
+            runtime=runtime,
+            on_step=events.append,
+        )
+
+        result = await workflow.resume_with_user_input(
+            session=self.session,
+            message="candidate answer",
+        )
+
+        self.assertEqual(result.reply, "followup question")
+        step_names = [event["step"] for event in events]
+        self.assertIn("save_user_answer", step_names)
+        self.assertIn("advance_execution", step_names)
+        self.assertIn("wait_user_answer", step_names)
+        advance_event = events[step_names.index("advance_execution")]
+        self.assertEqual(advance_event["event"], "step")
+        self.assertEqual(advance_event["workflowRunId"], "workflow-run-1")
+        self.assertEqual(
+            advance_event["routeAfterAdvance"],
+            InterviewRuntimeRouter.CONTINUE_TOPIC,
+        )
+        self.assertEqual(events[-1]["status"], "waiting_user")
 
     async def test_runtime_workflow_resumes_from_persisted_state_for_new_turn(self):
         self.execution.state = {
@@ -724,6 +1206,110 @@ class InterviewRuntimeNodesTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(runtime.saved[-1][1]["status"], "waiting_user")
         self.assertEqual(self.topic_judge_agent.calls[0].workflow_run_id, "workflow-run-1")
         self.assertEqual(self.interview_executor_agent.calls[0].workflow_run_id, "workflow-run-1")
+
+    async def test_langgraph_path_uses_commit_after_step_when_available(self):
+        if StateGraph is None:
+            return
+
+        events = []
+        self.nodes.topic_judge_agent = FakeTopicJudgeAgent(events)
+        self.nodes.interview_executor_agent = FakeInterviewExecutorAgent(events)
+        self.execution.state = {
+            "sections": [{"section_key": "system_design", "evidence": []}],
+            "next_action": {"type": "continue_current_topic"},
+        }
+        runtime = FakeWorkflowRuntime()
+        workflow = InterviewRuntimeWorkflow(
+            self.nodes,
+            runtime=runtime,
+            use_langgraph=True,
+            commit_after_step=lambda: events.append(
+                f"commit:{runtime.saved[-1][1]['current_step']}"
+            ),
+        )
+
+        result = await workflow.resume_with_user_input(
+            session=self.session,
+            message="candidate answer",
+        )
+
+        self.assertEqual(result.reply, "followup question")
+        self.assertLess(
+            events.index("commit:save_user_answer"),
+            events.index("topic_judge_llm"),
+        )
+        self.assertLess(
+            events.index("commit:advance_execution"),
+            events.index("followup_llm"),
+        )
+        self.assertIn("commit:wait_user_answer", events)
+
+    async def test_langgraph_finished_route_finalizes_without_followup_when_available(self):
+        if StateGraph is None:
+            return
+
+        self.execution_service.next_action = "finished"
+        self.execution_service.execution_status_after_advance = "finished"
+        self.execution.state = {
+            "sections": [{"section_key": "system_design", "evidence": []}],
+            "next_action": {"type": "continue_current_topic"},
+        }
+        runtime = FakeWorkflowRuntime()
+        workflow = InterviewRuntimeWorkflow(
+            self.nodes,
+            runtime=runtime,
+            use_langgraph=True,
+        )
+
+        result = await workflow.resume_with_user_input(
+            session=self.session,
+            message="final candidate answer",
+        )
+
+        self.assertEqual(result.state["status"], "finished")
+        self.assertEqual(
+            result.state["route_after_advance"],
+            InterviewRuntimeRouter.FINISHED,
+        )
+        self.assertIn("finalize_interview", result.state["completed_steps"])
+        self.assertNotIn("generate_followup", result.state["completed_steps"])
+        self.assertEqual(self.interview_executor_agent.calls, [])
+        self.assertEqual(self.message_repo.created[-1].message_type, "summary")
+        self.assertEqual(runtime.saved[-1][1]["current_step"], "complete")
+        self.assertEqual(runtime.saved[-1][1]["status"], "finished")
+
+    async def test_langgraph_wrap_up_route_uses_wrap_up_steps_when_available(self):
+        if StateGraph is None:
+            return
+
+        self.execution_service.next_action = "wrap_up_interview"
+        self.execution.state = {
+            "sections": [{"section_key": "system_design", "evidence": []}],
+            "next_action": {"type": "continue_current_topic"},
+        }
+        runtime = FakeWorkflowRuntime()
+        workflow = InterviewRuntimeWorkflow(
+            self.nodes,
+            runtime=runtime,
+            use_langgraph=True,
+        )
+
+        result = await workflow.resume_with_user_input(
+            session=self.session,
+            message="candidate answer",
+        )
+
+        self.assertEqual(result.state["status"], "waiting_user")
+        self.assertEqual(
+            result.state["route_after_advance"],
+            InterviewRuntimeRouter.WRAP_UP,
+        )
+        self.assertIn("generate_wrap_up_question", result.state["completed_steps"])
+        self.assertIn("save_wrap_up_message", result.state["completed_steps"])
+        self.assertNotIn("generate_followup", result.state["completed_steps"])
+        self.assertNotIn("save_assistant_message", result.state["completed_steps"])
+        self.assertEqual(self.message_repo.created[-1].message_type, "wrap_up")
+        self.assertEqual(runtime.saved[-1][1]["current_step"], "wait_user_answer")
 
     async def test_langgraph_path_resumes_from_persisted_state_when_available(self):
         if StateGraph is None:

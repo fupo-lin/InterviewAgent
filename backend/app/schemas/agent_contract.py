@@ -151,7 +151,15 @@ class TopicJudgeResultV1(BaseModel):
     answer_quality: str = ""
     covered_probe_points: list[Any] = Field(default_factory=list)
     missing_probe_points: list[Any] = Field(default_factory=list)
+    technical_highlights: list[Any] = Field(default_factory=list)
+    open_threads: list[Any] = Field(default_factory=list)
+    project_claims: list[Any] = Field(default_factory=list)
+    missing_details: list[Any] = Field(default_factory=list)
+    risk_signals: list[Any] = Field(default_factory=list)
     next_action: str = ""
+    next_question_intent: str = ""
+    reason: str = ""
+    confidence: str = ""
 
 # 
 class EvaluationInputV1(BaseModel):

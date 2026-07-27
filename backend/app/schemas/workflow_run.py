@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 from app.schemas.agent_run import AgentRunListItem
 
 
-WorkflowRunStatus = Literal["running", "waiting_user", "failed", "success", "partial"]
+WorkflowRunStatus = Literal["queued", "running", "waiting_user", "failed", "success", "partial", "finished"]
 WorkflowRunResumeReason = Literal[
     "new_user_input",
     "unfinished_turn",
@@ -50,6 +50,29 @@ class WorkflowRunStepSummary(BaseModel):
         populate_by_name = True
 
 
+class WorkflowStepMetric(BaseModel):
+    step_id: str = Field(alias="stepId")
+    status: str
+    latency_ms: int = Field(default=0, alias="latencyMs")
+    current_step: str | None = Field(default=None, alias="currentStep")
+    recorded_at: str | None = Field(default=None, alias="recordedAt")
+    error_type: str | None = Field(default=None, alias="errorType")
+    error_message: str | None = Field(default=None, alias="errorMessage")
+
+    class Config:
+        populate_by_name = True
+
+
+class WorkflowStepMetricsSummary(BaseModel):
+    step_count: int = Field(default=0, alias="stepCount")
+    failed_step_count: int = Field(default=0, alias="failedStepCount")
+    total_latency_ms: int = Field(default=0, alias="totalLatencyMs")
+    last_step_id: str | None = Field(default=None, alias="lastStepId")
+
+    class Config:
+        populate_by_name = True
+
+
 class WorkflowRunListItem(BaseModel):
     workflow_run_id: str = Field(alias="workflowRunId")
     workflow_id: str = Field(alias="workflowId")
@@ -83,6 +106,11 @@ class WorkflowRunListResponse(BaseModel):
 class WorkflowRunDetailResponse(WorkflowRunListItem):
     steps: list[WorkflowRunStepSummary] = Field(default_factory=list)
     agent_runs: list[AgentRunListItem] = Field(default_factory=list, alias="agentRuns")
+    step_metrics_summary: WorkflowStepMetricsSummary = Field(
+        default_factory=WorkflowStepMetricsSummary,
+        alias="stepMetricsSummary",
+    )
+    step_metrics: list[WorkflowStepMetric] = Field(default_factory=list, alias="stepMetrics")
     state: dict | None = None
     last_error: dict | None = Field(default=None, alias="lastError")
 

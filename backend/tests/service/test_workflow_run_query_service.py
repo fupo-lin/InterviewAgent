@@ -258,6 +258,20 @@ class WorkflowRunQueryServiceTest(unittest.TestCase):
     def test_detail_response_schema_uses_fixed_aliases(self):
         self.workflow_repo.runs = [
             workflow_run(
+                state={
+                    "completed_steps": ["save_user_answer"],
+                    "failed_steps": [],
+                    "last_user_message_id": 100,
+                    "step_metrics": [
+                        {
+                            "step_id": "save_user_answer",
+                            "status": "success",
+                            "latency_ms": 12,
+                            "current_step": "save_user_answer",
+                            "recorded_at": "2026-07-17T00:00:00+00:00",
+                        }
+                    ],
+                },
                 last_error={
                     "step_id": "generate_followup",
                     "message": "followup unavailable",
@@ -283,15 +297,27 @@ class WorkflowRunQueryServiceTest(unittest.TestCase):
         self.assertIn("lastError", payload)
         self.assertIn("state", payload)
         self.assertIn("steps", payload)
+        self.assertIn("stepMetricsSummary", payload)
+        self.assertIn("stepMetrics", payload)
         self.assertIn("stepId", payload["steps"][0])
         self.assertIn("agentRunIds", payload["steps"][0])
         self.assertIn("latestAgentRunId", payload["steps"][0])
         self.assertIn("runCount", payload["steps"][0])
+        self.assertIn("stepCount", payload["stepMetricsSummary"])
+        self.assertIn("failedStepCount", payload["stepMetricsSummary"])
+        self.assertIn("totalLatencyMs", payload["stepMetricsSummary"])
+        self.assertIn("lastStepId", payload["stepMetricsSummary"])
+        self.assertIn("stepId", payload["stepMetrics"][0])
+        self.assertIn("latencyMs", payload["stepMetrics"][0])
+        self.assertIn("currentStep", payload["stepMetrics"][0])
+        self.assertIn("recordedAt", payload["stepMetrics"][0])
         self.assertIn("agentName", payload["agentRuns"][0])
         self.assertIn("workflowRunId", payload["agentRuns"][0]["workflow"])
         self.assertNotIn("workflow_run_id", payload)
         self.assertNotIn("agent_runs", payload)
         self.assertNotIn("last_error", payload)
+        self.assertNotIn("step_metrics_summary", payload)
+        self.assertNotIn("step_metrics", payload)
 
     def test_list_runs_prefers_persisted_workflow_runs(self):
         self.workflow_repo.runs = [workflow_run()]
@@ -388,6 +414,49 @@ class WorkflowRunQueryServiceTest(unittest.TestCase):
         self.assertEqual(response.last_error, None)
         self.assertEqual([item.id for item in response.agent_runs], [1])
         self.assertIn("topic_completion_judge", [step.step_id for step in response.steps])
+
+    def test_get_detail_exposes_step_metrics_from_persisted_state(self):
+        self.workflow_repo.runs = [
+            workflow_run(
+                state={
+                    "completed_steps": ["save_user_answer"],
+                    "failed_steps": ["generate_followup"],
+                    "step_metrics": [
+                        {
+                            "step_id": "save_user_answer",
+                            "status": "success",
+                            "latency_ms": 12,
+                            "current_step": "save_user_answer",
+                            "recorded_at": "2026-07-17T00:00:00+00:00",
+                        },
+                        {
+                            "step_id": "generate_followup",
+                            "status": "failed",
+                            "latency_ms": 34,
+                            "current_step": "generate_followup",
+                            "recorded_at": "2026-07-17T00:00:01+00:00",
+                            "error_type": "RuntimeError",
+                            "error_message": "boom",
+                        },
+                    ],
+                },
+            )
+        ]
+
+        response = self.service.get_detail("session_10_interview_runtime")
+
+        self.assertEqual(response.step_metrics_summary.step_count, 2)
+        self.assertEqual(response.step_metrics_summary.failed_step_count, 1)
+        self.assertEqual(response.step_metrics_summary.total_latency_ms, 46)
+        self.assertEqual(response.step_metrics_summary.last_step_id, "generate_followup")
+        self.assertEqual(
+            [item.step_id for item in response.step_metrics],
+            ["save_user_answer", "generate_followup"],
+        )
+        self.assertEqual(response.step_metrics[0].latency_ms, 12)
+        self.assertEqual(response.step_metrics[1].status, "failed")
+        self.assertEqual(response.step_metrics[1].error_type, "RuntimeError")
+        self.assertEqual(response.step_metrics[1].error_message, "boom")
 
     def test_persisted_workflow_run_exposes_resume_observability_fields(self):
         self.workflow_repo.runs = [

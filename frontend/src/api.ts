@@ -3,11 +3,54 @@ const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:8000/api";
 // 定义数据类型
 export type ChatMessage = {
   roleType: "user" | "assistant";
-  messageType: "question" | "answer" | "followup" | "summary";
+  messageType: "question" | "answer" | "followup" | "summary" | "wrap_up";
   roundNo: number;
   content: string;
   createTime?: string;
 };
+
+export type ChatStreamStartEvent = {
+  event: "start";
+  sessionId: string;
+};
+
+export type ChatStreamStepEvent = {
+  event: "step";
+  workflowRunId?: string | null;
+  workflowId?: string | null;
+  threadId?: string | null;
+  step?: string | null;
+  status?: string | null;
+  activeStep?: string | null;
+  routeAfterAdvance?: string | null;
+  routeAfterAdvanceReason?: string | null;
+  completedSteps?: string[];
+  failedSteps?: string[];
+  lastError?: string | Record<string, unknown> | null;
+};
+
+export type ChatStreamDoneEvent = {
+  event: "done";
+  reply: string;
+  roundNo: number;
+  answerMessageId?: number | null;
+  assistantMessageId?: number | null;
+  status?: "waiting_user" | "finished" | string;
+  workflowRunId?: string | null;
+  routeAfterAdvance?: string | null;
+};
+
+export type ChatStreamErrorEvent = {
+  event: "error";
+  message?: string;
+  errorType?: string;
+};
+
+export type ChatStreamEvent =
+  | ChatStreamStartEvent
+  | ChatStreamStepEvent
+  | ChatStreamDoneEvent
+  | ChatStreamErrorEvent;
 
 export type Evaluation = {
   strengths: string;
@@ -325,6 +368,90 @@ export async function sendMessage(sessionId: string, message: string) {
     method: "POST",
     body: JSON.stringify({ sessionId, message }),
   });
+}
+
+function parseSseBlock(block: string): ChatStreamEvent | null {
+  const data = block
+    .split("\n")
+    .filter((line) => line.startsWith("data:"))
+    .map((line) => line.slice(5).trimStart())
+    .join("\n")
+    .trim();
+
+  if (!data) return null;
+
+  return JSON.parse(data) as ChatStreamEvent;
+}
+
+export async function sendMessageStream(
+  sessionId: string,
+  message: string,
+  onEvent: (event: ChatStreamEvent) => void,
+): Promise<ChatStreamDoneEvent> {
+  const response = await fetch(`${API_BASE}/interview/chat/stream`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "text/event-stream",
+    },
+    body: JSON.stringify({ sessionId, message }),
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text || `Request failed: ${response.status}`);
+  }
+
+  if (!response.body) {
+    throw new Error("Streaming response is not supported by this browser.");
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let doneEvent: ChatStreamDoneEvent | null = null;
+
+  function handleEvent(event: ChatStreamEvent) {
+    onEvent(event);
+    if (event.event === "error") {
+      throw new Error(event.message || event.errorType || "Streaming chat failed");
+    }
+    if (event.event === "done") {
+      doneEvent = event;
+    }
+  }
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, "\n");
+
+    let separatorIndex = buffer.indexOf("\n\n");
+    while (separatorIndex >= 0) {
+      const block = buffer.slice(0, separatorIndex);
+      buffer = buffer.slice(separatorIndex + 2);
+      const event = parseSseBlock(block);
+      if (event) {
+        handleEvent(event);
+      }
+      separatorIndex = buffer.indexOf("\n\n");
+    }
+  }
+
+  buffer += decoder.decode().replace(/\r\n/g, "\n");
+  if (buffer.trim()) {
+    const event = parseSseBlock(buffer);
+    if (event) {
+      handleEvent(event);
+    }
+  }
+
+  if (!doneEvent) {
+    throw new Error("Streaming chat ended before a done event was received.");
+  }
+
+  return doneEvent;
 }
 
 export async function endInterview(sessionId: string) {

@@ -1,19 +1,24 @@
 import json
 import re
+from typing import Any
 
+from fastapi import HTTPException
 import httpx
 
 from app.config.settings import settings
 from app.models.interview import InterviewMessage
+from app.service.agent_tools import ToolCall, ToolExecutionContext, ToolRuntime
 from app.service.prompt_service import load_prompt
 from app.service.prompt_registry import prompt_registry
+from app.service.tool_calling_result import ToolCallingPayload
 
 
 class LLMService:
     def __init__(self) -> None:
-        self.api_key = settings.glm_api_key
-        self.api_base = settings.glm_api_base.rstrip("/")
-        self.model = settings.glm_model
+        self.api_key = settings.llm_api_key
+        self.api_base = settings.llm_api_base.rstrip("/")
+        self.model = settings.llm_model
+        self.timeout_seconds = settings.llm_timeout_seconds
 
     async def generate_first_question(
         self,
@@ -39,6 +44,8 @@ class LLMService:
         conversation_summary: str | None = None,
         plan_context: str | None = None,
         execution_context: str | None = None,
+        retrieved_evidence_context: str | None = None,
+        open_threads: list[dict] | None = None,
     ) -> tuple[str, dict | None]:
         prompt = load_prompt(prompt_registry.prompt_file("interviewer"), role_name=role_name)
         followup_prompt = load_prompt(prompt_registry.prompt_file("followup"), user_answer=user_answer)
@@ -53,11 +60,270 @@ class LLMService:
             messages.append({"role": "system", "content": plan_context})
         if execution_context:
             messages.append({"role": "system", "content": execution_context})
+        if open_threads:
+            messages.append(
+                {
+                    "role": "system",
+                    "content": self._format_open_threads(open_threads),
+                }
+            )
+        if retrieved_evidence_context:
+            messages.append({"role": "system", "content": retrieved_evidence_context})
         for item in history:
             role = "assistant" if item.role_type == "assistant" else "user"
             messages.append({"role": role, "content": item.content})
         messages.append({"role": "user", "content": followup_prompt})
         return await self._chat_completion(messages)
+
+    async def generate_followup_with_tool_calling(
+        self,
+        role_name: str,
+        user_answer: str,
+        history: list[InterviewMessage],
+        *,
+        tool_runtime: ToolRuntime,
+        tool_context: ToolExecutionContext,
+        allowed_tool_names: tuple[str, ...] | list[str] | None = None,
+        candidate_profile: str | None = None,
+        conversation_summary: str | None = None,
+        plan_context: str | None = None,
+        execution_context: str | None = None,
+        retrieved_evidence_context: str | None = None,
+        open_threads: list[dict] | None = None,
+        max_tool_rounds: int = 3,
+    ) -> tuple[str, dict | None]:
+        if not self.api_key:
+            content, raw = await self.generate_followup(
+                role_name,
+                user_answer,
+                history,
+                candidate_profile=candidate_profile,
+                conversation_summary=conversation_summary,
+                plan_context=plan_context,
+                execution_context=execution_context,
+                retrieved_evidence_context=retrieved_evidence_context,
+                open_threads=open_threads,
+            )
+            return content, {
+                **(raw or {}),
+                **ToolCallingPayload(
+                    mode="mock_fallback",
+                    available_tools=list(allowed_tool_names or []),
+                ).to_raw_response(),
+            }
+
+        tools = tool_runtime.openai_tool_schemas(allowed_tool_names)
+        if not tools:
+            return await self.generate_followup(
+                role_name,
+                user_answer,
+                history,
+                candidate_profile=candidate_profile,
+                conversation_summary=conversation_summary,
+                plan_context=plan_context,
+                execution_context=execution_context,
+                retrieved_evidence_context=retrieved_evidence_context,
+                open_threads=open_threads,
+            )
+
+        messages = self._followup_messages(
+            role_name=role_name,
+            user_answer=user_answer,
+            history=history,
+            candidate_profile=candidate_profile,
+            conversation_summary=conversation_summary,
+            plan_context=plan_context,
+            execution_context=execution_context,
+            retrieved_evidence_context=retrieved_evidence_context,
+            open_threads=open_threads,
+        )
+        trace: list[dict[str, Any]] = []
+        responses: list[dict[str, Any]] = []
+        for _ in range(max_tool_rounds):
+            data = await self._chat_completion_data(
+                messages,
+                tools=tools,
+                tool_choice="auto",
+            )
+            responses.append(data)
+            message = data["choices"][0]["message"]
+            tool_calls = message.get("tool_calls") or []
+            if not tool_calls:
+                return message.get("content") or "", ToolCallingPayload(
+                    mode="model_driven",
+                    available_tools=[tool["function"]["name"] for tool in tools],
+                    trace=trace,
+                    responses=responses,
+                ).to_raw_response()
+
+            messages.append(message)
+            for raw_call in tool_calls:
+                call = self._tool_call_from_model(raw_call)
+                result = tool_runtime.execute_one(
+                    call,
+                    tool_context,
+                    allowed_tool_names=allowed_tool_names,
+                )
+                result_payload = self._tool_result_payload(result)
+                trace.append(
+                    {
+                        "tool_call_id": raw_call.get("id"),
+                        "tool_name": call.tool_name,
+                        "arguments": {
+                            **call.args,
+                            **({"query": call.query} if call.query is not None else {}),
+                        },
+                        "result": result.to_snapshot(),
+                        "outputs": result_payload.get("outputs", []),
+                    }
+                )
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": raw_call.get("id"),
+                        "name": call.tool_name,
+                        "content": json.dumps(result_payload, ensure_ascii=False, default=str),
+                    }
+                )
+
+        messages.append(
+            {
+                "role": "system",
+                "content": (
+                    "Tool budget is exhausted. Produce the best single follow-up "
+                    "question from the evidence already returned."
+                ),
+            }
+        )
+        content, final_response = await self._chat_completion(messages)
+        return content, ToolCallingPayload(
+            mode="model_driven",
+            available_tools=[tool["function"]["name"] for tool in tools],
+            trace=trace,
+            responses=[*responses, final_response],
+            tool_budget_exhausted=True,
+        ).to_raw_response()
+
+    async def judge_topic_completion_with_tool_calling(
+        self,
+        current_section: dict,
+        execution_state: dict,
+        user_answer: str,
+        recent_history: list[InterviewMessage],
+        *,
+        tool_runtime: ToolRuntime,
+        tool_context: ToolExecutionContext,
+        allowed_tool_names: tuple[str, ...] | list[str] | None = None,
+        retrieved_evidence_context: str | None = None,
+        max_tool_rounds: int = 3,
+    ) -> tuple[dict, dict | None]:
+        if not self.api_key:
+            output, raw = await self.judge_topic_completion(
+                current_section=current_section,
+                execution_state=execution_state,
+                user_answer=user_answer,
+                recent_history=recent_history,
+                retrieved_evidence_context=retrieved_evidence_context,
+            )
+            return output, {
+                **(raw or {}),
+                **ToolCallingPayload(
+                    mode="mock_fallback",
+                    available_tools=list(allowed_tool_names or []),
+                ).to_raw_response(),
+            }
+
+        tools = tool_runtime.openai_tool_schemas(allowed_tool_names)
+        if not tools:
+            return await self.judge_topic_completion(
+                current_section=current_section,
+                execution_state=execution_state,
+                user_answer=user_answer,
+                recent_history=recent_history,
+                retrieved_evidence_context=retrieved_evidence_context,
+            )
+
+        messages = self._topic_judge_messages(
+            current_section=current_section,
+            execution_state=execution_state,
+            user_answer=user_answer,
+            recent_history=recent_history,
+            retrieved_evidence_context=retrieved_evidence_context,
+        )
+        trace: list[dict[str, Any]] = []
+        responses: list[dict[str, Any]] = []
+        for _ in range(max_tool_rounds):
+            data = await self._chat_completion_data(
+                messages,
+                tools=tools,
+                tool_choice="auto",
+                temperature=0.0,
+            )
+            responses.append(data)
+            message = data["choices"][0]["message"]
+            tool_calls = message.get("tool_calls") or []
+            if not tool_calls:
+                parsed = self._parse_json_object(
+                    message.get("content") or "",
+                    self._mock_topic_completion(current_section, execution_state, user_answer),
+                )
+                return parsed, ToolCallingPayload(
+                    mode="model_driven",
+                    available_tools=[tool["function"]["name"] for tool in tools],
+                    trace=trace,
+                    responses=responses,
+                ).to_raw_response()
+
+            messages.append(message)
+            for raw_call in tool_calls:
+                call = self._tool_call_from_model(raw_call)
+                result = tool_runtime.execute_one(
+                    call,
+                    tool_context,
+                    allowed_tool_names=allowed_tool_names,
+                )
+                result_payload = self._tool_result_payload(result)
+                trace.append(
+                    {
+                        "tool_call_id": raw_call.get("id"),
+                        "tool_name": call.tool_name,
+                        "arguments": {
+                            **call.args,
+                            **({"query": call.query} if call.query is not None else {}),
+                        },
+                        "result": result.to_snapshot(),
+                        "outputs": result_payload.get("outputs", []),
+                    }
+                )
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": raw_call.get("id"),
+                        "name": call.tool_name,
+                        "content": json.dumps(result_payload, ensure_ascii=False, default=str),
+                    }
+                )
+
+        messages.append(
+            {
+                "role": "system",
+                "content": (
+                    "Tool budget is exhausted. Return one JSON object that follows the "
+                    "topic completion judge schema."
+                ),
+            }
+        )
+        content, final_response = await self._chat_completion(messages, temperature=0.0)
+        return self._parse_json_object(
+            content,
+            self._mock_topic_completion(current_section, execution_state, user_answer),
+        ), ToolCallingPayload(
+            mode="model_driven",
+            available_tools=[tool["function"]["name"] for tool in tools],
+            trace=trace,
+            responses=[*responses, final_response],
+            tool_budget_exhausted=True,
+        ).to_raw_response()
 
     async def generate_evaluation(
         self,
@@ -183,13 +449,17 @@ class LLMService:
         execution_state: dict,
         user_answer: str,
         recent_history: list[InterviewMessage],
+        retrieved_evidence_context: str | None = None,
     ) -> tuple[dict, dict | None]:
         prompt = load_prompt(
             prompt_registry.prompt_file("topic_completion_judge"),
             current_section=json.dumps(current_section or {}, ensure_ascii=False),
             execution_state=json.dumps(execution_state or {}, ensure_ascii=False),
             recent_history=self._format_transcript(recent_history),
-            user_answer=user_answer,
+            user_answer=self._answer_with_retrieved_evidence(
+                user_answer,
+                retrieved_evidence_context,
+            ),
         )
         if not self.api_key:
             return self._mock_topic_completion(current_section, execution_state, user_answer), {"mock": True}
@@ -375,24 +645,230 @@ class LLMService:
         content, raw_response = await self._chat_completion([{"role": "user", "content": prompt}])
         return self._parse_json_object(content, fallback), raw_response
 
-    async def _chat_completion(self, messages: list[dict[str, str]]) -> tuple[str, dict | None]:
-        payload = {"model": self.model, "messages": messages, "temperature": 0.7}
+    async def repair_structured_output(
+        self,
+        prompt_id: str,
+        output: object,
+        output_schema: dict,
+        validation_errors: list[str],
+    ) -> tuple[dict, dict | None] | None:
+        if not self.api_key:
+            return None
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You repair invalid structured agent outputs. Return only one JSON object. "
+                    "Do not add markdown fences or explanatory text."
+                ),
+            },
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        "prompt_id": prompt_id,
+                        "validation_errors": validation_errors,
+                        "json_schema": output_schema,
+                        "invalid_output": output,
+                    },
+                    ensure_ascii=False,
+                    default=str,
+                ),
+            },
+        ]
+        content, raw_response = await self._chat_completion(messages, temperature=0.0)
+        repaired = self._parse_json_object(content, {})
+        if not repaired:
+            return None
+        return repaired, raw_response
+
+    async def _chat_completion_data(
+        self,
+        messages: list[dict],
+        temperature: float = 0.7,
+        tools: list[dict] | None = None,
+        tool_choice: str | dict | None = None,
+    ) -> dict:
+        payload = {"model": self.model, "messages": messages, "temperature": temperature}
+        if tools:
+            payload["tools"] = tools
+        if tool_choice is not None:
+            payload["tool_choice"] = tool_choice
         headers = {"Authorization": f"Bearer {self.api_key}"}
-        async with httpx.AsyncClient(timeout=60) as client:
-            response = await client.post(
-                f"{self.api_base}/chat/completions",
-                headers=headers,
-                json=payload,
-            )
-            response.raise_for_status()
-            data = response.json()
-        content = data["choices"][0]["message"]["content"]
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+                response = await client.post(
+                    f"{self.api_base}/chat/completions",
+                    headers=headers,
+                    json=payload,
+                )
+                response.raise_for_status()
+                data = response.json()
+        except httpx.TimeoutException as exc:
+            raise HTTPException(
+                status_code=504,
+                detail="LLM provider request timed out. Please retry in a moment.",
+            ) from exc
+        except httpx.HTTPStatusError as exc:
+            raise HTTPException(
+                status_code=502,
+                detail=f"LLM provider returned HTTP {exc.response.status_code}.",
+            ) from exc
+        except httpx.RequestError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="LLM provider is temporarily unavailable. Please retry in a moment.",
+            ) from exc
+        return data
+
+    async def _chat_completion(
+        self,
+        messages: list[dict[str, str]],
+        temperature: float = 0.7,
+    ) -> tuple[str, dict | None]:
+        data = await self._chat_completion_data(messages, temperature=temperature)
+        content = data["choices"][0]["message"].get("content") or ""
         return content, data
+
+    def _followup_messages(
+        self,
+        *,
+        role_name: str,
+        user_answer: str,
+        history: list[InterviewMessage],
+        candidate_profile: str | None = None,
+        conversation_summary: str | None = None,
+        plan_context: str | None = None,
+        execution_context: str | None = None,
+        retrieved_evidence_context: str | None = None,
+        open_threads: list[dict] | None = None,
+    ) -> list[dict]:
+        prompt = load_prompt(prompt_registry.prompt_file("interviewer"), role_name=role_name)
+        followup_prompt = load_prompt(prompt_registry.prompt_file("followup"), user_answer=user_answer)
+        messages: list[dict] = [{"role": "system", "content": prompt}]
+        context = self._build_memory_context(candidate_profile, conversation_summary)
+        if context:
+            messages.append({"role": "system", "content": context})
+        if plan_context:
+            messages.append({"role": "system", "content": plan_context})
+        if execution_context:
+            messages.append({"role": "system", "content": execution_context})
+        if open_threads:
+            messages.append({"role": "system", "content": self._format_open_threads(open_threads)})
+        if retrieved_evidence_context:
+            messages.append({"role": "system", "content": retrieved_evidence_context})
+        messages.append(
+            {
+                "role": "system",
+                "content": (
+                    "You may call tools when more context is needed. Use tools for "
+                    "candidate history, resume/project evidence, or role requirements; "
+                    "then ask exactly one concise follow-up question."
+                ),
+            }
+        )
+        for item in history:
+            role = "assistant" if item.role_type == "assistant" else "user"
+            messages.append({"role": role, "content": item.content})
+        messages.append({"role": "user", "content": followup_prompt})
+        return messages
+
+    def _topic_judge_messages(
+        self,
+        *,
+        current_section: dict,
+        execution_state: dict,
+        user_answer: str,
+        recent_history: list[InterviewMessage],
+        retrieved_evidence_context: str | None = None,
+    ) -> list[dict]:
+        prompt = load_prompt(
+            prompt_registry.prompt_file("topic_completion_judge"),
+            current_section=json.dumps(current_section or {}, ensure_ascii=False),
+            execution_state=json.dumps(execution_state or {}, ensure_ascii=False),
+            recent_history=self._format_transcript(recent_history),
+            user_answer=self._answer_with_retrieved_evidence(
+                user_answer,
+                retrieved_evidence_context,
+            ),
+        )
+        return [
+            {
+                "role": "system",
+                "content": (
+                    "You are a strict interview topic coverage judge. Use tools when "
+                    "previous answers or project evidence may change the coverage decision. "
+                    "Return only one JSON object."
+                ),
+            },
+            {"role": "user", "content": prompt},
+        ]
+
+    def _tool_call_from_model(self, raw_call: dict) -> ToolCall:
+        function = raw_call.get("function") or {}
+        name = function.get("name") or raw_call.get("name")
+        arguments_text = function.get("arguments") or "{}"
+        try:
+            arguments = json.loads(arguments_text)
+        except (TypeError, json.JSONDecodeError):
+            arguments = {}
+        if not isinstance(arguments, dict):
+            arguments = {}
+        query = arguments.pop("query", None)
+        return ToolCall(
+            tool_name=str(name),
+            query=str(query) if query is not None else None,
+            args=arguments,
+        )
+
+    def _tool_result_payload(self, result) -> dict:
+        return {
+            "tool_name": result.tool_name,
+            "status": result.status,
+            "error_message": result.error_message,
+            "outputs": [
+                {
+                    "source_name": item.source_name,
+                    "source_type": item.source_type,
+                    "source_id": item.source_id,
+                    "content": item.content,
+                    "score": item.score,
+                    "metadata": item.metadata or {},
+                }
+                for item in (result.outputs or [])[:5]
+            ],
+            "metadata": result.metadata,
+        }
 
     def _format_transcript(self, messages: list[InterviewMessage]) -> str:
         return "\n".join(
             f"{item.role_type}({item.message_type}, round {item.round_no}): {item.content}"
             for item in messages
+        )
+
+    def _format_open_threads(self, open_threads: list[dict]) -> str:
+        lines = ["OpenFollowupThreads:"]
+        for item in open_threads[:5]:
+            lines.append(
+                "- "
+                f"round={item.get('round_no')}; "
+                f"probe_point={item.get('probe_point') or ''}; "
+                f"highlight={item.get('highlight') or ''}; "
+                f"missing_detail={item.get('missing_detail') or ''}"
+            )
+        return "\n".join(lines)
+
+    def _answer_with_retrieved_evidence(
+        self,
+        user_answer: str,
+        retrieved_evidence_context: str | None,
+    ) -> str:
+        if not retrieved_evidence_context:
+            return user_answer
+        return (
+            f"{user_answer}\n\n"
+            "Retrieved evidence available to the judge:\n"
+            f"{retrieved_evidence_context}"
         )
 
     def _build_memory_context(self, candidate_profile: str | None, conversation_summary: str | None) -> str:
@@ -511,6 +987,27 @@ class LLMService:
             "answer_quality": answer_quality,
             "covered_probe_points": covered,
             "missing_probe_points": missing,
+            "technical_highlights": [
+                {
+                    "label": "answer_detail",
+                    "highlight": answer[:120],
+                    "related_probe_point": covered[0] if covered else (uncovered[0] if uncovered else ""),
+                    "missing_followup": "继续追问实现细节、指标或权衡" if answer_quality != "low" else "",
+                    "priority": "medium",
+                }
+            ]
+            if answer_quality != "low"
+            else [],
+            "open_threads": [
+                {
+                    "highlight": answer[:120],
+                    "related_probe_point": missing[0] if missing else (covered[0] if covered else ""),
+                    "missing_followup": f"围绕{missing[0]}继续追问" if missing else "",
+                    "priority": "medium",
+                }
+            ]
+            if answer_quality != "low" and (missing or covered)
+            else [],
             "next_action": next_action,
             "next_question_intent": f"围绕{missing[0]}继续提问" if missing else "进入下一个面试阶段",
             "reason": reason,

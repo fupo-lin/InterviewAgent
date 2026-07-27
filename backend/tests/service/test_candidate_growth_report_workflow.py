@@ -7,6 +7,8 @@ configure_backend_imports()
 
 from app.service.candidate_growth_report_nodes import CandidateGrowthReportNodes
 from app.service.candidate_growth_report_workflow import CandidateGrowthReportWorkflow
+from app.schemas.agent_contract import AgentContractValidation
+from app.service.agent_runtime import AgentOutputValidationError
 
 
 def message(message_id: int, role_type: str, content: str, round_no: int = 1):
@@ -204,6 +206,16 @@ class FailingGrowthReportAgent:
         raise RuntimeError("growth unavailable")
 
 
+class InvalidOutputGrowthReportAgent:
+    async def run(self, agent_input):
+        validation = AgentContractValidation(
+            output_schema="CandidateGrowthReportV1",
+            output_ok=False,
+            errors=["output.overall_summary: Input should be a valid dictionary"],
+        )
+        raise AgentOutputValidationError(validation)
+
+
 class CandidateGrowthReportWorkflowTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.session = SimpleNamespace(
@@ -309,6 +321,20 @@ class CandidateGrowthReportWorkflowTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(failed_save["status"], "failed")
         self.assertEqual(failed_save["state"]["status"], "failed")
         self.assertEqual(failed_save["last_error"]["step_id"], "generate_growth_report")
+        self.assertIn("generate_growth_report", failed_save["state"]["failed_steps"])
+
+    async def test_output_validation_failure_marks_workflow_failed_without_report(self):
+        self.nodes.growth_report_agent = InvalidOutputGrowthReportAgent()
+
+        with self.assertRaisesRegex(AgentOutputValidationError, "output.overall_summary"):
+            await self.workflow.run(self.session)
+
+        self.assertEqual(self.growth_report_repo.created, [])
+        failed_save = self.runtime.saved[-1][1]
+        self.assertEqual(failed_save["current_step"], "generate_growth_report")
+        self.assertEqual(failed_save["status"], "failed")
+        self.assertEqual(failed_save["state"]["status"], "failed")
+        self.assertIn("output.overall_summary", failed_save["last_error"]["message"])
         self.assertIn("generate_growth_report", failed_save["state"]["failed_steps"])
 
     async def test_failed_retry_reuses_existing_growth_report(self):

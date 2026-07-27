@@ -18,6 +18,7 @@ import {
 
 import {
   ChatMessage,
+  ChatStreamStepEvent,
   Evaluation,
   GrowthReportResponse,
   ProjectOverviewResponse,
@@ -33,10 +34,8 @@ import {
   createProject,
   deleteInterview,
   endInterview,
-  generateCandidateProfile,
   generateGrowthReport,
   generateInterviewPlan,
-  generateResumeAuthenticity,
   getProjectOverview,
   getGrowthReport,
   getWorkflowRunDetail,
@@ -44,7 +43,7 @@ import {
   getHistory,
   listWorkflowRuns,
   rewriteResume,
-  sendMessage,
+  sendMessageStream,
   startInterview,
   startProjectInterview,
 } from "./api";
@@ -69,16 +68,27 @@ function App() {
   const [status, setStatus] = useState<"idle" | "active" | "finished">("idle");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [chatStreamSteps, setChatStreamSteps] = useState<ChatStreamStepEvent[]>([]);
+  const [currentChatStep, setCurrentChatStep] = useState("");
+  const [currentWorkflowRunId, setCurrentWorkflowRunId] = useState("");
   //  如果出错了，这里可以显示错误信息
 
   //  只有当状态是 active，有sessionId，且不在加载中时，这个值才是true，表示可以发送消息
   const canChat = status === "active" && sessionId && !loading;
 
   const title = useMemo(() => {
+    if (activeView === "preparation") return "模拟面试启动台";
+    if (activeView === "workflowRuns") return "运行记录";
     if (status === "idle") return "准备开始";
     if (status === "active") return `${roleName} 模拟面试`;
     return "面试评价";
-  }, [roleName, status]);
+  }, [activeView, roleName, status]);
+
+  function resetChatStream() {
+    setChatStreamSteps([]);
+    setCurrentChatStep("");
+    setCurrentWorkflowRunId("");
+  }
 
   //  用户点击“开始面试”按钮时，调用startInterview接口，获取sessionId和第一条问题，并更新状态
   async function handleStart() {
@@ -87,6 +97,7 @@ function App() {
     setEvaluation(null); // 清空之前的评价
     setGrowthReport(null);
     setGrowthReportError("");
+    resetChatStream();
     try {
       const result = await startInterview(roleName);
       setSessionId(result.sessionId);
@@ -127,21 +138,41 @@ function App() {
 
     setLoading(true);
     setError("");
+    resetChatStream();
     try {
-      const result = await sendMessage(sessionId, content); // 发给后端
+      const result = await sendMessageStream(sessionId, content, (event) => {
+        if (event.event === "step") {
+          setChatStreamSteps((current) => [...current, event]);
+          setCurrentChatStep(event.activeStep || event.step || "");
+          if (event.workflowRunId) {
+            setCurrentWorkflowRunId(event.workflowRunId);
+          }
+        }
+
+        if (event.event === "done") {
+          setCurrentChatStep("");
+          if (event.workflowRunId) {
+            setCurrentWorkflowRunId(event.workflowRunId);
+          }
+        }
+      }); // 发给后端
       setMessages((current) => [ // 把 AI 的话也加到屏幕上
         ...current,
         {
           roleType: "assistant",
-          messageType: "followup",
+          messageType: resolveAssistantMessageType(result.status, result.routeAfterAdvance),
           roundNo: result.roundNo,
           content: result.reply,
         },
       ]);
+      if (result.status === "finished") {
+        setStatus("finished");
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "发送回答失败");
     } finally {
       setLoading(false);
+      setCurrentChatStep("");
     }
   }
 
@@ -174,6 +205,7 @@ function App() {
       setEvaluation(result.evaluation);
       setGrowthReport(null);
       setGrowthReportError("");
+      resetChatStream();
       setStatus(result.status === "finished" ? "finished" : "active");
       if (result.status === "finished") {
         await loadGrowthReport(result.sessionId);
@@ -201,6 +233,7 @@ function App() {
       setGrowthReportError("");
       setStatus("idle");
       setInput("");
+      resetChatStream();
     } catch (err) {
       setError(err instanceof Error ? err.message : "删除会话失败");
     } finally {
@@ -252,7 +285,7 @@ function App() {
             onClick={() => setActiveView("preparation")}
           >
             <FileText size={18} />
-            Preparation
+            面试启动台
           </button>
           <button
             className={activeView === "interview" ? "view-button view-button-active" : "view-button"}
@@ -260,7 +293,7 @@ function App() {
             onClick={() => setActiveView("interview")}
           >
             <MessageCircle size={18} />
-            Interview
+            当前面试
           </button>
           <button
             className={activeView === "workflowRuns" ? "view-button view-button-active" : "view-button"}
@@ -268,7 +301,7 @@ function App() {
             onClick={() => setActiveView("workflowRuns")}
           >
             <Route size={18} />
-            Workflow Runs
+            运行记录
           </button>
         </nav>
 
@@ -283,7 +316,7 @@ function App() {
           </select>
           <button className="primary-button" type="button" onClick={handleStart} disabled={loading}>
             {loading && status === "idle" ? <Loader2 className="spin" size={18} /> : <Play size={18} />}
-            开始面试
+            快速空白面试
           </button>
         </section>
 
@@ -323,6 +356,7 @@ function App() {
             setEvaluation(null);
             setGrowthReport(null);
             setGrowthReportError("");
+            resetChatStream();
             setMessages([
               {
                 roleType: "assistant",
@@ -359,6 +393,15 @@ function App() {
             ))
           )}
         </div>
+
+        {(loading || chatStreamSteps.length > 0 || currentWorkflowRunId) && (
+          <ChatStreamStatus
+            activeStep={currentChatStep}
+            loading={loading}
+            steps={chatStreamSteps}
+            workflowRunId={currentWorkflowRunId}
+          />
+        )}
 
         {evaluation && (
           <section className="evaluation">
@@ -430,6 +473,70 @@ function App() {
   );
 }
 
+function resolveAssistantMessageType(status?: string | null, route?: string | null): ChatMessage["messageType"] {
+  if (status === "finished" || route === "finished") return "summary";
+  if (route === "wrap_up") return "wrap_up";
+  return "followup";
+}
+
+const CHAT_STEP_LABELS: Record<string, string> = {
+  save_user_answer: "Saving answer",
+  topic_judge: "Checking topic coverage",
+  advance_execution: "Advancing interview plan",
+  refresh_memory: "Refreshing memory",
+  generate_followup: "Generating follow-up",
+  generate_wrap_up_question: "Generating wrap-up question",
+  finalize_interview: "Finishing interview",
+  wait_user_answer: "Ready for next answer",
+};
+
+function formatChatStep(step?: string | null) {
+  if (!step) return "Running workflow";
+  return CHAT_STEP_LABELS[step] || step;
+}
+
+function ChatStreamStatus({
+  activeStep,
+  loading,
+  steps,
+  workflowRunId,
+}: {
+  activeStep: string;
+  loading: boolean;
+  steps: ChatStreamStepEvent[];
+  workflowRunId: string;
+}) {
+  const latestStep = steps.length > 0 ? steps[steps.length - 1] : undefined;
+  const visibleSteps = steps.slice(-5);
+
+  return (
+    <section className="stream-status" aria-live="polite">
+      <div className="stream-status-main">
+        {loading ? <Loader2 className="spin" size={16} /> : <Route size={16} />}
+        <strong>{formatChatStep(activeStep || latestStep?.activeStep || latestStep?.step)}</strong>
+        {latestStep?.routeAfterAdvance && <span>{latestStep.routeAfterAdvance}</span>}
+      </div>
+      {workflowRunId && <code>{workflowRunId}</code>}
+      {visibleSteps.length > 0 && (
+        <div className="stream-step-list">
+          {visibleSteps.map((step, index) => {
+            const stepId = step.step || step.activeStep || `step-${index}`;
+            const isActive = Boolean(activeStep && (activeStep === step.step || activeStep === step.activeStep));
+            return (
+              <span
+                className={isActive ? "stream-step stream-step-active" : "stream-step"}
+                key={`${stepId}-${index}`}
+              >
+                {formatChatStep(stepId)}
+              </span>
+            );
+          })}
+        </div>
+      )}
+    </section>
+  );
+}
+
 type GrowthReportPanelProps = {
   error: string;
   loading: boolean;
@@ -438,6 +545,28 @@ type GrowthReportPanelProps = {
   onRefresh: () => void;
   onOpenWorkflow: (workflowRunId: string) => void;
 };
+
+type PrepPipelineStepKey = "project" | "materials" | "analysis" | "gap" | "plan" | "start";
+type PrepPipelineStepStatus = "pending" | "running" | "done" | "skipped";
+
+type PrepPipelineStep = {
+  key: PrepPipelineStepKey;
+  label: string;
+  status: PrepPipelineStepStatus;
+};
+
+const PREP_PIPELINE_STEPS: Array<Omit<PrepPipelineStep, "status">> = [
+  { key: "project", label: "项目" },
+  { key: "materials", label: "材料" },
+  { key: "analysis", label: "分析" },
+  { key: "gap", label: "Gap" },
+  { key: "plan", label: "计划" },
+  { key: "start", label: "面试" },
+];
+
+function initialPrepPipelineSteps(): PrepPipelineStep[] {
+  return PREP_PIPELINE_STEPS.map((step) => ({ ...step, status: "pending" }));
+}
 
 function PreparationWorkspace({
   onStartInterview,
@@ -457,6 +586,7 @@ function PreparationWorkspace({
   const [resumeContent, setResumeContent] = useState("");
   const [loadingAction, setLoadingAction] = useState("");
   const [error, setError] = useState("");
+  const [prepSteps, setPrepSteps] = useState<PrepPipelineStep[]>(initialPrepPipelineSteps);
 
   const activeProjectId = loadedProjectId || projectId.trim();
   const project = getRecord(overview?.project);
@@ -469,6 +599,8 @@ function PreparationWorkspace({
   const hasCandidateProfile = Boolean(overview?.candidateProfile);
   const hasAuthenticity = Boolean(overview?.resumeAuthenticity);
   const hasRewrite = Boolean(overview?.resumeRewrite);
+  const hasAnyMaterial = hasJd || hasResume || Boolean(jdContent.trim()) || Boolean(resumeContent.trim());
+  const canStartPreparedInterview = Boolean(activeProjectId || projectTitle.trim()) && hasAnyMaterial;
 
   async function runAction(action: string, task: () => Promise<void>) {
     setLoadingAction(action);
@@ -482,12 +614,13 @@ function PreparationWorkspace({
     }
   }
 
-  async function refreshOverview(id = activeProjectId) {
-    if (!id) return;
+  async function refreshOverview(id = activeProjectId): Promise<ProjectOverviewResponse | null> {
+    if (!id) return null;
     const result = await getProjectOverview(id);
     setOverview(result);
     setLoadedProjectId(id);
     setProjectId(id);
+    return result;
   }
 
   function refreshAfter(action: string, task: () => Promise<void>) {
@@ -497,12 +630,161 @@ function PreparationWorkspace({
     });
   }
 
+  function resetPrepPipeline() {
+    setPrepSteps(initialPrepPipelineSteps());
+  }
+
+  function markPrepStep(key: PrepPipelineStepKey, status: PrepPipelineStepStatus) {
+    setPrepSteps((current) => current.map((step) => (step.key === key ? { ...step, status } : step)));
+  }
+
+  async function ensureProject(): Promise<string> {
+    if (activeProjectId) {
+      markPrepStep("project", "done");
+      return activeProjectId;
+    }
+
+    markPrepStep("project", "running");
+    const result = await createProject(projectTitle, targetRole);
+    setProjectId(result.projectId);
+    setLoadedProjectId(result.projectId);
+    markPrepStep("project", "done");
+    await refreshOverview(result.projectId);
+    return result.projectId;
+  }
+
+  async function saveMaterialInputs(
+    id: string,
+    options: { jd?: boolean; resume?: boolean },
+  ): Promise<ProjectOverviewResponse | null> {
+    markPrepStep("materials", "running");
+    let saved = false;
+
+    if (options.jd && jdContent.trim()) {
+      await addJobDescription(id, {
+        content: jdContent,
+        title: jdTitle || undefined,
+        companyName: companyName || undefined,
+        sourceUrl: sourceUrl || undefined,
+      });
+      saved = true;
+    }
+
+    if (options.resume && resumeContent.trim()) {
+      await addResumeDocument(id, {
+        content: resumeContent,
+        fileName: resumeFileName || undefined,
+        fileType: "text",
+      });
+      saved = true;
+    }
+
+    markPrepStep("materials", saved ? "done" : "skipped");
+    return refreshOverview(id);
+  }
+
+  async function runMaterialAnalyses(
+    id: string,
+    currentOverview: ProjectOverviewResponse | null,
+  ): Promise<ProjectOverviewResponse | null> {
+    let latest = currentOverview ?? (await refreshOverview(id));
+    let didAnalyze = false;
+    markPrepStep("analysis", "running");
+
+    if (latest?.jd && !latest.jdAnalysis) {
+      await analyzeJobDescription(id);
+      didAnalyze = true;
+      latest = await refreshOverview(id);
+    }
+
+    if (latest?.resume && !latest.resumeProfile) {
+      await analyzeResume(id);
+      didAnalyze = true;
+      latest = await refreshOverview(id);
+    }
+
+    markPrepStep("analysis", didAnalyze || latest?.jdAnalysis || latest?.resumeProfile ? "done" : "skipped");
+    return latest;
+  }
+
+  async function runGapIfReady(
+    id: string,
+    currentOverview: ProjectOverviewResponse | null,
+  ): Promise<ProjectOverviewResponse | null> {
+    let latest = currentOverview ?? (await refreshOverview(id));
+    if (!latest?.jdAnalysis || !latest?.resumeProfile) {
+      markPrepStep("gap", "skipped");
+      return latest;
+    }
+
+    if (!latest.gapAnalysis) {
+      markPrepStep("gap", "running");
+      await analyzeGap(id);
+      latest = await refreshOverview(id);
+    }
+    markPrepStep("gap", "done");
+    return latest;
+  }
+
+  async function ensureInterviewPlan(
+    id: string,
+    currentOverview: ProjectOverviewResponse | null,
+  ): Promise<ProjectOverviewResponse | null> {
+    let latest = currentOverview ?? (await refreshOverview(id));
+    if (!latest?.jdAnalysis && !latest?.resumeProfile) {
+      markPrepStep("plan", "skipped");
+      throw new Error("请先上传 JD 或 Resume，系统需要至少一份材料来生成面试计划。");
+    }
+
+    if (!latest.interviewPlan) {
+      markPrepStep("plan", "running");
+      await generateInterviewPlan(id);
+      latest = await refreshOverview(id);
+    }
+    markPrepStep("plan", "done");
+    return latest;
+  }
+
+  async function saveAndAnalyze(kind: "jd" | "resume") {
+    resetPrepPipeline();
+    const id = await ensureProject();
+    let latest = await saveMaterialInputs(id, {
+      jd: kind === "jd",
+      resume: kind === "resume",
+    });
+    latest = await runMaterialAnalyses(id, latest);
+    await runGapIfReady(id, latest);
+    markPrepStep("plan", "pending");
+    markPrepStep("start", "pending");
+  }
+
+  async function prepareAndStartInterview() {
+    resetPrepPipeline();
+    const id = await ensureProject();
+    let latest = await saveMaterialInputs(id, {
+      jd: Boolean(jdContent.trim()),
+      resume: Boolean(resumeContent.trim()),
+    });
+    latest = await runMaterialAnalyses(id, latest);
+    latest = await runGapIfReady(id, latest);
+    latest = await ensureInterviewPlan(id, latest);
+
+    markPrepStep("start", "running");
+    const result = await startProjectInterview(id);
+    markPrepStep("start", "done");
+    onStartInterview(
+      result.sessionId,
+      result.reply,
+      getString(getRecord(latest?.project)?.targetRole) || targetRole || getString(project?.targetRole),
+    );
+  }
+
   return (
     <section className="preparation-workspace">
       <header className="preparation-header">
         <div>
-          <p className="eyebrow">Preparation Workflow</p>
-          <h2>JD / Resume / Plan 工作台</h2>
+          <p className="eyebrow">Interview Launchpad</p>
+          <h2>上传材料后直接开始模拟面试</h2>
         </div>
         <div className="preparation-header-actions">
           <input
@@ -513,7 +795,11 @@ function PreparationWorkspace({
           />
           <button
             type="button"
-            onClick={() => void runAction("load_project", () => refreshOverview(projectId.trim()))}
+            onClick={() =>
+              void runAction("load_project", async () => {
+                await refreshOverview(projectId.trim());
+              })
+            }
             disabled={!projectId.trim() || Boolean(loadingAction)}
           >
             {loadingAction === "load_project" ? <Loader2 className="spin" size={18} /> : <RefreshCw size={18} />}
@@ -591,28 +877,11 @@ function PreparationWorkspace({
             <div className="prep-actions">
               <button
                 type="button"
-                onClick={() =>
-                  refreshAfter("save_jd", () =>
-                    addJobDescription(activeProjectId, {
-                      content: jdContent,
-                      title: jdTitle || undefined,
-                      companyName: companyName || undefined,
-                      sourceUrl: sourceUrl || undefined,
-                    }).then(() => undefined),
-                  )
-                }
-                disabled={!activeProjectId || !jdContent.trim() || Boolean(loadingAction)}
+                onClick={() => void runAction("save_jd", () => saveAndAnalyze("jd"))}
+                disabled={!jdContent.trim() || Boolean(loadingAction)}
               >
                 {loadingAction === "save_jd" ? <Loader2 className="spin" size={18} /> : <FileText size={18} />}
-                Save JD
-              </button>
-              <button
-                type="button"
-                onClick={() => refreshAfter("analyze_jd", () => analyzeJobDescription(activeProjectId).then(() => undefined))}
-                disabled={!activeProjectId || !hasJd || Boolean(loadingAction)}
-              >
-                {loadingAction === "analyze_jd" ? <Loader2 className="spin" size={18} /> : <Target size={18} />}
-                Analyze JD
+                保存并自动分析 JD
               </button>
             </div>
           </section>
@@ -635,67 +904,39 @@ function PreparationWorkspace({
             <div className="prep-actions">
               <button
                 type="button"
-                onClick={() =>
-                  refreshAfter("save_resume", () =>
-                    addResumeDocument(activeProjectId, {
-                      content: resumeContent,
-                      fileName: resumeFileName || undefined,
-                      fileType: "text",
-                    }).then(() => undefined),
-                  )
-                }
-                disabled={!activeProjectId || !resumeContent.trim() || Boolean(loadingAction)}
+                onClick={() => void runAction("save_resume", () => saveAndAnalyze("resume"))}
+                disabled={!resumeContent.trim() || Boolean(loadingAction)}
               >
                 {loadingAction === "save_resume" ? <Loader2 className="spin" size={18} /> : <FileText size={18} />}
-                Save Resume
-              </button>
-              <button
-                type="button"
-                onClick={() => refreshAfter("analyze_resume", () => analyzeResume(activeProjectId).then(() => undefined))}
-                disabled={!activeProjectId || !hasResume || Boolean(loadingAction)}
-              >
-                {loadingAction === "analyze_resume" ? <Loader2 className="spin" size={18} /> : <Target size={18} />}
-                Analyze Resume
+                保存并自动分析 Resume
               </button>
             </div>
           </section>
 
-          <section className="prep-panel">
-            <h3>Workflow Actions</h3>
-            <div className="prep-action-grid">
-              <button
-                type="button"
-                onClick={() => refreshAfter("analyze_gap", () => analyzeGap(activeProjectId).then(() => undefined))}
-                disabled={!activeProjectId || !hasJdAnalysis || !hasResumeProfile || Boolean(loadingAction)}
-              >
-                {loadingAction === "analyze_gap" ? <Loader2 className="spin" size={18} /> : <Route size={18} />}
-                Gap
-              </button>
+          <section className="prep-panel launch-panel">
+            <h3>开始模拟面试</h3>
+            <div className="prep-launch-summary">
+              <strong>{hasInterviewPlan ? "面试计划已就绪" : "系统会自动补齐面试计划"}</strong>
+              <span>{hasGapAnalysis ? "Gap 分析已完成" : "JD 和 Resume 都有时会自动生成 Gap 分析"}</span>
+            </div>
+            <PrepPipeline steps={prepSteps} />
+            <button
+              className="primary-button launch-button"
+              type="button"
+              onClick={() => void runAction("prepare_and_start", prepareAndStartInterview)}
+              disabled={!canStartPreparedInterview || Boolean(loadingAction)}
+            >
+              {loadingAction === "prepare_and_start" ? <Loader2 className="spin" size={20} /> : <Play size={20} />}
+              保存材料并开始模拟面试
+            </button>
+            <div className="prep-action-grid prep-secondary-actions">
               <button
                 type="button"
                 onClick={() => refreshAfter("generate_plan", () => generateInterviewPlan(activeProjectId).then(() => undefined))}
                 disabled={!activeProjectId || (!hasJdAnalysis && !hasResumeProfile) || Boolean(loadingAction)}
               >
                 {loadingAction === "generate_plan" ? <Loader2 className="spin" size={18} /> : <BookOpen size={18} />}
-                Plan
-              </button>
-              <button
-                type="button"
-                onClick={() => refreshAfter("candidate_profile", () => generateCandidateProfile(activeProjectId).then(() => undefined))}
-                disabled={!activeProjectId || Boolean(loadingAction)}
-              >
-                {loadingAction === "candidate_profile" ? <Loader2 className="spin" size={18} /> : <Target size={18} />}
-                Profile
-              </button>
-              <button
-                type="button"
-                onClick={() =>
-                  refreshAfter("authenticity", () => generateResumeAuthenticity(activeProjectId).then(() => undefined))
-                }
-                disabled={!activeProjectId || !hasResume || Boolean(loadingAction)}
-              >
-                {loadingAction === "authenticity" ? <Loader2 className="spin" size={18} /> : <AlertTriangle size={18} />}
-                Authenticity
+                只生成计划
               </button>
               <button
                 type="button"
@@ -703,25 +944,7 @@ function PreparationWorkspace({
                 disabled={!activeProjectId || !hasResume || Boolean(loadingAction)}
               >
                 {loadingAction === "rewrite" ? <Loader2 className="spin" size={18} /> : <FileText size={18} />}
-                Rewrite
-              </button>
-              <button
-                className="primary-button"
-                type="button"
-                onClick={() =>
-                  void runAction("start_project_interview", async () => {
-                    const result = await startProjectInterview(activeProjectId);
-                    onStartInterview(
-                      result.sessionId,
-                      result.reply,
-                      getString(project?.targetRole) || getString(project?.title),
-                    );
-                  })
-                }
-                disabled={!activeProjectId || !hasInterviewPlan || Boolean(loadingAction)}
-              >
-                {loadingAction === "start_project_interview" ? <Loader2 className="spin" size={18} /> : <Play size={18} />}
-                Start Interview
+                简历优化
               </button>
             </div>
           </section>
@@ -758,6 +981,26 @@ function PrepStatus({ label, ready }: { label: string; ready: boolean }) {
       <strong>{ready ? "ready" : "missing"}</strong>
     </div>
   );
+}
+
+function PrepPipeline({ steps }: { steps: PrepPipelineStep[] }) {
+  return (
+    <div className="prep-pipeline" aria-live="polite">
+      {steps.map((step) => (
+        <div className={`prep-pipeline-step prep-pipeline-${step.status}`} key={step.key}>
+          <span>{step.label}</span>
+          <strong>{formatPrepStepStatus(step.status)}</strong>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function formatPrepStepStatus(status: PrepPipelineStepStatus) {
+  if (status === "running") return "进行中";
+  if (status === "done") return "完成";
+  if (status === "skipped") return "跳过";
+  return "等待";
 }
 
 function ArtifactPreview({ title, value }: { title: string; value: unknown }) {

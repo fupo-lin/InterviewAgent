@@ -286,6 +286,7 @@ class EvidencePacketBuilder:
         round_no: int | None = None,
         recent_history: list[InterviewMessage] | None = None,
         execution_state: dict | None = None,
+        retrieved_knowledge: list | None = None,
     ) -> dict[str, Any]:
         items: list[EvidenceItem] = []
         if user_answer:
@@ -305,6 +306,7 @@ class EvidencePacketBuilder:
             )
         items.extend(self._interview_answers(project_id, recent_history or []))
         items.extend(self._execution_probes(project_id, execution_state or {}))
+        items.extend(self._retrieved_knowledge(project_id, session_id, retrieved_knowledge or []))
         return {
             "packet_id": self._packet_id(task, session_id),
             "task": task,
@@ -341,6 +343,31 @@ class EvidencePacketBuilder:
             if evidence_id and evidence_id not in refs:
                 refs.append(evidence_id)
         return refs
+
+    def enrich_packet_with_retrieval(
+        self,
+        packet: dict[str, Any],
+        *,
+        project_id: int | None = None,
+        session_id: int | None = None,
+        retrieved_knowledge: list | None = None,
+    ) -> dict[str, Any]:
+        items = list((packet or {}).get("evidence_items") or [])
+        existing_ids = {
+            item.get("evidence_id")
+            for item in items
+            if isinstance(item, dict) and item.get("evidence_id")
+        }
+        for item in self._retrieved_knowledge(project_id, session_id, retrieved_knowledge or []):
+            payload = item.to_dict()
+            if payload["evidence_id"] in existing_ids:
+                continue
+            existing_ids.add(payload["evidence_id"])
+            items.append(payload)
+        return {
+            **(packet or {}),
+            "evidence_items": items,
+        }
 
     def validate_packet(self, packet: dict[str, Any] | None):
         return EvidencePacketValidator().validate(packet)
@@ -598,6 +625,42 @@ class EvidencePacketBuilder:
                 )
             )
         return items
+
+    def _retrieved_knowledge(
+        self,
+        project_id: int | None,
+        session_id: int | None,
+        retrieved_knowledge: list,
+    ) -> list[EvidenceItem]:
+        items: list[EvidenceItem] = []
+        for index, knowledge in enumerate(retrieved_knowledge, start=1):
+            source_name = self._knowledge_attr(knowledge, "source_name", "knowledge")
+            source_type = self._knowledge_attr(knowledge, "source_type", "knowledge_source")
+            source_id = self._knowledge_attr(knowledge, "source_id", None)
+            content = self._knowledge_attr(knowledge, "content", "")
+            metadata = dict(self._knowledge_attr(knowledge, "metadata", {}) or {})
+            metadata["retrieval_source_type"] = source_type
+            metadata["score"] = self._knowledge_attr(knowledge, "score", 0.0)
+            items.append(
+                EvidenceItem(
+                    evidence_id=f"retrieved_{source_name}_{source_id or index}",
+                    evidence_type=EvidenceType.RETRIEVED_KNOWLEDGE,
+                    source_type=EvidenceSourceType.KNOWLEDGE_SOURCE,
+                    source_id=source_id,
+                    project_id=project_id,
+                    session_id=session_id,
+                    content_excerpt=self._excerpt(content),
+                    tags=("retrieval", source_name),
+                    confidence="retrieved",
+                    metadata=metadata,
+                )
+            )
+        return items
+
+    def _knowledge_attr(self, item, field_name: str, default=None):
+        if isinstance(item, dict):
+            return item.get(field_name, default)
+        return getattr(item, field_name, default)
 
     def _missing_evidence(
         self,

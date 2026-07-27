@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from uuid import uuid4
 
@@ -12,17 +13,24 @@ from app.repository.interview_repository import (
     InterviewSummaryRepository,
 )
 from app.repository.agent_run_repository import AgentRunRepository
+from app.repository.knowledge_repository import (
+    KnowledgeChunkRepository,
+    KnowledgeDocumentRepository,
+)
 from app.repository.workflow_run_repository import WorkflowRunRepository
 from app.repository.preparation_repository import InterviewPlanRepository, PreparationProjectRepository
 from app.repository.preparation_repository import (
     CandidateGrowthReportRepository,
     GapAnalysisRepository,
     JDAnalysisRepository,
+    JobDescriptionRepository,
     ProjectCandidateProfileRepository,
+    ResumeDocumentRepository,
     ResumeAuthenticityReportRepository,
     ResumeProfileRepository,
 )
 from app.service.agent_run_service import AgentRunExecutor, AgentRunRecorder
+from app.service.agent_tools import build_interview_tool_planner, build_interview_tool_runtime
 from app.service.agent_runtime import AgentRuntimeConfig
 from app.service.assessment_agents import EvaluationAgent, GrowthReportAgent
 from app.service.candidate_growth_report_nodes import CandidateGrowthReportNodes
@@ -36,6 +44,8 @@ from app.service.interview_runtime_workflow import InterviewRuntimeWorkflow
 from app.service.post_interview_assessment_nodes import PostInterviewAssessmentNodes
 from app.service.post_interview_assessment_workflow import PostInterviewAssessmentWorkflow
 from app.service.preparation_service import PreparationService
+from app.service.retrieval_tools import LocalKnowledgeRetriever
+from app.service.rag_pipeline import HybridKnowledgeRetriever, KnowledgeIndexer
 from app.service.workflow_runtime import WorkflowRuntime
 from app.service.runtime_agents import (
     FirstQuestionAgentInput,
@@ -58,6 +68,8 @@ from app.service.llm_service import LLMService
 
 logger = logging.getLogger(__name__)
 
+MEMORY_REFRESH_ROUND_INTERVAL = 15
+
 
 class InterviewService:
     def __init__(self, db: Session):
@@ -69,22 +81,49 @@ class InterviewService:
         self.execution_repo = InterviewPlanExecutionRepository(db)
         self.agent_run_repo = AgentRunRepository(db)
         self.workflow_run_repo = WorkflowRunRepository(db)
+        self.knowledge_document_repo = KnowledgeDocumentRepository(db)
+        self.knowledge_chunk_repo = KnowledgeChunkRepository(db)
         self.execution_service = InterviewExecutionService(self.execution_repo)
         self.project_repo = PreparationProjectRepository(db)
         self.plan_repo = InterviewPlanRepository(db)
         self.growth_report_repo = CandidateGrowthReportRepository(db)
         self.jd_analysis_repo = JDAnalysisRepository(db)
+        self.job_description_repo = JobDescriptionRepository(db)
+        self.resume_document_repo = ResumeDocumentRepository(db)
         self.resume_profile_repo = ResumeProfileRepository(db)
         self.gap_analysis_repo = GapAnalysisRepository(db)
         self.project_candidate_profile_repo = ProjectCandidateProfileRepository(db)
         self.resume_authenticity_repo = ResumeAuthenticityReportRepository(db)
         self.llm = LLMService()
         self.evidence_builder = EvidencePacketBuilder()
+        self.knowledge_indexer = KnowledgeIndexer(
+            document_repo=self.knowledge_document_repo,
+            chunk_repo=self.knowledge_chunk_repo,
+        )
+        self.hybrid_knowledge_retriever = HybridKnowledgeRetriever(
+            chunk_repo=self.knowledge_chunk_repo,
+        )
+        self.knowledge_retriever = LocalKnowledgeRetriever(
+            message_repo=self.message_repo,
+            resume_profile_repo=self.resume_profile_repo,
+            jd_analysis_repo=self.jd_analysis_repo,
+            gap_analysis_repo=self.gap_analysis_repo,
+            project_candidate_profile_repo=self.project_candidate_profile_repo,
+            job_description_repo=self.job_description_repo,
+            resume_document_repo=self.resume_document_repo,
+            knowledge_indexer=self.knowledge_indexer,
+            hybrid_retriever=self.hybrid_knowledge_retriever,
+        )
+        self.tool_runtime = build_interview_tool_runtime(self.knowledge_retriever)
+        self.tool_planner = build_interview_tool_planner()
         self.agent_run_recorder = AgentRunRecorder(db)
         self.agent_run_executor = AgentRunExecutor(db, self.agent_run_recorder)
         self.interview_agent_spec_builder = InterviewAgentSpecBuilder(
             agent_run_executor=self.agent_run_executor,
             evidence_builder=self.evidence_builder,
+            retriever=self.knowledge_retriever,
+            tool_runtime=self.tool_runtime,
+            tool_planner=self.tool_planner,
         )
         self.evaluation_agent = EvaluationAgent(
             agent_run_executor=self.agent_run_executor,
@@ -103,23 +142,30 @@ class InterviewService:
             evidence_builder=self.evidence_builder,
             llm=self.llm,
             config=AgentRuntimeConfig(model_name=self.llm.model),
+            tool_runtime=self.tool_runtime,
+            tool_planner=self.tool_planner,
         )
         self.topic_judge_agent = TopicJudgeAgent(
             agent_run_executor=self.agent_run_executor,
             evidence_builder=self.evidence_builder,
             llm=self.llm,
             config=AgentRuntimeConfig(model_name=self.llm.model),
+            tool_runtime=self.tool_runtime,
+            tool_planner=self.tool_planner,
         )
         self.interview_executor_agent = InterviewExecutorAgent(
             agent_run_executor=self.agent_run_executor,
             evidence_builder=self.evidence_builder,
             llm=self.llm,
             config=AgentRuntimeConfig(model_name=self.llm.model),
+            tool_runtime=self.tool_runtime,
+            tool_planner=self.tool_planner,
         )
         self.runtime_nodes = InterviewRuntimeNodes(
             message_repo=self.message_repo,
             summary_repo=self.summary_repo,
             execution_repo=self.execution_repo,
+            session_repo=self.session_repo,
             plan_repo=self.plan_repo,
             execution_service=self.execution_service,
             topic_judge_agent=self.topic_judge_agent,
@@ -129,10 +175,7 @@ class InterviewService:
             logger_=logger,
         )
         self.workflow_runtime = WorkflowRuntime(self.workflow_run_repo)
-        self.runtime_workflow = InterviewRuntimeWorkflow(
-            self.runtime_nodes,
-            runtime=self.workflow_runtime,
-        )
+        self.runtime_workflow = self._build_runtime_workflow()
         self.assessment_nodes = PostInterviewAssessmentNodes(
             message_repo=self.message_repo,
             evaluation_repo=self.evaluation_repo,
@@ -238,10 +281,62 @@ class InterviewService:
         try:
             result = await self.runtime_workflow.resume_with_user_input(session, message)
         except Exception:
-            self.db.commit()
+            self.db.rollback()
             raise
         self.db.commit()
         return result.reply, result.round_no
+
+    async def chat_stream(self, session_uid: str, message: str):
+        queue: asyncio.Queue[dict | None] = asyncio.Queue()
+
+        def on_step(event: dict) -> None:
+            queue.put_nowait(event)
+
+        async def run_workflow() -> None:
+            try:
+                session = self._get_active_session(session_uid)
+                workflow = self._build_runtime_workflow(on_step=on_step)
+                result = await workflow.resume_with_user_input(session, message)
+            except Exception as exc:
+                self.db.rollback()
+                queue.put_nowait(
+                    {
+                        "event": "error",
+                        "message": str(exc),
+                        "errorType": exc.__class__.__name__,
+                    }
+                )
+            else:
+                self.db.commit()
+                queue.put_nowait(
+                    {
+                        "event": "done",
+                        "reply": result.reply,
+                        "roundNo": result.round_no,
+                        "answerMessageId": result.answer_message_id,
+                        "assistantMessageId": result.assistant_message_id,
+                        "status": result.state.get("status"),
+                        "workflowRunId": result.state.get("workflow_run_id"),
+                        "routeAfterAdvance": result.state.get("route_after_advance"),
+                    }
+                )
+            finally:
+                queue.put_nowait(None)
+
+        yield {
+            "event": "start",
+            "sessionId": session_uid,
+        }
+        task = asyncio.create_task(run_workflow())
+        try:
+            while True:
+                event = await queue.get()
+                if event is None:
+                    break
+                yield event
+        finally:
+            if not task.done():
+                task.cancel()
 
     async def end(self, session_uid: str) -> EvaluationResponse:
         session = self._get_session(session_uid)
@@ -389,6 +484,14 @@ class InterviewService:
         )
         return run_result.message_fields()
 
+    def _build_runtime_workflow(self, on_step=None) -> InterviewRuntimeWorkflow:
+        return InterviewRuntimeWorkflow(
+            self.runtime_nodes,
+            runtime=self.workflow_runtime,
+            commit_after_step=self.db.commit,
+            on_step=on_step,
+        )
+
     async def _generate_followup_with_run(
         self,
         session,
@@ -409,7 +512,7 @@ class InterviewService:
                 recent_history=recent_history,
                 candidate_profile=candidate_profile,
                 conversation_summary=conversation_summary,
-                plan_context=plan_context,
+                plan_context=None,
                 execution_context=execution_context,
                 candidate_profile_id=candidate_profile_id,
                 conversation_summary_id=conversation_summary_id,
@@ -441,13 +544,13 @@ class InterviewService:
         return run_result.message_fields()
 
     async def _refresh_memory_if_needed(self, session_id: int, latest_completed_round_no: int) -> None:
-        if latest_completed_round_no < 10:
+        if latest_completed_round_no < MEMORY_REFRESH_ROUND_INTERVAL:
             return
 
         latest_conversation = self.summary_repo.get_latest_by_session_id(session_id, "conversation")
         latest_profile = self.summary_repo.get_latest_by_session_id(session_id, "candidate_profile")
         profile_round = latest_profile.to_round_no if latest_profile else 0
-        if not latest_profile or latest_completed_round_no - profile_round >= 10:
+        if not latest_profile or latest_completed_round_no - profile_round >= MEMORY_REFRESH_ROUND_INTERVAL:
             profile_from_round_no = 1 if not latest_profile else latest_profile.to_round_no + 1
             profile_messages = self.message_repo.list_between_rounds(
                 session_id,
@@ -475,7 +578,7 @@ class InterviewService:
                     )
 
         last_summary_round = latest_conversation.to_round_no if latest_conversation else 0
-        if latest_conversation and latest_completed_round_no - last_summary_round < 5:
+        if latest_conversation and latest_completed_round_no - last_summary_round < MEMORY_REFRESH_ROUND_INTERVAL:
             return
 
         from_round_no = 1 if not latest_conversation else latest_conversation.to_round_no + 1

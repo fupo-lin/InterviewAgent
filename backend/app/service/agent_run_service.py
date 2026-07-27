@@ -1,12 +1,15 @@
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from time import perf_counter
 from typing import Any
 
 from app.models.agent import AgentEvidenceItem, AgentRun
 from app.service.agent_registry import AgentDefinitionValidator
+from app.service.agent_runtime_metrics import build_agent_runtime_metrics
 from app.service.evidence_contract import EvidencePacketValidator
 from app.service.prompt_contract import PromptContractValidator
 from app.service.prompt_registry import PromptDefinition, prompt_registry
+from app.service.tool_calling_result import tool_calling_trace
 from app.service.workflow_registry import WorkflowContextValidator
 
 
@@ -90,7 +93,9 @@ class AgentRunRecorder:
         model_name: str,
         evidence_refs: list[str] | None = None,
         context_refs: dict[str, Any] | None = None,
+        runtime_metrics: dict[str, Any] | None = None,
     ) -> AgentRun:
+        input_snapshot = self._with_runtime_metrics(input_snapshot, runtime_metrics)
         input_snapshot = self._with_contract_validation(
             definition=definition,
             input_snapshot=input_snapshot,
@@ -120,7 +125,9 @@ class AgentRunRecorder:
         model_name: str,
         evidence_refs: list[str] | None = None,
         context_refs: dict[str, Any] | None = None,
+        runtime_metrics: dict[str, Any] | None = None,
     ) -> AgentRun:
+        input_snapshot = self._with_runtime_metrics(input_snapshot, runtime_metrics)
         input_snapshot = self._with_contract_validation(
             definition=definition,
             input_snapshot=input_snapshot,
@@ -187,6 +194,18 @@ class AgentRunRecorder:
             evidence_refs=evidence_refs,
         )
         return item
+
+    def _with_runtime_metrics(
+        self,
+        input_snapshot: dict[str, Any],
+        runtime_metrics: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        if not runtime_metrics:
+            return input_snapshot
+        return {
+            **(input_snapshot or {}),
+            "runtime_metrics": runtime_metrics,
+        }
 
     def _with_contract_validation(
         self,
@@ -432,9 +451,16 @@ class AgentRunExecutor:
         output_snapshot: Callable[[Any], dict[str, Any]] | dict[str, Any] | None = None,
         commit_on_failure: bool = True,
     ) -> tuple[Any, dict | None, AgentRun]:
+        started = perf_counter()
         try:
             output, raw_response = await call()
         except Exception as exc:
+            runtime_metrics = build_agent_runtime_metrics(
+                raw_response=None,
+                latency_ms=self._elapsed_ms(started),
+                status="failed",
+                error=exc,
+            )
             self.recorder.record_failure(
                 definition=context.definition,
                 project_id=context.project_id,
@@ -444,11 +470,18 @@ class AgentRunExecutor:
                 evidence_refs=context.evidence_refs,
                 error=exc,
                 model_name=model_name,
+                runtime_metrics=runtime_metrics,
             )
             if commit_on_failure:
                 self.db.commit()
             raise
 
+        runtime_metrics = build_agent_runtime_metrics(
+            raw_response=raw_response,
+            latency_ms=self._elapsed_ms(started),
+            status="success",
+        )
+        self._merge_tool_calling_evidence(context, raw_response)
         agent_run = self.recorder.record_success(
             definition=context.definition,
             project_id=context.project_id,
@@ -459,8 +492,12 @@ class AgentRunExecutor:
             output_snapshot=self._output_snapshot(output, output_snapshot),
             raw_response=raw_response,
             model_name=model_name,
+            runtime_metrics=runtime_metrics,
         )
         return output, raw_response, agent_run
+
+    def _elapsed_ms(self, started: float) -> int:
+        return int((perf_counter() - started) * 1000)
 
     def _output_snapshot(
         self,
@@ -482,3 +519,103 @@ class AgentRunExecutor:
             if evidence_id and evidence_id not in refs:
                 refs.append(evidence_id)
         return refs
+
+    def _merge_tool_calling_evidence(
+        self,
+        context: AgentRunContext,
+        raw_response: dict | None,
+    ) -> None:
+        trace = tool_calling_trace(raw_response)
+        if not trace:
+            return
+        evidence_packet = context.input_snapshot.get("evidence_packet")
+        if not isinstance(evidence_packet, dict):
+            return
+
+        evidence_items = evidence_packet.setdefault("evidence_items", [])
+        if not isinstance(evidence_items, list):
+            return
+        existing_ids = {
+            item.get("evidence_id")
+            for item in evidence_items
+            if isinstance(item, dict) and item.get("evidence_id")
+        }
+        added = []
+        for trace_index, trace_item in enumerate(trace, start=1):
+            if not isinstance(trace_item, dict):
+                continue
+            tool_name = str(trace_item.get("tool_name") or "tool")
+            for output_index, output in enumerate(trace_item.get("outputs") or [], start=1):
+                if not isinstance(output, dict):
+                    continue
+                content = str(output.get("content") or "").strip()
+                if not content:
+                    continue
+                source_id = output.get("source_id")
+                evidence_id = self._tool_evidence_id(
+                    tool_name=tool_name,
+                    source_type=output.get("source_type"),
+                    source_id=source_id,
+                    trace_index=trace_index,
+                    output_index=output_index,
+                )
+                if evidence_id in existing_ids:
+                    continue
+                existing_ids.add(evidence_id)
+                item = {
+                    "evidence_id": evidence_id,
+                    "evidence_type": "retrieved_knowledge",
+                    "source_type": "knowledge_source",
+                    "source_id": source_id,
+                    "project_id": context.project_id,
+                    "session_id": context.session_id,
+                    "content_excerpt": content[:300],
+                    "tags": ["tool_calling", tool_name],
+                    "confidence": "retrieved",
+                    "metadata": {
+                        **(output.get("metadata") or {}),
+                        "tool_name": tool_name,
+                        "tool_call_id": trace_item.get("tool_call_id"),
+                        "tool_arguments": trace_item.get("arguments") or {},
+                        "retrieval_source_type": output.get("source_type"),
+                        "score": output.get("score", 0.0),
+                    },
+                }
+                evidence_items.append(item)
+                added.append(evidence_id)
+
+        if not added:
+            return
+        for evidence_id in added:
+            if evidence_id not in context.evidence_refs:
+                context.evidence_refs.append(evidence_id)
+        context.input_snapshot["evidence_packet_validation"] = (
+            EvidencePacketValidator().validate(evidence_packet).to_dict()
+        )
+
+    def _tool_evidence_id(
+        self,
+        *,
+        tool_name: str,
+        source_type,
+        source_id,
+        trace_index: int,
+        output_index: int,
+    ) -> str:
+        parts = [
+            "tool",
+            self._evidence_id_part(tool_name),
+            self._evidence_id_part(source_type or "source"),
+            self._evidence_id_part(source_id or f"{trace_index}_{output_index}"),
+        ]
+        return "_".join(parts)
+
+    def _evidence_id_part(self, value) -> str:
+        text = str(value)
+        cleaned = []
+        for char in text:
+            if char.isalnum():
+                cleaned.append(char.lower())
+            else:
+                cleaned.append("_")
+        return "".join(cleaned).strip("_") or "unknown"

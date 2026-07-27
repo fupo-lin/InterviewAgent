@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from inspect import Parameter, signature
 
 from app.schemas.agent_contract import (
     InterviewExecutorInputV1,
@@ -11,6 +12,7 @@ from app.schemas.agent_contract import (
 from app.service.agent_run_service import AgentRunExecutor, AgentSpec
 from app.service.agent_runtime import AgentRuntimeConfig, BaseAgent
 from app.service.evidence_service import EvidencePacketBuilder
+from app.service.agent_tools import ToolExecutionContext
 from app.service.interview_agent_spec_builder import InterviewAgentSpecBuilder
 from app.service.llm_service import LLMService
 
@@ -47,6 +49,7 @@ class FollowupAgentInput:
     conversation_summary_id: int | None = None
     execution: object | None = None
     workflow_run_id: str | None = None
+    open_threads: list[dict] | None = None
 
 
 @dataclass(frozen=True)
@@ -66,13 +69,88 @@ class _InterviewSpecAgent(BaseAgent):
         evidence_builder: EvidencePacketBuilder,
         llm: LLMService,
         config: AgentRuntimeConfig,
+        retriever=None,
+        tool_runtime=None,
+        tool_planner=None,
     ) -> None:
         super().__init__(agent_run_executor, config)
         self.llm = llm
+        self.tool_runtime = tool_runtime
+        self.tool_planner = tool_planner
         self.spec_builder = InterviewAgentSpecBuilder(
             agent_run_executor=agent_run_executor,
             evidence_builder=evidence_builder,
+            retriever=retriever,
+            tool_runtime=tool_runtime,
+            tool_planner=tool_planner,
         )
+
+    async def _call_with_optional_context(
+        self,
+        method,
+        *args,
+        retrieved_evidence_context: str | None = None,
+        open_threads: list[dict] | None = None,
+        **kwargs,
+    ):
+        method_signature = signature(method)
+        parameters = method_signature.parameters
+        accepts_kwargs = any(
+            parameter.kind == Parameter.VAR_KEYWORD
+            for parameter in parameters.values()
+        )
+        if retrieved_evidence_context and (
+            accepts_kwargs or "retrieved_evidence_context" in parameters
+        ):
+            kwargs["retrieved_evidence_context"] = retrieved_evidence_context
+        if open_threads and (accepts_kwargs or "open_threads" in parameters):
+            kwargs["open_threads"] = open_threads
+        return await method(*args, **kwargs)
+
+    def _retrieved_evidence_context(self, spec: AgentSpec) -> str | None:
+        packet = spec.evidence_packet or {}
+        items = [
+            item
+            for item in packet.get("evidence_items") or []
+            if item.get("evidence_type") == "retrieved_knowledge"
+        ]
+        if not items:
+            return None
+        lines = ["RelevantRetrievedEvidence:"]
+        for item in items[:5]:
+            lines.append(
+                "- "
+                f"{item.get('source_type') or ''}: "
+                f"{item.get('content_excerpt') or ''}"
+            )
+        return "\n".join(lines)
+
+    def _allowed_tool_names(
+        self,
+        *,
+        task_name: str,
+        project_id: int | None,
+    ) -> tuple[str, ...]:
+        if self.tool_planner and hasattr(self.tool_planner, "allowed_tool_names"):
+            return self.tool_planner.allowed_tool_names(task_name, project_id)
+        if self.tool_runtime:
+            return tuple(
+                definition.name
+                for definition in self.tool_runtime.registry.all()
+            )
+        return ()
+
+    def _remember_tool_calling_trace(
+        self,
+        spec: AgentSpec,
+        raw_response: dict | None,
+    ) -> None:
+        trace = ((raw_response or {}).get("tool_calling") or {}).get("trace")
+        if trace is None:
+            return
+        snapshot_trace = spec.input_snapshot.get("tool_calling_trace")
+        if isinstance(snapshot_trace, list):
+            snapshot_trace.extend(trace)
 
 
 class SessionMemoryAgent(_InterviewSpecAgent):
@@ -203,7 +281,34 @@ class InterviewExecutorAgent(_InterviewSpecAgent):
                 agent_input.role_name,
                 plan_context=agent_input.plan_context,
             )
-        return await self.llm.generate_followup(
+        tool_calling = getattr(self.llm, "generate_followup_with_tool_calling", None)
+        if self.tool_runtime and callable(tool_calling):
+            content, raw_response = await tool_calling(
+                agent_input.session.role_name,
+                agent_input.answer_message.content,
+                agent_input.recent_history,
+                tool_runtime=self.tool_runtime,
+                tool_context=ToolExecutionContext(
+                    session=agent_input.session,
+                    answer_message=agent_input.answer_message,
+                    current_section=self._current_section(agent_input.execution),
+                    execution=agent_input.execution,
+                ),
+                allowed_tool_names=self._allowed_tool_names(
+                    task_name="followup_generation",
+                    project_id=agent_input.session.project_id,
+                ),
+                candidate_profile=agent_input.candidate_profile,
+                conversation_summary=agent_input.conversation_summary,
+                plan_context=agent_input.plan_context,
+                execution_context=agent_input.execution_context,
+                retrieved_evidence_context=self._retrieved_evidence_context(spec),
+                open_threads=agent_input.open_threads,
+            )
+            self._remember_tool_calling_trace(spec, raw_response)
+            return content, raw_response
+        return await self._call_with_optional_context(
+            self.llm.generate_followup,
             agent_input.session.role_name,
             agent_input.answer_message.content,
             agent_input.recent_history,
@@ -211,7 +316,19 @@ class InterviewExecutorAgent(_InterviewSpecAgent):
             conversation_summary=agent_input.conversation_summary,
             plan_context=agent_input.plan_context,
             execution_context=agent_input.execution_context,
+            retrieved_evidence_context=self._retrieved_evidence_context(spec),
+            open_threads=agent_input.open_threads,
         )
+
+    def _current_section(self, execution) -> dict | None:
+        if not execution:
+            return None
+        state = execution.state or {}
+        sections = state.get("sections") or []
+        index = int(getattr(execution, "current_section_index", 0) or 0)
+        if 0 <= index < len(sections):
+            return sections[index]
+        return None
 
 
 class TopicJudgeAgent(_InterviewSpecAgent):
@@ -253,9 +370,33 @@ class TopicJudgeAgent(_InterviewSpecAgent):
         agent_input: TopicJudgeAgentInput,
         spec: AgentSpec,
     ) -> tuple[dict, dict | None]:
-        return await self.llm.judge_topic_completion(
+        tool_calling = getattr(self.llm, "judge_topic_completion_with_tool_calling", None)
+        if self.tool_runtime and callable(tool_calling):
+            output, raw_response = await tool_calling(
+                current_section=agent_input.current_section,
+                execution_state=agent_input.execution.state or {},
+                user_answer=agent_input.answer_message.content,
+                recent_history=agent_input.recent_history,
+                tool_runtime=self.tool_runtime,
+                tool_context=ToolExecutionContext(
+                    session=agent_input.session,
+                    answer_message=agent_input.answer_message,
+                    current_section=agent_input.current_section,
+                    execution=agent_input.execution,
+                ),
+                allowed_tool_names=self._allowed_tool_names(
+                    task_name="topic_completion_judge",
+                    project_id=agent_input.session.project_id,
+                ),
+                retrieved_evidence_context=self._retrieved_evidence_context(spec),
+            )
+            self._remember_tool_calling_trace(spec, raw_response)
+            return output, raw_response
+        return await self._call_with_optional_context(
+            self.llm.judge_topic_completion,
             current_section=agent_input.current_section,
             execution_state=agent_input.execution.state or {},
             user_answer=agent_input.answer_message.content,
             recent_history=agent_input.recent_history,
+            retrieved_evidence_context=self._retrieved_evidence_context(spec),
         )

@@ -62,6 +62,24 @@ def _install_model_stubs() -> None:
     sys.modules["app.models.workflow"] = workflow_module
     setattr(sys.modules["app.models"], "WorkflowRun", WorkflowRun)
 
+    knowledge_module = ModuleType("app.models.knowledge")
+
+    class KnowledgeDocument:
+        def __init__(self, **kwargs):
+            for key, value in kwargs.items():
+                setattr(self, key, value)
+
+    class KnowledgeChunk:
+        def __init__(self, **kwargs):
+            for key, value in kwargs.items():
+                setattr(self, key, value)
+
+    knowledge_module.KnowledgeDocument = KnowledgeDocument
+    knowledge_module.KnowledgeChunk = KnowledgeChunk
+    sys.modules["app.models.knowledge"] = knowledge_module
+    setattr(sys.modules["app.models"], "KnowledgeDocument", KnowledgeDocument)
+    setattr(sys.modules["app.models"], "KnowledgeChunk", KnowledgeChunk)
+
     interview_module = ModuleType("app.models.interview")
 
     class InterviewMessage:

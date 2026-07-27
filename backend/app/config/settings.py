@@ -21,9 +21,18 @@ class Settings(BaseSettings):
     db_password: str = ""
     db_name: str = "interview_agent"
 
-    glm_api_key: str = ""
-    glm_api_base: str = "https://open.bigmodel.cn/api/paas/v4"
-    glm_model: str = "glm-4"
+    llm_api_key: str = ""
+    llm_api_base: str = ""
+    llm_model: str = ""
+    llm_timeout_seconds: float = Field(default=180.0, alias="LLM_TIMEOUT_SECONDS")
+    workflow_step_timeout_seconds: float = Field(
+        default=120.0,
+        alias="WORKFLOW_STEP_TIMEOUT_SECONDS",
+    )
+    workflow_step_max_attempts: int = Field(
+        default=2,
+        alias="WORKFLOW_STEP_MAX_ATTEMPTS",
+    )
     use_langgraph_interview_runtime: bool = Field(
         default=True,
         alias="USE_LANGGRAPH_INTERVIEW_RUNTIME",
