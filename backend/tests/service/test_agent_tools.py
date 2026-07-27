@@ -104,6 +104,30 @@ class AgentToolsTest(unittest.TestCase):
         self.assertEqual(result.error_message, "boom")
         self.assertEqual(result.outputs, [])
 
+    def test_tool_runtime_rejects_tools_not_allowed_for_node(self):
+        runtime = build_interview_tool_runtime(FakeRetriever())
+
+        result = runtime.execute_one(
+            ToolCall(tool_name="search_technology", query="Redis"),
+            ToolExecutionContext(session=SimpleNamespace(id=10, project_id=20)),
+            allowed_tool_names=("get_previous_answer",),
+        )
+
+        self.assertEqual(result.status, "failed")
+        self.assertIn("Tool not allowed", result.error_message)
+
+    def test_tool_runtime_clamps_integer_arguments_from_schema(self):
+        runtime = build_interview_tool_runtime(FakeRetriever())
+
+        result = runtime.execute_one(
+            ToolCall(tool_name="get_previous_answer", query="Redis", args={"limit": 999}),
+            ToolExecutionContext(session=SimpleNamespace(id=10, project_id=20)),
+            allowed_tool_names=("get_previous_answer",),
+        )
+
+        self.assertEqual(result.status, "success")
+        self.assertEqual(result.outputs[0].metadata["tool_name"], "get_previous_answer")
+
     def test_interview_tool_runtime_registers_core_rag_tools(self):
         runtime = build_interview_tool_runtime(FakeRetriever())
         context = ToolExecutionContext(session=SimpleNamespace(id=10, project_id=20))

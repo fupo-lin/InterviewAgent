@@ -34,7 +34,7 @@ class Settings(BaseSettings):
         alias="WORKFLOW_STEP_MAX_ATTEMPTS",
     )
     use_langgraph_interview_runtime: bool = Field(
-        default=False,
+        default=True,
         alias="USE_LANGGRAPH_INTERVIEW_RUNTIME",
     )
 

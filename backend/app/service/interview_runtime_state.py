@@ -23,6 +23,9 @@ class InterviewRuntimeState(TypedDict, total=False):
     next_action: str | None
     route_after_advance: str | None
     route_after_advance_reason: str | None
+    runtime_decision: dict | None
+    open_threads: list[dict]
+    memory_refs: dict
     incoming_user_input: str | None
     expected_user_round_no: int | None
     last_user_message_id: int | None
@@ -48,3 +51,5 @@ class RuntimeContext:
     conversation_summary: Any | None
     plan_context: str | None
     execution_context: str | None
+    open_threads: list[dict] | None = None
+    retrieved_evidence_context: str | None = None

@@ -7,7 +7,9 @@ configure_backend_imports()
 
 from app.service.agent_run_service import AgentRunExecutor
 from app.service.agent_runtime import AgentRuntimeConfig
+from app.service.agent_tools import ToolDefinition, ToolRegistry, ToolRuntime
 from app.service.evidence_service import EvidencePacketBuilder
+from app.service.retrieval_contract import RetrievedKnowledge
 from app.service.runtime_agents import (
     FirstQuestionAgentInput,
     FollowupAgentInput,
@@ -84,6 +86,88 @@ class FakeLLM:
             "covered_probe_points": ["idempotency"],
             "next_action": "move_next_section",
         }, {"raw": "topic_judge"}
+
+
+class FakeToolCallingLLM(FakeLLM):
+    async def generate_followup_with_tool_calling(
+        self,
+        role_name,
+        user_answer,
+        history,
+        *,
+        tool_runtime,
+        tool_context,
+        allowed_tool_names=None,
+        candidate_profile=None,
+        conversation_summary=None,
+        plan_context=None,
+        execution_context=None,
+        retrieved_evidence_context=None,
+        open_threads=None,
+    ):
+        self.followup_calls.append(
+            {
+                "role_name": role_name,
+                "user_answer": user_answer,
+                "history": history,
+                "allowed_tool_names": tuple(allowed_tool_names or ()),
+                "open_threads": open_threads,
+            }
+        )
+        return "tool-aware followup", {
+            "tool_calling": {
+                "mode": "model_driven",
+                "trace": [
+                    {
+                        "tool_name": "get_previous_answer",
+                        "arguments": {"query": user_answer},
+                        "result": {"status": "success"},
+                    }
+                ],
+            }
+        }
+
+    async def judge_topic_completion_with_tool_calling(
+        self,
+        *,
+        current_section,
+        execution_state,
+        user_answer,
+        recent_history,
+        tool_runtime,
+        tool_context,
+        allowed_tool_names=None,
+        retrieved_evidence_context=None,
+    ):
+        self.topic_judge_calls.append(
+            {
+                "current_section": current_section,
+                "execution_state": execution_state,
+                "user_answer": user_answer,
+                "recent_history": recent_history,
+                "allowed_tool_names": tuple(allowed_tool_names or ()),
+                "retrieved_evidence_context": retrieved_evidence_context,
+            }
+        )
+        return {
+            "topic_status": "partial",
+            "answer_quality": "medium",
+            "covered_probe_points": ["idempotency"],
+            "missing_probe_points": ["failure recovery"],
+            "next_action": "continue_current_topic",
+            "reason": "needs one follow-up",
+        }, {
+            "tool_calling": {
+                "mode": "model_driven",
+                "trace": [
+                    {
+                        "tool_name": "get_previous_answer",
+                        "arguments": {"query": user_answer},
+                        "result": {"status": "success"},
+                    }
+                ],
+            }
+        }
 
 
 def message(
@@ -234,6 +318,60 @@ class RuntimeAgentTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assert_contract_ok(success, "InterviewExecutorInputV1", "InterviewQuestionOutputV1")
 
+    async def test_followup_agent_prefers_model_driven_tool_calling_when_runtime_available(self):
+        registry = ToolRegistry()
+        registry.register(
+            ToolDefinition(
+                name="get_previous_answer",
+                description="Retrieve previous answers.",
+                handler=lambda context, call: [
+                    RetrievedKnowledge(
+                        source_name="previous",
+                        source_type="interview_message",
+                        source_id=1,
+                        content=call.query or "",
+                    )
+                ],
+            )
+        )
+        tool_runtime = ToolRuntime(registry)
+        llm = FakeToolCallingLLM()
+        agent = InterviewExecutorAgent(
+            self.executor,
+            self.evidence_builder,
+            llm,
+            AgentRuntimeConfig(model_name=llm.model),
+            tool_runtime=tool_runtime,
+        )
+        session = SimpleNamespace(
+            id=10,
+            project_id=1,
+            role_name="Backend Engineer",
+            interview_plan_id=20,
+        )
+        answer_message = message(104, "I handled retry and idempotency.", round_no=6)
+
+        result = await agent.run(
+            FollowupAgentInput(
+                session=session,
+                answer_message=answer_message,
+                recent_history=[answer_message],
+                execution=SimpleNamespace(id=30, current_section_index=0, state={"sections": []}),
+                open_threads=[{"status": "open", "highlight": "retry"}],
+            )
+        )
+
+        self.assertEqual(result.output, "tool-aware followup")
+        self.assertEqual(llm.followup_calls[0]["allowed_tool_names"], ("get_previous_answer",))
+        self.assertEqual(llm.followup_calls[0]["open_threads"][0]["highlight"], "retry")
+        success = self.recorder.success_calls[0]
+        self.assertEqual(success["input_snapshot"]["tool_calling_mode"], "model_driven")
+        self.assertEqual(success["input_snapshot"]["tool_calls"], [])
+        self.assertEqual(
+            success["input_snapshot"]["tool_calling_trace"][0]["tool_name"],
+            "get_previous_answer",
+        )
+
     async def test_session_memory_agent_generates_candidate_profile_memory(self):
         agent = SessionMemoryAgent(self.executor, self.evidence_builder, self.llm, self.config)
         session = SimpleNamespace(id=10, project_id=1)
@@ -357,6 +495,65 @@ class RuntimeAgentTest(unittest.IsolatedAsyncioTestCase):
             "interview_runtime_live_1",
         )
         self.assert_contract_ok(success, "TopicJudgeInputV1", "TopicJudgeResultV1")
+
+    async def test_topic_judge_agent_prefers_model_driven_tool_calling_when_runtime_available(self):
+        registry = ToolRegistry()
+        registry.register(
+            ToolDefinition(
+                name="get_previous_answer",
+                description="Retrieve previous answers.",
+                handler=lambda context, call: [
+                    RetrievedKnowledge(
+                        source_name="previous",
+                        source_type="interview_message",
+                        source_id=1,
+                        content=call.query or "",
+                    )
+                ],
+            )
+        )
+        tool_runtime = ToolRuntime(registry)
+        llm = FakeToolCallingLLM()
+        agent = TopicJudgeAgent(
+            self.executor,
+            self.evidence_builder,
+            llm,
+            AgentRuntimeConfig(model_name=llm.model),
+            tool_runtime=tool_runtime,
+        )
+        session = SimpleNamespace(id=10, project_id=1, interview_plan_id=20)
+        execution = SimpleNamespace(
+            id=30,
+            state={"next_action": {"type": "continue_current_topic"}},
+        )
+        current_section = {
+            "section_key": "tech_foundation",
+            "completed_rounds": 1,
+            "target_rounds": 2,
+            "probe_points": ["idempotency", "failure recovery"],
+            "uncovered_probe_points": ["failure recovery"],
+        }
+        answer_message = message(103, "I used idempotency keys.", round_no=5)
+
+        result = await agent.run(
+            TopicJudgeAgentInput(
+                session=session,
+                execution=execution,
+                current_section=current_section,
+                answer_message=answer_message,
+                recent_history=[answer_message],
+            )
+        )
+
+        self.assertEqual(result.output["topic_status"], "partial")
+        self.assertEqual(llm.topic_judge_calls[0]["allowed_tool_names"], ("get_previous_answer",))
+        success = self.recorder.success_calls[0]
+        self.assertEqual(success["input_snapshot"]["tool_calling_mode"], "model_driven")
+        self.assertEqual(success["input_snapshot"]["tool_calls"], [])
+        self.assertEqual(
+            success["input_snapshot"]["tool_calling_trace"][0]["tool_name"],
+            "get_previous_answer",
+        )
 
     async def test_followup_agent_records_input_contract_errors(self):
         agent = InterviewExecutorAgent(self.executor, self.evidence_builder, self.llm, self.config)

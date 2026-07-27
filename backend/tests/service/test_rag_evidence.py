@@ -76,7 +76,7 @@ class RagEvidenceTest(unittest.TestCase):
         evidence_types = [item["evidence_type"] for item in packet["evidence_items"]]
         self.assertIn("retrieved_knowledge", evidence_types)
 
-    def test_followup_spec_records_tool_decision_and_rag_evidence(self):
+    def test_followup_spec_records_model_driven_tool_boundary(self):
         retriever = LocalKnowledgeRetriever(
             message_repo=FakeMessageRepo(),
             resume_profile_repo=FakeArtifactRepo(
@@ -111,12 +111,13 @@ class RagEvidenceTest(unittest.TestCase):
             recent_history=[],
         )
 
-        self.assertIn("tool_calls", spec.input_snapshot)
-        self.assertIn("tool_results", spec.input_snapshot)
+        self.assertEqual(spec.input_snapshot["tool_calling_mode"], "model_driven")
+        self.assertEqual(spec.input_snapshot["tool_calls"], [])
+        self.assertEqual(spec.input_snapshot["tool_results"], [])
+        self.assertEqual(spec.input_snapshot["tool_calling_trace"], [])
         self.assertIn("get_previous_answer", spec.context_refs["tool_names"])
-        self.assertGreater(spec.input_snapshot["retrieved_knowledge_count"], 0)
-        self.assertEqual(spec.input_snapshot["tool_results"][0]["status"], "success")
-        self.assertTrue(
+        self.assertEqual(spec.input_snapshot["retrieved_knowledge_count"], 0)
+        self.assertFalse(
             any(
                 item["evidence_type"] == "retrieved_knowledge"
                 for item in spec.evidence_packet["evidence_items"]

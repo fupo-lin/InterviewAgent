@@ -15,6 +15,7 @@ from app.schemas.workflow_run import (
 )
 from app.service.agent_run_query_service import AgentRunQueryService
 from app.service.workflow_registry import WorkflowDefinition, WorkflowRegistry, workflow_registry
+from app.service.workflow_step_metrics import step_metrics_summary
 
 
 class WorkflowRunQueryService:
@@ -77,6 +78,7 @@ class WorkflowRunQueryService:
         workflow_run = self.workflow_repo.get_by_workflow_run_id(workflow_run_id)
         if workflow_run:
             summary = self._summary_from_workflow_run(workflow_run)
+            state = workflow_run.state or {}
             runs = self._groups(workflow_run_id=workflow_run_id, limit=1000).get(
                 workflow_run_id,
                 [],
@@ -88,7 +90,9 @@ class WorkflowRunQueryService:
                 **summary.model_dump(),
                 steps=self._step_summaries(definition, agent_run_items, workflow_run),
                 agentRuns=agent_run_items,
-                state=workflow_run.state or {},
+                stepMetricsSummary=step_metrics_summary(state),
+                stepMetrics=self._step_metrics(state),
+                state=state,
                 lastError=workflow_run.last_error,
             )
 
@@ -104,6 +108,8 @@ class WorkflowRunQueryService:
             **summary.model_dump(),
             steps=self._step_summaries(definition, agent_run_items),
             agentRuns=agent_run_items,
+            stepMetricsSummary=step_metrics_summary({}),
+            stepMetrics=[],
         )
 
     def _groups(
@@ -255,6 +261,13 @@ class WorkflowRunQueryService:
         if any(item.status != "success" for item in step_runs):
             return "failed"
         return "success"
+
+    def _step_metrics(self, state: dict[str, Any]) -> list[dict[str, Any]]:
+        return [
+            item
+            for item in state.get("step_metrics") or []
+            if isinstance(item, dict)
+        ]
 
     def _status(self, failed_steps: list[str], missing_required_steps: list[str]) -> str:
         if failed_steps:

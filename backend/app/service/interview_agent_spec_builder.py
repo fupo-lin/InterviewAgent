@@ -110,18 +110,23 @@ class InterviewAgentSpecBuilder:
     ) -> AgentSpec:
         prompt_id = "followup"
         definition = self.agent_run_executor.definition(prompt_id)
-        tool_calls = self._plan_tools(
-            task_name=definition.task,
-            session=session,
-            answer_message=answer_message,
-            execution=execution,
-        )
-        tool_results = self._run_tools(
-            session=session,
-            answer_message=answer_message,
-            tool_calls=tool_calls,
-        )
+        use_model_driven_tools = self._use_model_driven_tool_calling(definition.task)
+        tool_calls = []
+        tool_results = []
+        if not use_model_driven_tools:
+            tool_calls = self._plan_tools(
+                task_name=definition.task,
+                session=session,
+                answer_message=answer_message,
+                execution=execution,
+            )
+            tool_results = self._run_tools(
+                session=session,
+                answer_message=answer_message,
+                tool_calls=tool_calls,
+            )
         retrieved_knowledge = self._tool_outputs(tool_results)
+        tool_calling_trace: list[dict] = []
         evidence_packet = self.evidence_builder.build_question_generation_packet(
             task=definition.task,
             session_id=session.id,
@@ -148,6 +153,13 @@ class InterviewAgentSpecBuilder:
                 "has_execution_context": bool(execution_context),
                 "tool_calls": [item.to_dict() for item in tool_calls],
                 "tool_results": self._tool_result_snapshots(tool_results),
+                "tool_calling_mode": "model_driven"
+                if use_model_driven_tools
+                else "code_planned",
+                "available_tool_names": list(
+                    self._allowed_tool_names(definition.task, session.project_id)
+                ),
+                "tool_calling_trace": tool_calling_trace,
                 "retrieved_knowledge_count": len(retrieved_knowledge),
             },
             context_refs={
@@ -156,7 +168,11 @@ class InterviewAgentSpecBuilder:
                 "interview_plan_id": session.interview_plan_id,
                 "execution_id": execution.id if execution else None,
                 "answer_message_id": answer_message.id,
-                "tool_names": [item.tool_name for item in tool_calls],
+                "tool_names": list(
+                    self._allowed_tool_names(definition.task, session.project_id)
+                )
+                if use_model_driven_tools
+                else [item.tool_name for item in tool_calls],
             },
             evidence_packet=evidence_packet,
             workflow_context=self._workflow_context(
@@ -221,19 +237,25 @@ class InterviewAgentSpecBuilder:
         recent_history: list,
         workflow_run_id: str | None = None,
     ) -> AgentSpec:
-        tool_calls = self._plan_tools(
-            task_name="topic_completion_judge",
-            session=session,
-            answer_message=answer_message,
-            current_section=current_section,
-            execution=execution,
-        )
-        tool_results = self._run_tools(
-            session=session,
-            answer_message=answer_message,
-            tool_calls=tool_calls,
-        )
+        task_name = "topic_completion_judge"
+        use_model_driven_tools = self._use_model_driven_tool_calling(task_name)
+        tool_calls = []
+        tool_results = []
+        if not use_model_driven_tools:
+            tool_calls = self._plan_tools(
+                task_name=task_name,
+                session=session,
+                answer_message=answer_message,
+                current_section=current_section,
+                execution=execution,
+            )
+            tool_results = self._run_tools(
+                session=session,
+                answer_message=answer_message,
+                tool_calls=tool_calls,
+            )
         retrieved_knowledge = self._tool_outputs(tool_results)
+        tool_calling_trace: list[dict] = []
         evidence_packet = self.evidence_builder.build_topic_judge_packet(
             session_id=session.id,
             project_id=session.project_id,
@@ -262,6 +284,13 @@ class InterviewAgentSpecBuilder:
                 "recent_history_count": len(recent_history or []),
                 "tool_calls": [item.to_dict() for item in tool_calls],
                 "tool_results": self._tool_result_snapshots(tool_results),
+                "tool_calling_mode": "model_driven"
+                if use_model_driven_tools
+                else "code_planned",
+                "available_tool_names": list(
+                    self._allowed_tool_names(task_name, session.project_id)
+                ),
+                "tool_calling_trace": tool_calling_trace,
                 "retrieved_knowledge_count": len(retrieved_knowledge),
             },
             context_refs={
@@ -269,7 +298,11 @@ class InterviewAgentSpecBuilder:
                 "execution_id": execution.id,
                 "answer_message_id": answer_message.id,
                 "current_section_key": current_section.get("section_key"),
-                "tool_names": [item.tool_name for item in tool_calls],
+                "tool_names": list(
+                    self._allowed_tool_names(task_name, session.project_id)
+                )
+                if use_model_driven_tools
+                else [item.tool_name for item in tool_calls],
             },
             evidence_packet=evidence_packet,
             workflow_context=self._workflow_context(
@@ -342,6 +375,23 @@ class InterviewAgentSpecBuilder:
                 calls.append(ToolCall(tool_name="search_technology", query=answer_message.content))
             return calls
         return []
+
+    def _use_model_driven_tool_calling(self, task_name: str) -> bool:
+        return bool(
+            self.tool_runtime
+            and task_name in {"followup_generation", "topic_completion_judge"}
+        )
+
+    def _allowed_tool_names(
+        self,
+        task_name: str,
+        project_id: int | None,
+    ) -> tuple[str, ...]:
+        if self.tool_planner and hasattr(self.tool_planner, "allowed_tool_names"):
+            return self.tool_planner.allowed_tool_names(task_name, project_id)
+        if self.tool_runtime:
+            return tuple(definition.name for definition in self.tool_runtime.registry.all())
+        return ()
 
     def _run_tools(
         self,

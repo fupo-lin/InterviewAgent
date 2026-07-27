@@ -226,6 +226,37 @@ class FailingTopicJudgeAgent:
         raise RuntimeError("judge unavailable")
 
 
+class StructuredMemoryTopicJudgeAgent:
+    async def run(self, agent_input):
+        return SimpleNamespace(
+            output={
+                "next_action": "continue_current_topic",
+                "answer_quality": "high",
+                "technical_highlights": [
+                    {
+                        "highlight": "candidate used idempotency keys",
+                        "related_probe_point": "idempotency",
+                        "missing_followup": "ask retry failure handling",
+                        "priority": "high",
+                        "confidence": "medium",
+                    }
+                ],
+                "risk_signals": [
+                    {
+                        "content": "no latency metric was provided",
+                        "probe_point": "metrics",
+                        "suggestion": "ask for latency and failure rate",
+                        "priority": "medium",
+                    }
+                ],
+            },
+            raw_response={"raw": "judge"},
+            agent_run=SimpleNamespace(id=777),
+            output_schema="TopicJudgeResult.v1",
+            evidence_refs=["interview_answer_100"],
+        )
+
+
 class FakeSessionMemoryAgent:
     def __init__(self) -> None:
         self.calls = []
@@ -310,6 +341,10 @@ class InterviewRuntimeNodesTest(unittest.IsolatedAsyncioTestCase):
         )
         self.nodes.logger.disabled = True
 
+    def test_runtime_workflow_rejects_sequential_fallback(self):
+        with self.assertRaisesRegex(ValueError, "LangGraph-only"):
+            InterviewRuntimeWorkflow(self.nodes, use_langgraph=False)
+
     async def test_chat_nodes_preserve_runtime_flow(self):
         state = self.nodes.initial_chat_state(self.session, "candidate answer")
         self.execution.state = {
@@ -373,7 +408,11 @@ class InterviewRuntimeNodesTest(unittest.IsolatedAsyncioTestCase):
             self.execution.state["sections"][0]["evidence"][-1]["topic_judge_agent_run_id"],
             501,
         )
-        self.assertEqual(len(self.nodes.execution_repo.save_calls), 1)
+        self.assertEqual(len(self.nodes.execution_repo.save_calls), 2)
+        self.assertEqual(
+            self.execution.state["memory_refs"]["agent_run_ids"],
+            [501, 601],
+        )
         self.assertEqual(fields["content"], "followup question")
         self.assertEqual(assistant.content, "followup question")
         self.assertEqual(assistant.round_no, 4)
@@ -383,8 +422,11 @@ class InterviewRuntimeNodesTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("save_user_answer", state["completed_steps"])
         self.assertIn("save_assistant_message", state["completed_steps"])
         self.assertEqual(len(self.message_repo.created), 2)
-        self.assertEqual(followup_context.plan_context, None)
-        self.assertEqual(self.interview_executor_agent.calls[0].plan_context, None)
+        self.assertIn("InterviewPlan mode: jd_resume", followup_context.plan_context)
+        self.assertIn(
+            "InterviewPlan mode: jd_resume",
+            self.interview_executor_agent.calls[0].plan_context,
+        )
         self.assertEqual(followup_context.execution_context, "execution context")
         self.assertEqual(self.message_repo.recent_rounds[-1], 4)
 
@@ -470,6 +512,132 @@ class InterviewRuntimeNodesTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(judge_result)
         self.assertIn("topic_judge", state["failed_steps"])
         self.assertEqual(state["last_error"]["step_id"], "topic_judge")
+
+    async def test_runtime_context_restores_open_threads_from_execution_state(self):
+        self.execution.state = {
+            "next_action": {"type": "continue_current_topic"},
+            "open_threads": [
+                {
+                    "id": "thread-persisted",
+                    "source_message_id": 100,
+                    "round_no": 3,
+                    "section_key": "system_design",
+                    "probe_point": "idempotency",
+                    "highlight": "candidate mentioned idempotency",
+                    "missing_detail": "ask retry failure handling",
+                    "priority": "high",
+                    "status": "open",
+                }
+            ],
+            "memory_refs": {"conversation_summary_id": 902},
+        }
+        state = self.nodes.initial_chat_state(self.session, "candidate answer")
+
+        context = self.nodes.load_runtime_context_node(state, self.session)
+
+        self.assertEqual(state["open_threads"][0]["id"], "thread-persisted")
+        self.assertEqual(state["open_threads"][0]["memory_type"], "open_followup")
+        self.assertEqual(
+            state["open_threads"][0]["content"],
+            "candidate mentioned idempotency",
+        )
+        self.assertEqual(context.open_threads[0]["id"], "thread-persisted")
+        self.assertIn("OpenFollowupThreads:", context.execution_context)
+        self.assertIn("candidate mentioned idempotency", context.execution_context)
+        self.assertEqual(state["memory_refs"]["conversation_summary_id"], None)
+        self.assertEqual(state["memory_refs"]["execution_id"], 40)
+
+    async def test_topic_judge_normalizes_structured_memory_items(self):
+        self.nodes.topic_judge_agent = StructuredMemoryTopicJudgeAgent()
+        state = self.nodes.initial_chat_state(self.session, "candidate answer")
+        answer = message(888, "I used idempotency keys.", round_no=3)
+
+        result = await self.nodes.topic_judge_node(
+            state,
+            self.session,
+            answer,
+            recent_history=[answer],
+            execution=self.execution,
+        )
+
+        self.assertEqual(result["agent_run_id"], 777)
+        self.assertEqual(len(state["open_threads"]), 2)
+        first = state["open_threads"][0]
+        self.assertEqual(first["memory_type"], "technical_highlight")
+        self.assertEqual(first["content"], "candidate used idempotency keys")
+        self.assertEqual(first["missing_detail"], "ask retry failure handling")
+        self.assertEqual(first["source_message_id"], 888)
+        self.assertEqual(first["source_agent_run_id"], 777)
+        self.assertEqual(first["metadata"]["source_field"], "technical_highlights")
+        second = state["open_threads"][1]
+        self.assertEqual(second["memory_type"], "risk_signal")
+        self.assertEqual(second["content"], "no latency metric was provided")
+        self.assertEqual(second["missing_detail"], "ask for latency and failure rate")
+        self.assertEqual(self.execution.state["open_threads"], state["open_threads"])
+
+    async def test_open_thread_lifecycle_selects_asks_and_closes_after_answer(self):
+        state = self.nodes.initial_chat_state(self.session, "candidate answer")
+        state["open_threads"] = [
+            {
+                "id": "thread-1",
+                "source_message_id": 100,
+                "round_no": 3,
+                "section_key": "system_design",
+                "probe_point": "idempotency",
+                "highlight": "candidate mentioned idempotency",
+                "missing_detail": "ask failure scenario",
+                "priority": "high",
+                "status": "open",
+            }
+        ]
+        answer = message(777, "candidate answer", round_no=3)
+        context = self.nodes.reload_followup_context_node(
+            state,
+            self.session,
+            self.execution,
+        )
+
+        fields = await self.nodes.generate_followup_node(
+            state,
+            self.session,
+            answer,
+            context,
+        )
+
+        self.assertEqual(state["open_threads"][0]["status"], "selected")
+        self.assertEqual(state["open_threads"][0]["selected_agent_run_id"], 601)
+        self.assertEqual(self.execution.state["open_threads"][0]["status"], "selected")
+
+        assistant = self.nodes.save_assistant_message_node(
+            state,
+            self.session,
+            round_no=4,
+            message_fields=fields,
+            execution=self.execution,
+        )
+
+        self.assertEqual(state["open_threads"][0]["status"], "asked")
+        self.assertEqual(state["open_threads"][0]["asked_message_id"], assistant.id)
+        self.assertEqual(state["open_threads"][0]["asked_round_no"], 4)
+        self.assertEqual(self.execution.state["open_threads"][0]["status"], "asked")
+        self.assertEqual(
+            self.execution.state["open_threads"][0]["asked_message_id"],
+            assistant.id,
+        )
+
+        next_answer = message(778, "I used idempotency keys for retries.", round_no=4)
+        await self.nodes.topic_judge_node(
+            state,
+            self.session,
+            next_answer,
+            recent_history=[next_answer],
+            execution=self.execution,
+        )
+
+        self.assertEqual(state["open_threads"][0]["status"], "closed")
+        self.assertEqual(state["open_threads"][0]["answered_message_id"], 778)
+        self.assertEqual(self.execution.state["open_threads"][0]["status"], "closed")
+        self.assertEqual(self.execution.state["open_threads"][0]["answered_message_id"], 778)
 
     async def test_save_user_answer_reuses_existing_round_message(self):
         existing = message(999, "existing answer", round_no=3)

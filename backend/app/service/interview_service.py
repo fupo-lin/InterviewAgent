@@ -142,18 +142,24 @@ class InterviewService:
             evidence_builder=self.evidence_builder,
             llm=self.llm,
             config=AgentRuntimeConfig(model_name=self.llm.model),
+            tool_runtime=self.tool_runtime,
+            tool_planner=self.tool_planner,
         )
         self.topic_judge_agent = TopicJudgeAgent(
             agent_run_executor=self.agent_run_executor,
             evidence_builder=self.evidence_builder,
             llm=self.llm,
             config=AgentRuntimeConfig(model_name=self.llm.model),
+            tool_runtime=self.tool_runtime,
+            tool_planner=self.tool_planner,
         )
         self.interview_executor_agent = InterviewExecutorAgent(
             agent_run_executor=self.agent_run_executor,
             evidence_builder=self.evidence_builder,
             llm=self.llm,
             config=AgentRuntimeConfig(model_name=self.llm.model),
+            tool_runtime=self.tool_runtime,
+            tool_planner=self.tool_planner,
         )
         self.runtime_nodes = InterviewRuntimeNodes(
             message_repo=self.message_repo,

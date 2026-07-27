@@ -2,13 +2,19 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from copy import deepcopy
+from time import perf_counter
 from typing import Any, TypedDict
 
 from app.service.interview_runtime_nodes import InterviewRuntimeNodes
+from app.service.interview_runtime_decision import runtime_decision_from_route
 from app.service.interview_runtime_resume import resume_interview_runtime_state
 from app.service.interview_runtime_router import InterviewRuntimeRouter
 from app.service.interview_runtime_state import InterviewRuntimeState
 from app.service.interview_runtime_workflow import InterviewRuntimeWorkflowResult
+from app.service.workflow_step_metrics import (
+    record_workflow_step_metric,
+    step_metrics_summary,
+)
 
 
 try:
@@ -136,6 +142,8 @@ class InterviewRuntimeLangGraph:
         return builder.compile(checkpointer=self.checkpointer)
 
     async def _start_node(self, state: InterviewRuntimeGraphState) -> dict:
+        state["_active_step_id"] = "start"
+        state["_active_step_started_at"] = perf_counter()
         session = state["session_obj"]
         initial_state = self._public_state(state)
         workflow_run = self._load_or_create_workflow_run(session, initial_state)
@@ -153,7 +161,7 @@ class InterviewRuntimeLangGraph:
             **resumed_state,
             "workflow_run_obj": workflow_run,
         }
-        self._save(workflow_run, graph_state, "start", "running")
+        self._persist_step(graph_state, "start", "running")
         return {
             **resumed_state,
             "workflow_run_obj": workflow_run,
@@ -163,7 +171,6 @@ class InterviewRuntimeLangGraph:
     async def _save_user_answer_node(self, state: InterviewRuntimeGraphState) -> dict:
         async def run() -> dict:
             answer_message = self.nodes.save_user_answer_node(state, state["session_obj"])
-            self._save(state.get("workflow_run_obj"), state, "save_user_answer", "running")
             return {
                 "answer_message_obj": answer_message,
                 "last_user_message_id": answer_message.id,
@@ -176,12 +183,13 @@ class InterviewRuntimeLangGraph:
     async def _load_runtime_context_node(self, state: InterviewRuntimeGraphState) -> dict:
         async def run() -> dict:
             context = self.nodes.load_runtime_context_node(state, state["session_obj"])
-            self._save(state.get("workflow_run_obj"), state, "load_runtime_context", "running")
             return {
                 "runtime_context_obj": context,
                 "execution_id": state.get("execution_id"),
                 "latest_candidate_memory_id": state.get("latest_candidate_memory_id"),
                 "latest_conversation_summary_id": state.get("latest_conversation_summary_id"),
+                "memory_refs": state.get("memory_refs", {}),
+                "open_threads": state.get("open_threads", []),
                 "completed_steps": state.get("completed_steps", []),
             }
 
@@ -197,7 +205,6 @@ class InterviewRuntimeLangGraph:
                 recent_history=context.recent_history,
                 execution=context.execution,
             )
-            self._save(state.get("workflow_run_obj"), state, "topic_judge", "running")
             return {
                 "judge_result_obj": judge_result,
                 "last_topic_judge_agent_run_id": state.get("last_topic_judge_agent_run_id"),
@@ -205,6 +212,8 @@ class InterviewRuntimeLangGraph:
                 "completed_steps": state.get("completed_steps", []),
                 "failed_steps": state.get("failed_steps", []),
                 "last_error": state.get("last_error"),
+                "open_threads": state.get("open_threads", []),
+                "memory_refs": state.get("memory_refs", {}),
             }
 
         return await self._run_node(state, "topic_judge", run)
@@ -217,9 +226,9 @@ class InterviewRuntimeLangGraph:
                 execution=context.execution,
                 answer_message=state["answer_message_obj"],
                 judge_result=state.get("judge_result_obj"),
+                recent_history=context.recent_history,
             )
             self._record_route_after_advance(state, execution)
-            self._save(state.get("workflow_run_obj"), state, "advance_execution", "running")
             return {
                 "execution_obj": execution,
                 "execution_id": state.get("execution_id"),
@@ -230,6 +239,9 @@ class InterviewRuntimeLangGraph:
                 "next_action": state.get("next_action"),
                 "route_after_advance": state.get("route_after_advance"),
                 "route_after_advance_reason": state.get("route_after_advance_reason"),
+                "runtime_decision": state.get("runtime_decision"),
+                "open_threads": state.get("open_threads", []),
+                "memory_refs": state.get("memory_refs", {}),
                 "completed_steps": state.get("completed_steps", []),
             }
 
@@ -252,6 +264,11 @@ class InterviewRuntimeLangGraph:
         decision = self.router.route_after_advance(state, execution)
         state["route_after_advance"] = decision.route
         state["route_after_advance_reason"] = decision.reason
+        runtime_decision_from_route(
+            state=state,
+            execution=execution,
+            route_decision=decision,
+        )
         return decision.route
 
     def _route_after_refresh_memory(self, state: InterviewRuntimeGraphState) -> str:
@@ -267,11 +284,12 @@ class InterviewRuntimeLangGraph:
                 session=state["session_obj"],
                 latest_completed_round_no=context.latest_completed_round_no,
             )
-            self._save(state.get("workflow_run_obj"), state, "refresh_memory", "running")
             return {
                 "latest_candidate_memory_id": state.get("latest_candidate_memory_id"),
                 "latest_conversation_summary_id": state.get("latest_conversation_summary_id"),
                 "last_memory_agent_run_ids": state.get("last_memory_agent_run_ids", []),
+                "memory_refs": state.get("memory_refs", {}),
+                "open_threads": state.get("open_threads", []),
                 "completed_steps": state.get("completed_steps", []),
                 "failed_steps": state.get("failed_steps", []),
                 "last_error": state.get("last_error"),
@@ -286,11 +304,12 @@ class InterviewRuntimeLangGraph:
                 session=state["session_obj"],
                 execution=state.get("execution_obj"),
             )
-            self._save(state.get("workflow_run_obj"), state, "reload_followup_context", "running")
             return {
                 "followup_context_obj": context,
                 "latest_candidate_memory_id": state.get("latest_candidate_memory_id"),
                 "latest_conversation_summary_id": state.get("latest_conversation_summary_id"),
+                "memory_refs": state.get("memory_refs", {}),
+                "open_threads": state.get("open_threads", []),
                 "completed_steps": state.get("completed_steps", []),
             }
 
@@ -298,16 +317,18 @@ class InterviewRuntimeLangGraph:
 
     async def _reload_wrap_up_context_node(self, state: InterviewRuntimeGraphState) -> dict:
         async def run() -> dict:
-            context = self.nodes.reload_followup_context_node(
+            context = self.nodes.build_runtime_context(
                 state=state,
                 session=state["session_obj"],
                 execution=state.get("execution_obj"),
+                completed_step_id="reload_wrap_up_context",
             )
-            self._save(state.get("workflow_run_obj"), state, "reload_wrap_up_context", "running")
             return {
                 "followup_context_obj": context,
                 "latest_candidate_memory_id": state.get("latest_candidate_memory_id"),
                 "latest_conversation_summary_id": state.get("latest_conversation_summary_id"),
+                "memory_refs": state.get("memory_refs", {}),
+                "open_threads": state.get("open_threads", []),
                 "completed_steps": state.get("completed_steps", []),
             }
 
@@ -321,11 +342,12 @@ class InterviewRuntimeLangGraph:
                 answer_message=state["answer_message_obj"],
                 context=state["followup_context_obj"],
             )
-            self._save(state.get("workflow_run_obj"), state, "generate_followup", "running")
             return {
                 "message_fields_obj": message_fields,
                 "last_followup_agent_run_id": state.get("last_followup_agent_run_id"),
                 "last_agent_run_id": state.get("last_agent_run_id"),
+                "memory_refs": state.get("memory_refs", {}),
+                "open_threads": state.get("open_threads", []),
                 "completed_steps": state.get("completed_steps", []),
             }
 
@@ -339,11 +361,12 @@ class InterviewRuntimeLangGraph:
                 answer_message=state["answer_message_obj"],
                 context=state["followup_context_obj"],
             )
-            self._save(state.get("workflow_run_obj"), state, "generate_wrap_up_question", "running")
             return {
                 "message_fields_obj": message_fields,
                 "last_followup_agent_run_id": state.get("last_followup_agent_run_id"),
                 "last_agent_run_id": state.get("last_agent_run_id"),
+                "memory_refs": state.get("memory_refs", {}),
+                "open_threads": state.get("open_threads", []),
                 "completed_steps": state.get("completed_steps", []),
             }
 
@@ -360,12 +383,13 @@ class InterviewRuntimeLangGraph:
                 execution=state.get("execution_obj"),
             )
             state["active_step"] = None
-            self._save(state.get("workflow_run_obj"), state, "wait_user_answer", "waiting_user")
             return {
                 "assistant_message_obj": assistant_message,
                 "last_assistant_message_id": assistant_message.id,
                 "status": state.get("status"),
                 "active_step": None,
+                "open_threads": state.get("open_threads", []),
+                "memory_refs": state.get("memory_refs", {}),
                 "completed_steps": state.get("completed_steps", []),
             }
 
@@ -382,12 +406,13 @@ class InterviewRuntimeLangGraph:
                 execution=state.get("execution_obj"),
             )
             state["active_step"] = None
-            self._save(state.get("workflow_run_obj"), state, "wait_user_answer", "waiting_user")
             return {
                 "assistant_message_obj": assistant_message,
                 "last_assistant_message_id": assistant_message.id,
                 "status": state.get("status"),
                 "active_step": None,
+                "open_threads": state.get("open_threads", []),
+                "memory_refs": state.get("memory_refs", {}),
                 "completed_steps": state.get("completed_steps", []),
             }
 
@@ -401,12 +426,13 @@ class InterviewRuntimeLangGraph:
                 answer_message=state["answer_message_obj"],
                 execution=state.get("execution_obj"),
             )
-            self._save(state.get("workflow_run_obj"), state, "complete", "finished")
             return {
                 "assistant_message_obj": assistant_message,
                 "last_assistant_message_id": assistant_message.id,
                 "status": state.get("status"),
                 "active_step": None,
+                "open_threads": state.get("open_threads", []),
+                "memory_refs": state.get("memory_refs", {}),
                 "completed_steps": state.get("completed_steps", []),
             }
 
@@ -430,11 +456,28 @@ class InterviewRuntimeLangGraph:
         run,
     ) -> dict:
         state["active_step"] = step_id
+        state["_active_step_id"] = step_id
+        state["_active_step_started_at"] = perf_counter()
         try:
-            return await run()
+            result = await run()
+            persist_step, persist_status = self._persist_target_for_step(step_id)
+            result = {**result, "status": persist_status}
+            if persist_step == "wait_user_answer":
+                state["active_step"] = None
+                result = {**result, "active_step": None}
+            state.update(result)
+            self._persist_step(state, persist_step, persist_status)
+            return result
         except Exception as exc:
             self._fail(state.get("workflow_run_obj"), state, step_id, exc)
             raise
+
+    def _persist_target_for_step(self, step_id: str) -> tuple[str, str]:
+        if step_id in {"save_assistant_message", "save_wrap_up_message"}:
+            return "wait_user_answer", "waiting_user"
+        if step_id == "finalize_interview":
+            return "complete", "finished"
+        return step_id, "running"
 
     def _save(
         self,
@@ -443,9 +486,25 @@ class InterviewRuntimeLangGraph:
         current_step: str,
         status: str,
     ) -> None:
+        if workflow_run is not None:
+            state["workflow_run_obj"] = workflow_run
+        self._persist_step(state, current_step, status)
+
+    def _persist_step(
+        self,
+        state: InterviewRuntimeGraphState,
+        current_step: str,
+        status: str,
+    ) -> None:
+        workflow_run = state.get("workflow_run_obj")
         if not self.runtime or not workflow_run:
             return
         state["status"] = status
+        self._record_active_step_metric(
+            state=state,
+            current_step=current_step,
+            status=status,
+        )
         self.runtime.save(
             workflow_run,
             state=deepcopy(self._public_state(state)),
@@ -480,6 +539,10 @@ class InterviewRuntimeLangGraph:
                 "activeStep": public_state.get("active_step"),
                 "routeAfterAdvance": public_state.get("route_after_advance"),
                 "routeAfterAdvanceReason": public_state.get("route_after_advance_reason"),
+                "runtimeDecision": public_state.get("runtime_decision"),
+                "openThreads": public_state.get("open_threads") or [],
+                "memoryRefs": public_state.get("memory_refs") or {},
+                "stepMetricsSummary": step_metrics_summary(public_state),
                 "completedSteps": public_state.get("completed_steps") or [],
                 "failedSteps": public_state.get("failed_steps") or [],
                 "lastError": public_state.get("last_error"),
@@ -503,6 +566,30 @@ class InterviewRuntimeLangGraph:
         }
         self._save(workflow_run, state, current_step, "failed")
 
+    def _record_active_step_metric(
+        self,
+        *,
+        state: InterviewRuntimeGraphState,
+        current_step: str,
+        status: str,
+    ) -> None:
+        step_id = state.get("_active_step_id")
+        started = state.get("_active_step_started_at")
+        if not step_id or started is None:
+            return
+        latency_ms = int((perf_counter() - float(started)) * 1000)
+        metric_status = "failed" if status == "failed" else "success"
+        record_workflow_step_metric(
+            state,
+            step_id=str(step_id),
+            status=metric_status,
+            latency_ms=latency_ms,
+            current_step=current_step,
+            last_error=state.get("last_error"),
+        )
+        state.pop("_active_step_id", None)
+        state.pop("_active_step_started_at", None)
+
     def _public_state(self, state: InterviewRuntimeGraphState) -> InterviewRuntimeState:
         private_keys = {
             "session_obj",
@@ -514,6 +601,8 @@ class InterviewRuntimeLangGraph:
             "followup_context_obj",
             "message_fields_obj",
             "assistant_message_obj",
+            "_active_step_id",
+            "_active_step_started_at",
         }
         return {
             key: value

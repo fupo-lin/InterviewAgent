@@ -144,6 +144,74 @@ class InterviewRuntimeLangGraphConfigTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(events[0]["event"], "step")
         self.assertEqual(events[0]["step"], "save_user_answer")
         self.assertEqual(events[0]["workflowRunId"], "workflow-run-1")
+        self.assertEqual(events[0]["stepMetricsSummary"]["step_count"], 0)
+
+    async def test_save_records_active_step_metric(self):
+        events = []
+        runtime = InterviewRuntimeLangGraph.__new__(InterviewRuntimeLangGraph)
+        runtime.runtime = FakeWorkflowRuntime()
+        runtime.commit_after_step = None
+        runtime.on_step = events.append
+        workflow_run = runtime.runtime.load_or_create(
+            workflow_id="interview_runtime",
+            thread_id="interview:session-uid",
+            project_id=1,
+            session_id=10,
+            initial_state={},
+        )
+        state = {
+            "workflow_id": "interview_runtime",
+            "workflow_run_id": "workflow-run-1",
+            "thread_id": "interview:session-uid",
+            "status": "running",
+            "session_obj": object(),
+            "workflow_run_obj": workflow_run,
+            "completed_steps": ["save_user_answer"],
+        }
+
+        state["_active_step_id"] = "save_user_answer"
+        state["_active_step_started_at"] = 1.0
+        runtime._save(workflow_run, state, "save_user_answer", "running")
+
+        saved_state = runtime.runtime.saved[-1][1]["state"]
+        self.assertNotIn("_active_step_started_at", saved_state)
+        self.assertEqual(saved_state["step_metrics"][0]["step_id"], "save_user_answer")
+        self.assertEqual(saved_state["step_metrics"][0]["status"], "success")
+        self.assertGreaterEqual(saved_state["step_metrics"][0]["latency_ms"], 0)
+        self.assertEqual(saved_state["last_step_metric"]["step_id"], "save_user_answer")
+        self.assertEqual(events[0]["stepMetricsSummary"]["step_count"], 1)
+
+    async def test_fail_records_failed_step_metric(self):
+        runtime = InterviewRuntimeLangGraph.__new__(InterviewRuntimeLangGraph)
+        runtime.runtime = FakeWorkflowRuntime()
+        runtime.commit_after_step = None
+        runtime.on_step = None
+        workflow_run = runtime.runtime.load_or_create(
+            workflow_id="interview_runtime",
+            thread_id="interview:session-uid",
+            project_id=1,
+            session_id=10,
+            initial_state={},
+        )
+        state = {
+            "workflow_id": "interview_runtime",
+            "workflow_run_id": "workflow-run-1",
+            "thread_id": "interview:session-uid",
+            "status": "running",
+            "workflow_run_obj": workflow_run,
+            "completed_steps": [],
+            "_active_step_id": "generate_followup",
+            "_active_step_started_at": 1.0,
+        }
+
+        runtime._fail(workflow_run, state, "generate_followup", RuntimeError("boom"))
+
+        saved_state = runtime.runtime.saved[-1][1]["state"]
+        metric = saved_state["step_metrics"][0]
+        self.assertEqual(metric["step_id"], "generate_followup")
+        self.assertEqual(metric["status"], "failed")
+        self.assertEqual(metric["error_type"], "RuntimeError")
+        self.assertEqual(metric["error_message"], "boom")
 
     async def test_route_after_advance_execution_records_conditional_route(self):
         runtime = InterviewRuntimeLangGraph.__new__(InterviewRuntimeLangGraph)
